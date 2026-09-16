@@ -4,13 +4,14 @@
 //   FAKE_CLAUDE_FAIL=<message>  -> emit an is_error result and exit 1
 //   FAKE_CLAUDE_SLEEP_MS=<ms>   -> delay before answering (timeout/cancel tests)
 //   FAKE_CLAUDE_RECORD=<file>   -> write argv, prompt, env and cwd as JSON for assertions
+import { randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
 const prompt = readFileSync(0, "utf8");
 const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
 const model = flag("--model");
-const sessionId = `fake-session-${Math.random().toString(36).slice(2, 10)}`;
+const sessionId = `fake-session-${randomBytes(4).toString("hex")}`;
 const out = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
 
 out({ type: "system", subtype: "init", session_id: sessionId, model: model ?? "default", cwd: process.cwd(), tools: [] });

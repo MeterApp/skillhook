@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Paths } from "./paths.js";
-import { isDirectory, readJsonFileOr, writeJsonFile } from "./util.js";
+import { isDirectory, readJsonFileOr, trimTrailing, writeJsonFile } from "./util.js";
 import { PACKAGE, VERSION } from "./version.js";
 
 export const DEFAULT_REGISTRY = "https://registry.npmjs.org";
@@ -94,7 +94,7 @@ export function updateChecksDisabled(env: NodeJS.ProcessEnv = process.env, confi
 
 /** `SKILLHOOK_NPM_REGISTRY` for mirrors and tests; otherwise the public registry. */
 export function registryUrl(env: NodeJS.ProcessEnv = process.env): string {
-  return (env.SKILLHOOK_NPM_REGISTRY?.trim() || DEFAULT_REGISTRY).replace(/\/+$/, "");
+  return trimTrailing(env.SKILLHOOK_NPM_REGISTRY?.trim() || DEFAULT_REGISTRY, "/");
 }
 
 // ---------------------------------------------------------------------------
@@ -111,8 +111,8 @@ export interface FetchLatestOptions {
 
 /** The registry's `latest` dist-tag, or null on any problem (offline, 404, timeout, garbage). Never throws. */
 export async function fetchLatestVersion(options: FetchLatestOptions = {}): Promise<string | null> {
-  const registry = (options.registry ?? DEFAULT_REGISTRY).replace(/\/+$/, "");
-  const name = (options.name ?? PACKAGE.name).replace("/", "%2F");
+  const registry = trimTrailing(options.registry ?? DEFAULT_REGISTRY, "/");
+  const name = (options.name ?? PACKAGE.name).replaceAll("/", "%2F"); // scoped packages: @scope%2Fname
   const signals = [AbortSignal.timeout(options.timeoutMs ?? 3000), ...(options.signal ? [options.signal] : [])];
   const doFetch = options.fetchImpl ?? fetch;
   try {

@@ -1,11 +1,11 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 
 const ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
 
+/** `length` characters from the alphabet, each drawn with `crypto.randomInt` (a byte modulo 36 would be biased). */
 export function randomToken(length = 6): string {
-  const bytes = randomBytes(length);
   let out = "";
-  for (let i = 0; i < length; i++) out += ALPHABET[(bytes[i] as number) % ALPHABET.length];
+  for (let i = 0; i < length; i++) out += ALPHABET[randomInt(ALPHABET.length)] as string;
   return out;
 }
 

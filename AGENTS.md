@@ -63,6 +63,13 @@ npm run release -- --check # package.json, package-lock.json, plugin manifests a
 npm run check              # all of the above
 ```
 
+CodeQL (GitHub default setup) analyses every pull request and the `main` ruleset blocks merges on new
+high-severity alerts. Its recurring findings here: regexes with ambiguous repetition on attacker-controlled
+text (`/\s*(.+?)\s*$/`, `/\n*$/`, `/\/+$/`) are flagged as polynomial ReDoS, so parse headers and env lines
+with plain string operations (`parseAuthorizationScheme`, `trimTrailing`); `.replace("x", …)` on a string
+that may contain several `x` is flagged as incomplete sanitization (use `replaceAll`); dynamic property
+writes from user-supplied keys need an inline `=== "__proto__"` check; random tokens use `crypto.randomInt`.
+
 Manual smoke test on a machine with the real tools:
 
 ```bash

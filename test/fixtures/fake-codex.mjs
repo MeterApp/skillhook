@@ -3,6 +3,7 @@
 // and writes the last message to the -o file.
 //   FAKE_CODEX_FAIL=<message> -> emit error + turn.failed and exit 1
 //   FAKE_CODEX_RECORD=<file>  -> write argv/prompt/cwd as JSON
+import { randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
@@ -10,7 +11,7 @@ const prompt = readFileSync(0, "utf8");
 const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
 const model = flag("-m");
 const outFile = flag("-o");
-const threadId = `fake-thread-${Math.random().toString(36).slice(2, 10)}`;
+const threadId = `fake-thread-${randomBytes(4).toString("hex")}`;
 const out = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
 
 out({ type: "thread.started", thread_id: threadId });

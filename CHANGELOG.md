@@ -30,3 +30,6 @@ Initial release.
 - Release tooling: `npm run release`, a CI job that installs the packed tarball, and
   workflows that tag merged version bumps, publish to npm with provenance and verify the
   published package.
+- Hardening from CodeQL: `Authorization` headers and `.env` lines are parsed without
+  backtracking regexes, job-id characters come from `crypto.randomInt` instead of a biased
+  modulo, and `config set` rejects `__proto__` / `constructor` / `prototype` keys.

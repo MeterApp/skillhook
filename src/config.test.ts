@@ -31,6 +31,15 @@ describe("config", () => {
     expect(() => setConfigValue(paths, "port", "nope")).toThrow(/invalid config/);
   });
 
+  it("refuses keys that would reach Object.prototype", () => {
+    const paths = tempHome();
+    for (const key of ["__proto__.polluted", "constructor.prototype.polluted", "defaults.__proto__", "prototype", "defaults..model", ""]) {
+      expect(() => setConfigValue(paths, key, true), key).toThrow(/Invalid config key/);
+    }
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(loadConfig(paths)).toEqual(defaultConfig());
+  });
+
   it("coerces CLI values", () => {
     expect(coerceConfigValue("8787")).toBe(8787);
     expect(coerceConfigValue("true")).toBe(true);

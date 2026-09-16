@@ -147,11 +147,14 @@ export function setConfigValue(paths: Paths, dotted: string, value: unknown): Re
   const segments = dotted.split(".");
   let cursor: Record<string, unknown> = raw;
   for (const segment of segments.slice(0, -1)) {
+    // `__proto__`, `constructor` and `prototype` would walk into Object.prototype instead of the config file.
+    if (segment === "" || segment === "__proto__" || segment === "constructor" || segment === "prototype") throw new ConfigError(`Invalid config key "${dotted}"`, paths.configFile);
     const next = cursor[segment];
     if (typeof next !== "object" || next === null || Array.isArray(next)) cursor[segment] = {};
     cursor = cursor[segment] as Record<string, unknown>;
   }
   const last = segments[segments.length - 1] as string;
+  if (last === "" || last === "__proto__" || last === "constructor" || last === "prototype") throw new ConfigError(`Invalid config key "${dotted}"`, paths.configFile);
   if (value === undefined) delete cursor[last];
   else cursor[last] = value;
   writeConfig(paths, raw);

@@ -1,6 +1,6 @@
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { unlinkSync } from "node:fs";
-import { safeEqual, verifyRequest, type InboundRequest } from "./auth.js";
+import { parseAuthorizationScheme, safeEqual, verifyRequest, type InboundRequest } from "./auth.js";
 import type { Config } from "./config.js";
 import { ADMIN_TOKEN_ENV, type Secrets } from "./env.js";
 import { describeCondition, evaluateConditions } from "./filters.js";
@@ -169,7 +169,7 @@ export function createServer(deps: ServerDeps): Server {
   /** Admin = a valid admin token, or a direct loopback connection with no proxy headers and no token (the CLI on this machine). */
   function isAdmin(headers: Record<string, string>, req: IncomingMessage, viaProxy: boolean): boolean {
     const token = deps.secrets()[ADMIN_TOKEN_ENV];
-    const presented = /^\s*Bearer\s+(.+?)\s*$/i.exec(headers.authorization ?? "")?.[1];
+    const presented = parseAuthorizationScheme(headers.authorization, "Bearer");
     if (token && presented && safeEqual(presented, token)) return true;
     return !viaProxy && isLoopback(req.socket.remoteAddress) && !presented;
   }

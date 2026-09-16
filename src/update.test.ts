@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { checkForUpdate, compareVersions, detectInstall, fetchLatestVersion, formatUpdateNotice, isNewerVersion, parseVersion, planUpdateNotice, readUpdateCache, spawnBackgroundRefresh, updateCacheFile, updateChecksDisabled, updateStatusFromCache, UPDATE_CHECK_INTERVAL_MS } from "./update.js";
+import { checkForUpdate, compareVersions, detectInstall, fetchLatestVersion, formatUpdateNotice, isNewerVersion, parseVersion, planUpdateNotice, readUpdateCache, registryUrl as registryUrlOf, spawnBackgroundRefresh, updateCacheFile, updateChecksDisabled, updateStatusFromCache, UPDATE_CHECK_INTERVAL_MS } from "./update.js";
 import { tempHome } from "./test-support/helpers.js";
 import { VERSION } from "./version.js";
 
@@ -51,6 +51,8 @@ describe("versions", () => {
 
 describe("policy", () => {
   it("honours the opt-outs", () => {
+    expect(registryUrlOf({})).toBe("https://registry.npmjs.org");
+    expect(registryUrlOf({ SKILLHOOK_NPM_REGISTRY: "https://mirror.example/npm///" })).toBe("https://mirror.example/npm");
     expect(updateChecksDisabled({})).toBe(false);
     expect(updateChecksDisabled({ SKILLHOOK_NO_UPDATE_CHECK: "1" })).toBe(true);
     expect(updateChecksDisabled({ NO_UPDATE_NOTIFIER: "true" })).toBe(true);
@@ -84,6 +86,14 @@ describe("policy", () => {
 describe("registry lookup and cache", () => {
   it("fetches the latest dist-tag and tolerates failures", async () => {
     expect(await fetchLatestVersion({ registry: registryUrl })).toBe(NEWER);
+    expect(await fetchLatestVersion({ registry: `${registryUrl}///` })).toBe(NEWER);
+    const urls: string[] = [];
+    const capture: typeof fetch = async (input) => {
+      urls.push(String(input));
+      return new Response(JSON.stringify({ version: "1.0.0" }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    expect(await fetchLatestVersion({ registry: "https://mirror.example/npm/", name: "@meterapp/skill/hook", fetchImpl: capture })).toBe("1.0.0");
+    expect(urls).toEqual(["https://mirror.example/npm/@meterapp%2Fskill%2Fhook/latest"]);
     expect(await fetchLatestVersion({ registry: registryUrl, name: "nope" })).toBeNull();
     expect(await fetchLatestVersion({ registry: "http://127.0.0.1:1", timeoutMs: 500 })).toBeNull();
     const bogus = createServer((_req, res) => {
