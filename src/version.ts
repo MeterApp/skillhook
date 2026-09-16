@@ -7,7 +7,7 @@ export const PACKAGE = (() => {
     const pkg = JSON.parse(raw) as { name: string; version: string };
     return { name: pkg.name, version: pkg.version };
   } catch {
-    return { name: "skillhook", version: "0.0.0" };
+    return { name: "@meterapp/skillhook", version: "0.0.0" };
   }
 })();
 

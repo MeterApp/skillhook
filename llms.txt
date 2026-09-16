@@ -1,6 +1,6 @@
 # skillhook
 
-> Webhook in, agent out. skillhook turns a Mac or Linux machine into a permanent, authenticated webhook endpoint that runs Agent Skills (SKILL.md files) with Claude Code (`claude -p`) or Codex (`codex exec`), using the machine's existing subscription login (Claude Pro/Max, ChatGPT) or API keys. Tailscale Funnel supplies the permanent HTTPS URL. MIT licensed, by Meter App LLC. npm package `skillhook`, CLI `skillhook`, repository https://github.com/MeterApp/skillhook.
+> Webhook in, agent out. skillhook turns a Mac or Linux machine into a permanent, authenticated webhook endpoint that runs Agent Skills (SKILL.md files) with Claude Code (`claude -p`) or Codex (`codex exec`), using the machine's existing subscription login (Claude Pro/Max, ChatGPT) or API keys. Tailscale Funnel supplies the permanent HTTPS URL. MIT licensed, by Meter App LLC. npm package `@meterapp/skillhook`, CLI `skillhook`, repository https://github.com/MeterApp/skillhook.
 
 ## Documentation
 
@@ -32,4 +32,5 @@
 - MCP: `skillhook mcp` (stdio). Register with `claude mcp add skillhook -- skillhook mcp` or `codex mcp add skillhook -- skillhook mcp`; `skillhook mcp --print-config` prints the exact lines and an mcp.json snippet. Tools: skillhook_status, list_skills, get_skill, create_skill, update_skill_file, validate_skills, run_skill, send_test_webhook, list_jobs, get_job, cancel_job, set_secret, generate_secret, list_secrets, get_webhook_urls, expose, service, doctor, list_examples, add_example.
 - Config: `skillhook.json` (schema in `schema/skillhook.schema.json`); `skillhook config show|get|set|unset|path`. Every CLI command accepts `--json` and `--dir`; exit code 0 ok, 1 error, 2 usage.
 - Updates: `skillhook update` asks npm for the newest version, `skillhook update --install` upgrades (npm/pnpm/bun/yarn) and restarts the service when idle. A daily background check (cached in `<home>/update-check.json`) mentions newer versions after interactive commands, in `doctor` and in the server log; disable with `SKILLHOOK_NO_UPDATE_CHECK=1`, `CI`, or `"update_check": false`. Releases: https://github.com/MeterApp/skillhook/releases.
+- Install: `npm install -g @meterapp/skillhook` (the command is `skillhook`; `npx @meterapp/skillhook <command>` for one-off use). The unscoped `skillhook` package is the old 0.1.0 name: `npm uninstall -g skillhook` before installing, then `skillhook service install` again if the service ran from it.
 - Requirements: Node >= 22; Claude Code (`claude`) logged in or `ANTHROPIC_API_KEY`, and/or Codex (`codex`) logged in or `OPENAI_API_KEY`; Tailscale for the default URL.

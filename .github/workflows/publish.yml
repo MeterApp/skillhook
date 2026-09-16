@@ -6,11 +6,12 @@ name: Publish
 #   - someone pushes a v* tag by hand,
 #   - someone publishes a GitHub release by hand,
 #   - "Run workflow" is used with a tag.
-# Publishing is idempotent: a version that is already on npm is skipped, not republished.
+# Publishing is idempotent: a version that is already on npm is skipped, not republished. The package name comes from
+# package.json at the tag, never from this file.
 #
 # Authentication: npm trusted publishing (OIDC) for this repository, workflow file `publish.yml`, environment `npm`,
-# configured once at npmjs.com → skillhook → Settings → Trusted publisher. An NPM_TOKEN repository secret, when
-# present, is used instead. See CONTRIBUTING.md → Releasing.
+# configured once for the package (npmjs.com → package → Settings → Trusted publisher, or `npm trust github`). An
+# NPM_TOKEN repository secret, when present, is used instead. See CONTRIBUTING.md → Releasing.
 
 on:
   push:
@@ -38,11 +39,12 @@ jobs:
     timeout-minutes: 20
     environment:
       name: npm
-      url: https://www.npmjs.com/package/skillhook
+      url: https://www.npmjs.com/package/${{ steps.meta.outputs.name }}/v/${{ steps.meta.outputs.version }}
     permissions:
       contents: write # create the GitHub release
       id-token: write # npm trusted publishing and provenance
     outputs:
+      name: ${{ steps.meta.outputs.name }}
       version: ${{ steps.meta.outputs.version }}
       tag: ${{ steps.meta.outputs.tag }}
     steps:
@@ -82,22 +84,25 @@ jobs:
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
+          name="$(node -p "require('./package.json').name")"
           version="$(node -p "require('./package.json').version")"
           if [ "$TAG" != "v$version" ]; then
             echo "::error::tag $TAG does not match package.json version $version"
             exit 1
           fi
           npm run release -- --check
+          echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Already on npm?
         id: exists
         env:
+          NAME: ${{ steps.meta.outputs.name }}
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
-          if npm view "skillhook@$VERSION" version >/dev/null 2>&1; then
-            echo "skillhook@$VERSION is already on npm; nothing to publish"
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "$NAME@$VERSION is already on npm; nothing to publish"
             echo "published=true" >> "$GITHUB_OUTPUT"
           else
             echo "published=false" >> "$GITHUB_OUTPUT"
@@ -120,13 +125,15 @@ jobs:
       - name: First release?
         if: failure() && steps.exists.outputs.published != 'true'
         run: |
-          echo "::error::npm publish failed. If this is the first release of the package: publish it once by hand (npm login && npm publish --access public from the v$VERSION tag), then register this repository as a trusted publisher at npmjs.com → skillhook → Settings (workflow publish.yml, environment npm) and re-run this workflow. Details: CONTRIBUTING.md → Releasing."
+          echo "::error::npm publish failed. If this is the first release of $NAME: publish it once by hand (npm login && npm publish --access public from the v$VERSION tag), then register this repository as its trusted publisher (npm trust github $NAME --repo $GITHUB_REPOSITORY --file publish.yml --env npm --allow-publish, or npmjs.com → $NAME → Settings) and re-run this workflow. Details: CONTRIBUTING.md → Releasing."
         env:
+          NAME: ${{ steps.meta.outputs.name }}
           VERSION: ${{ steps.meta.outputs.version }}
 
       - name: GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          NAME: ${{ steps.meta.outputs.name }}
           TAG: ${{ steps.meta.outputs.tag }}
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
@@ -136,15 +143,16 @@ jobs:
           fi
           notes="$RUNNER_TEMP/notes.md"
           npm run release --silent -- --notes "$VERSION" > "$notes"
-          printf '\n---\n\n`npm install -g skillhook@%s` · [npm](https://www.npmjs.com/package/skillhook/v/%s) · [changelog](https://github.com/%s/blob/%s/CHANGELOG.md)\n' "$VERSION" "$VERSION" "$GITHUB_REPOSITORY" "$TAG" >> "$notes"
+          printf '\n---\n\n`npm install -g %s@%s` · [npm](https://www.npmjs.com/package/%s/v/%s) · [changelog](https://github.com/%s/blob/%s/CHANGELOG.md)\n' "$NAME" "$VERSION" "$NAME" "$VERSION" "$GITHUB_REPOSITORY" "$TAG" >> "$notes"
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "skillhook $VERSION" --notes-file "$notes"
 
   verify:
     name: Verify the published package
     needs: publish
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
+      NAME: ${{ needs.publish.outputs.name }}
       VERSION: ${{ needs.publish.outputs.version }}
     steps:
       - name: Setup Node.js
@@ -152,22 +160,34 @@ jobs:
         with:
           node-version: 24
 
+      # A new version shows up in stages: the `latest` dist-tag, then the package document, then the tarball, minutes
+      # apart. `npm install` 404s until the tarball is served, so wait for the tarball itself, not for `npm view`.
       - name: Wait for the registry
         run: |
-          for attempt in $(seq 1 20); do
-            if npm view "skillhook@$VERSION" version >/dev/null 2>&1; then
-              echo "skillhook@$VERSION is on npm"
+          for attempt in $(seq 1 40); do
+            tarball="$(npm view "$NAME@$VERSION" dist.tarball --prefer-online 2>/dev/null || true)"
+            if [ -n "$tarball" ] && curl -fsSL -o /dev/null "$tarball"; then
+              echo "$NAME@$VERSION is on npm: $tarball"
               exit 0
             fi
-            echo "attempt $attempt: not visible yet"
+            echo "attempt $attempt: ${tarball:-$NAME@$VERSION} is not downloadable yet"
             sleep 15
           done
-          echo "::error::skillhook@$VERSION did not appear on npm within 5 minutes"
+          echo "::error::$NAME@$VERSION could not be downloaded from npm within 10 minutes"
           exit 1
 
       - name: Install from npm and use it
         run: |
-          npm install -g "skillhook@$VERSION"
+          # Registry edges catch up at different speeds; retry the install before calling the release broken.
+          for attempt in 1 2 3 4 5; do
+            npm install -g --prefer-online "$NAME@$VERSION" && break
+            if [ "$attempt" = 5 ]; then
+              echo "::error::npm install -g $NAME@$VERSION failed 5 times"
+              exit 1
+            fi
+            echo "install attempt $attempt failed; retrying in 30 seconds"
+            sleep 30
+          done
           test "$(skillhook --version)" = "$VERSION"
           home="$RUNNER_TEMP/home"
           skillhook init --dir "$home" --json
