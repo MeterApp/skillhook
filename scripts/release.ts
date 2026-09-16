@@ -66,9 +66,13 @@ function readJson(file: string): Record<string, unknown> {
   return JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
 }
 
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** Rewrites the first `"version": "<current>"` after `from` in `text`; returns the new text and whether anything changed. */
 function replaceVersionLine(text: string, current: string, next: string, from = 0): { text: string; changed: boolean } {
-  const pattern = new RegExp(`("version"\\s*:\\s*")${current.replace(/\./g, "\\.")}(")`);
+  const pattern = new RegExp(`("version"\\s*:\\s*")${escapeRegExp(current)}(")`);
   const head = text.slice(0, from);
   const tail = text.slice(from);
   if (!pattern.test(tail)) return { text, changed: false };
