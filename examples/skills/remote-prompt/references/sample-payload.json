@@ -1,0 +1,4 @@
+{
+  "prompt": "Say hello, print the working directory, and name the newest file in it.",
+  "cwd": "~/dev/my-app"
+}

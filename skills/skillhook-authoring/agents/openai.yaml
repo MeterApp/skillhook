@@ -1,0 +1,6 @@
+interface:
+  display_name: "skillhook Authoring"
+  short_description: "Write and test a webhook skill for skillhook"
+  default_prompt: "Use $skillhook-authoring to write the SKILL.md that runs when a webhook arrives, then test it."
+policy:
+  allow_implicit_invocation: true

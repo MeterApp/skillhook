@@ -1,0 +1,45 @@
+{
+  "name": "skillhook",
+  "version": "0.1.0",
+  "description": "Turn this machine into a permanent, secure webhook endpoint that runs Agent Skills with Claude Code or Codex. Two skills teach the agent to install and expose skillhook and to write good webhook skills; the bundled MCP server manages skills, secrets, jobs and exposure.",
+  "author": {
+    "name": "Meter",
+    "email": "hello@meterapp.co",
+    "url": "https://meterapp.co"
+  },
+  "homepage": "https://github.com/MeterApp/skillhook",
+  "repository": "https://github.com/MeterApp/skillhook",
+  "license": "MIT",
+  "keywords": [
+    "webhook",
+    "agent-skills",
+    "claude-code",
+    "codex",
+    "mcp",
+    "tailscale",
+    "automation",
+    "granola",
+    "sentry",
+    "github"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "skillhook",
+    "shortDescription": "Webhook in, agent out — on your own machine",
+    "longDescription": "skillhook turns a Mac or Linux machine into a permanent, secure webhook endpoint that runs Agent Skills with Claude Code or Codex, using the login you already have. Granola, Sentry, GitHub, Stripe, Slack or a plain curl call POST to https://<your-node>.ts.net/hooks/<skill>; skillhook verifies the signature, queues a job and runs the skill's SKILL.md unattended. This plugin adds two skills — installing and exposing skillhook, and writing good webhook skills — plus the skillhook MCP server for status, skills, secrets, jobs, Tailscale exposure and signed test webhooks.",
+    "developerName": "Meter",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/MeterApp/skillhook",
+    "defaultPrompt": [
+      "Set up skillhook on this machine and give me a public webhook URL for the hello skill.",
+      "Write a skillhook skill that opens a pull request when Sentry reports a new issue in ~/dev/api.",
+      "My Granola webhook gets a 503 from skillhook — what is wrong?"
+    ],
+    "supportURL": "https://github.com/MeterApp/skillhook/issues"
+  }
+}

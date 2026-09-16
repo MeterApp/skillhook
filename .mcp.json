@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "skillhook": {
+      "command": "npx",
+      "args": ["-y", "skillhook", "mcp"]
+    }
+  }
+}

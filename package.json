@@ -1,0 +1,74 @@
+{
+  "name": "skillhook",
+  "version": "0.1.0",
+  "description": "Turn your Mac (or any machine) into a permanent, secure webhook endpoint that runs Agent Skills with Claude Code or Codex. Webhook in, agent out.",
+  "license": "MIT",
+  "author": "Meter <hello@meterapp.co> (https://meterapp.co)",
+  "homepage": "https://github.com/MeterApp/skillhook#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MeterApp/skillhook.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MeterApp/skillhook/issues"
+  },
+  "keywords": [
+    "webhook",
+    "agent",
+    "agent-skills",
+    "claude-code",
+    "codex",
+    "mcp",
+    "mcp-server",
+    "tailscale",
+    "automation",
+    "granola",
+    "sentry",
+    "cli"
+  ],
+  "type": "module",
+  "bin": {
+    "skillhook": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "examples",
+    "schema",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "dev": "tsx src/cli.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run typecheck && npm test && npm run build && npm run schema -- --check",
+    "prepublishOnly": "npm run check",
+    "schema": "tsx scripts/generate-schema.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.3",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.1"
+  }
+}

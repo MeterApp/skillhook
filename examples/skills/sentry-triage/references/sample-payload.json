@@ -1,0 +1,32 @@
+{
+  "action": "created",
+  "installation": { "uuid": "a6c1b2d3-4e5f-4a6b-8c7d-9e0f1a2b3c4d" },
+  "data": {
+    "issue": {
+      "id": "6123456789",
+      "shortId": "WEB-4F2",
+      "title": "TypeError: Cannot read properties of undefined (reading 'plan')",
+      "culprit": "src/billing/summary.ts in renderPlanBadge",
+      "permalink": "https://acme.sentry.io/issues/6123456789/",
+      "level": "error",
+      "status": "unresolved",
+      "substatus": "new",
+      "platform": "javascript",
+      "type": "error",
+      "project": { "id": "4508123", "slug": "web", "name": "Web", "platform": "javascript-nextjs" },
+      "metadata": {
+        "type": "TypeError",
+        "value": "Cannot read properties of undefined (reading 'plan')",
+        "filename": "src/billing/summary.ts",
+        "function": "renderPlanBadge"
+      },
+      "count": "37",
+      "userCount": 12,
+      "firstSeen": "2026-09-15T13:58:04.112Z",
+      "lastSeen": "2026-09-15T14:31:47.905Z",
+      "isUnhandled": true,
+      "priority": "high"
+    }
+  },
+  "actor": { "type": "application", "id": "sentry", "name": "Sentry" }
+}

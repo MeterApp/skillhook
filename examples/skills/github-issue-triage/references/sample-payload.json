@@ -1,0 +1,42 @@
+{
+  "action": "opened",
+  "issue": {
+    "id": 3123456789,
+    "node_id": "I_kwDOAbCdEf6ceBBB",
+    "number": 142,
+    "title": "CSV export drops rows when a cell contains a newline",
+    "body": "## Steps\n1. Create a record whose notes field contains a line break.\n2. Click **Export → CSV**.\n\n## Expected\nOne row per record, newline kept inside quotes.\n\n## Actual\nThe row is split in two and the second half lands in the wrong columns. Looks like `src/export/csv.ts` is not quoting fields that contain `\\n`.\n\nVersion 2.4.1, macOS 15, Chrome 129.",
+    "state": "open",
+    "locked": false,
+    "labels": [
+      {
+        "id": 6012345678,
+        "node_id": "LA_kwDOAbCdEf8AAAABZj1234",
+        "url": "https://api.github.com/repos/acme/widgets/labels/bug",
+        "name": "bug",
+        "color": "d73a4a",
+        "default": true,
+        "description": "Something isn't working"
+      }
+    ],
+    "user": { "login": "mtanaka", "id": 1234567, "type": "User", "html_url": "https://github.com/mtanaka" },
+    "assignees": [],
+    "comments": 0,
+    "created_at": "2026-09-15T14:02:11Z",
+    "updated_at": "2026-09-15T14:02:11Z",
+    "html_url": "https://github.com/acme/widgets/issues/142",
+    "url": "https://api.github.com/repos/acme/widgets/issues/142"
+  },
+  "repository": {
+    "id": 98765432,
+    "node_id": "R_kgDOBeCdEf",
+    "name": "widgets",
+    "full_name": "acme/widgets",
+    "private": true,
+    "html_url": "https://github.com/acme/widgets",
+    "clone_url": "https://github.com/acme/widgets.git",
+    "default_branch": "main",
+    "owner": { "login": "acme", "id": 7654321, "type": "Organization" }
+  },
+  "sender": { "login": "mtanaka", "id": 1234567, "type": "User" }
+}

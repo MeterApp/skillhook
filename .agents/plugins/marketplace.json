@@ -1,0 +1,14 @@
+{
+  "name": "meterapp-skillhook",
+  "interface": {
+    "displayName": "skillhook by Meter"
+  },
+  "plugins": [
+    {
+      "name": "skillhook",
+      "source": { "source": "local", "path": "./" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
+    }
+  ]
+}

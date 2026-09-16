@@ -1,0 +1,239 @@
+{
+  "$id": "https://raw.githubusercontent.com/MeterApp/skillhook/main/schema/skillhook.schema.json",
+  "title": "skillhook.json",
+  "description": "Server configuration for skillhook (https://github.com/MeterApp/skillhook).",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "port": {
+      "default": 8787,
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "host": {
+      "default": "127.0.0.1",
+      "type": "string"
+    },
+    "public_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "trust_proxy": {
+      "default": true,
+      "type": "boolean"
+    },
+    "defaults": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "runner": {
+          "default": "claude",
+          "type": "string",
+          "enum": [
+            "claude",
+            "codex",
+            "shell"
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "effort": {
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "default": 900,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cwd": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "concurrency": {
+      "default": 2,
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "max_body_bytes": {
+      "default": 1048576,
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
+    "max_wait_seconds": {
+      "default": 120,
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "rate_limit": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "requests_per_minute": {
+          "default": 120,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "auth_failures_per_minute": {
+          "default": 10,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "additionalProperties": false
+    },
+    "runners": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "claude": {
+          "default": {},
+          "type": "object",
+          "properties": {
+            "command": {
+              "default": "claude",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              ]
+            },
+            "permission_mode": {
+              "default": "bypassPermissions",
+              "type": "string",
+              "enum": [
+                "acceptEdits",
+                "auto",
+                "bypassPermissions",
+                "manual",
+                "dontAsk",
+                "plan"
+              ]
+            },
+            "args": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "codex": {
+          "default": {},
+          "type": "object",
+          "properties": {
+            "command": {
+              "default": "codex",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              ]
+            },
+            "sandbox": {
+              "default": "workspace-write",
+              "type": "string",
+              "enum": [
+                "read-only",
+                "workspace-write",
+                "danger-full-access"
+              ]
+            },
+            "network_access": {
+              "default": true,
+              "type": "boolean"
+            },
+            "approval_policy": {
+              "default": "never",
+              "type": "string"
+            },
+            "args": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "jobs": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "max_jobs": {
+          "default": 1000,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "dedupe_window_seconds": {
+          "default": 86400,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "inline_payload_max_bytes": {
+          "default": 200000,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "additionalProperties": false
+    },
+    "env_passthrough": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "log_level": {
+      "default": "info",
+      "type": "string",
+      "enum": [
+        "debug",
+        "info",
+        "warn",
+        "error"
+      ]
+    }
+  },
+  "additionalProperties": false
+}

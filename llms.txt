@@ -1,0 +1,33 @@
+# skillhook
+
+> Webhook in, agent out. skillhook turns a Mac or Linux machine into a permanent, authenticated webhook endpoint that runs Agent Skills (SKILL.md files) with Claude Code (`claude -p`) or Codex (`codex exec`), using the machine's existing subscription login (Claude Pro/Max, ChatGPT) or API keys. Tailscale Funnel supplies the permanent HTTPS URL. MIT licensed, by Meter App LLC. npm package `skillhook`, CLI `skillhook`, repository https://github.com/MeterApp/skillhook.
+
+## Documentation
+
+- [README](README.md): pitch, how it works, five-minute quickstart, writing a skill, choosing runner and model, security summary, permanent URLs, examples, agent setup, CLI reference, FAQ
+- [Writing skills](docs/skills.md): SKILL.md format, every `skillhook:` field with type and default, auth types, `when` filters, deduplication, template placeholders, the prompt and guardrails, what the agent receives, scaffolding and testing, examples
+- [Security](docs/security.md): threat model, per-auth-type header formats and sender setup (bearer, basic, hmac, github, sentry, linear, standard-webhooks, granola, svix, stripe, slack), IP allow-lists, secrets and file modes, environment isolation, prompt-injection guardrails, limits, admin API, checklist
+- [Getting a permanent URL](docs/exposure.md): Tailscale Funnel and Serve, one-time approval, Cloudflare Tunnel and ngrok recipes, `public_url`, client IPs behind proxies, verification, troubleshooting
+- [Runners](docs/runners.md): exact `claude -p` and `codex exec` command lines, subscription vs API key, shell runner, environment allow-list, working directories, timeouts, sessions and resume
+- [HTTP API](docs/api.md): routes, delivery processing order, response shapes (202, `?wait=`, duplicate, skipped), admin authentication, `/skills`, `/skills/<name>/run`, `/jobs`, job record fields, status and error codes
+- [MCP server](docs/mcp.md): `skillhook mcp` setup for Claude Code, Codex and mcp.json clients, every tool with inputs and when to use it, a typical session
+- [Operations](docs/operations.md): home directory layout, `serve`, launchd/systemd service, logs, job directory and retention, full `skillhook.json` reference, `doctor` checks, keeping a Mac awake, upgrading, troubleshooting
+- [AGENTS.md](AGENTS.md): repository layout, hard rules and checks for contributors and coding agents
+- [Example skills](examples/skills/): `hello`, `granola-meeting-actions`, `sentry-triage`, `github-issue-triage`, `remote-prompt` (install with `skillhook skills add <name>`)
+
+## Key facts
+
+- Home directory: `~/.skillhook` (override with `SKILLHOOK_HOME` or `--dir <path>`): `skillhook.json`, `.env` (mode 600), `skills/<name>/SKILL.md`, `jobs/<id>/`, `logs/service.log`, `server.json` while a server runs.
+- A skill is `skills/<name>/SKILL.md`: YAML frontmatter with `name` (must equal the directory name, `^[a-z0-9]+(?:-[a-z0-9]+)*$`), `description`, optional `license`, `compatibility`, `metadata`, `allowed-tools`, and a `skillhook:` block with `runner`, `model`, `effort`, `cwd`, `timeout_seconds`, `auth`, `when`, `env`, `concurrency`, `dedupe`, `claude`, `codex`, `shell`, `enabled`; then Markdown instructions.
+- Default auth is `bearer`: the sender sets `Authorization: Bearer $SKILLHOOK_SECRET_<NAME>` (name upper-cased, non-alphanumerics to `_`). Provider presets: `github`, `sentry`, `linear`, `standard-webhooks`, `granola`, `svix`, `stripe`, `slack`; also `basic`, `hmac`, `none`. Secrets live in `.env`; missing secret means `503 skill_not_configured`.
+- Webhook URL: `POST <public_url>/hooks/<name>` answers `202 {job_id, status_url}`; `?wait=N` (max 120 s by default) returns `200` with `result`. Duplicates return `200 {duplicate: true}`, filtered deliveries `200 {skipped: true}`.
+- Run a skill without HTTP: `skillhook run <name> --payload '{"key":"value"}'`; `--dry-run` prints the runner command, environment names, guardrails and prompt. Signed HTTP test: `skillhook send <name> --payload '…' --wait 60` (local server) or `--public`.
+- Server: `skillhook serve` (foreground, 127.0.0.1:8787) or `skillhook service install` (launchd on macOS, systemd --user on Linux). Public URL: `skillhook expose tailscale` (Funnel) or `--serve` (tailnet only); `skillhook url` prints webhook URLs.
+- Runners: `claude` (`claude -p --output-format stream-json --verbose --permission-mode bypassPermissions --permission-prompts none …`, prompt on stdin), `codex` (`codex exec --json --skip-git-repo-check -C <cwd> -s workspace-write -c approval_policy="never" -o <file> … -`), `shell` (`skillhook.shell.command`). Per-skill `model` and `effort`; resolution: override, skill, `defaults`.
+- Placeholders in the body: `{{payload}}`, `{{payload.a.b}}`, `{{payload_json}}`, `{{payload_path}}`, `{{event_path}}`, `{{headers}}`, `{{headers.x-name}}`, `{{query.x}}`, `{{job_id}}`, `{{job_dir}}`, `{{skill_name}}`, `{{skill_dir}}`, `{{received_at}}`, `{{source_ip}}`, `{{delivery_id}}`, `{{trigger}}`. Without a payload reference the event is appended inside `<webhook_headers>` / `<webhook_payload>` tags.
+- Environment given to the agent: `SKILLHOOK_JOB_ID`, `SKILLHOOK_JOB_DIR`, `SKILLHOOK_SKILL`, `SKILLHOOK_SKILL_DIR`, `SKILLHOOK_PAYLOAD_PATH`, `SKILLHOOK_EVENT_PATH`, `SKILLHOOK_PROMPT_PATH`, `SKILLHOOK_TRIGGER`, `SKILLHOOK_RUNNER`, `ANTHROPIC_*`/`CLAUDE_*`/`OPENAI_*`/`CODEX_*`, and the names listed in the skill's `env:`. `SKILLHOOK_SECRET_*` and `SKILLHOOK_ADMIN_TOKEN` are never forwarded implicitly.
+- Job statuses: `queued`, `running`, `succeeded`, `failed`, `timed_out`, `cancelled`, `interrupted`. Job ids look like `20260916T025442Z-r1wn6g`. `skillhook jobs list|show|logs|cancel|resume|path|prune`.
+- Admin API (`/skills`, `/skills/<name>/run`, `/jobs`, `/jobs/<id>`, `/jobs/<id>/cancel`): `Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN`, or token-less from direct loopback connections without proxy headers.
+- MCP: `skillhook mcp` (stdio). Register with `claude mcp add skillhook -- skillhook mcp` or `codex mcp add skillhook -- skillhook mcp`; `skillhook mcp --print-config` prints the exact lines and an mcp.json snippet. Tools: skillhook_status, list_skills, get_skill, create_skill, update_skill_file, validate_skills, run_skill, send_test_webhook, list_jobs, get_job, cancel_job, set_secret, generate_secret, list_secrets, get_webhook_urls, expose, service, doctor, list_examples, add_example.
+- Config: `skillhook.json` (schema in `schema/skillhook.schema.json`); `skillhook config show|get|set|unset|path`. Every CLI command accepts `--json` and `--dir`; exit code 0 ok, 1 error, 2 usage.
+- Requirements: Node >= 22; Claude Code (`claude`) logged in or `ANTHROPIC_API_KEY`, and/or Codex (`codex`) logged in or `OPENAI_API_KEY`; Tailscale for the default URL.
