@@ -32,7 +32,7 @@
   ],
   "type": "module",
   "bin": {
-    "skillhook": "./dist/cli.js"
+    "skillhook": "dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
