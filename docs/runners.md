@@ -128,6 +128,8 @@ skillhook:
 
 The rendered prompt is still written to `prompt.md`, so a shell command can hand it to another LLM tool.
 
+In a repository's `skillhook.yaml` a shell hook is written as `run: <command>` (string or array) and runs in the repository by default; see [projects.md](projects.md#run-hooks).
+
 ## Environment
 
 Every runner gets a freshly built environment:

@@ -228,6 +228,14 @@
         "type": "string"
       }
     },
+    "projects": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
     "log_level": {
       "default": "info",
       "type": "string",

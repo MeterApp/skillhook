@@ -7,7 +7,8 @@ import { isTerminal, type JobRecord, type JobStore } from "./jobs.js";
 import type { Logger } from "./logger.js";
 import { prepareRun } from "./run.js";
 import type { RunnerOutcome, StreamState } from "./runners/index.js";
-import type { Skill, SkillRegistry } from "./skills.js";
+import type { SkillRegistry } from "./registry.js";
+import type { Skill } from "./skills.js";
 import { errorMessage, nowIso, tail } from "./util.js";
 
 export interface QueueDeps {

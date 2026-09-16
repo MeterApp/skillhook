@@ -87,6 +87,8 @@ export const ConfigSchema = z
       .prefault({}),
     /** Extra env var names copied into every agent run (on top of the runner auth vars). */
     env_passthrough: z.array(z.string()).default([]),
+    /** Linked projects: directories whose `skillhook.yaml` (or the file itself) contributes hooks. Managed by `skillhook link` / `unlink`; re-read without a restart. */
+    projects: z.array(z.string().min(1)).default([]),
     log_level: z.enum(["debug", "info", "warn", "error"]).default("info"),
     /** Ask the npm registry once a day whether a newer skillhook exists and say so in CLI output, `doctor` and the server log. `SKILLHOOK_NO_UPDATE_CHECK=1` and `CI` disable it too. */
     update_check: z.boolean().default(true),

@@ -101,6 +101,18 @@ skillhook secret set GRANOLA_WEBHOOK_SECRET   # provider-signed skills (github, 
 
 Give the user the URL and the header to configure (bearer: `Authorization: Bearer <secret>`); never paste a secret into chat, a commit or a screenshot. Senders that want the answer in the HTTP response add `?wait=<seconds>` (up to `max_wait_seconds`, default 120). The bundled examples carry provider-specific setup steps in their SKILL.md: `skillhook skills examples`, then `skillhook skills add <example>`.
 
+## 9. Serve a repository's own hooks
+
+A team keeps the webhook → action mapping in the repository instead of on one machine: a `skillhook.yaml` at the root with `hooks: { <name>: { run: <command> | skill: <SKILL.md dir> | prompt: <text>, auth, when, model, … } }`. On each machine that should serve it:
+
+```bash
+skillhook link ~/dev/the-repo             # or, in the repository: skillhook projects init  (writes a starter file, then links)
+skillhook projects                        # every linked repository with its hooks and URLs
+skillhook secret set GITHUB_WEBHOOK_SECRET   # the file names secrets; values stay in .env
+```
+
+Hooks are live without a restart, `git pull` deploys changes, and `skillhook unlink <dir>` stops serving them. Names in `~/.skillhook/skills` win over repositories; a duplicate is reported by `skillhook skills list` and `doctor`. MCP: `link_project` (`init: true` to scaffold), `list_projects`, `unlink_project`. Writing the file itself is covered by skillhook-authoring.
+
 ## The same through MCP
 
 Install the plugin (`/plugin marketplace add MeterApp/skillhook`, then `/plugin install skillhook@meterapp-skillhook`) or add the server directly — `skillhook mcp --print-config` prints the command for Claude Code, Codex and mcp.json hosts. Tools map onto the CLI:
@@ -114,6 +126,7 @@ Install the plugin (`/plugin marketplace add MeterApp/skillhook`, then `/plugin 
 | Expose | `skillhook expose tailscale [--serve]`, `skillhook url` | `expose` (mode `funnel` / `serve` / `status` / `off`), `get_webhook_urls` |
 | Service | `skillhook service …` | `service` (action `install` / `status` / `restart` / `logs` / `uninstall`) |
 | Jobs | `skillhook jobs show / logs / cancel` | `get_job`, `list_jobs`, `cancel_job` |
+| Repository hooks | `skillhook link`, `unlink`, `projects [init]` | `link_project`, `unlink_project`, `list_projects` |
 
 `skillhook_status` reports the home directory, whether the server runs, the public URL and every skill with its auth type. The MCP server never returns secret values except right after `generate_secret`. `run_skill` uses the running server when there is one, otherwise runs in-process.
 

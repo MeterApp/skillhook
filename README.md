@@ -36,6 +36,7 @@ Keep schedules for digests and clean-ups; give everything that has a trigger a w
 ```
 
 - A skill is a directory `~/.skillhook/skills/<name>/SKILL.md`: standard Agent Skills frontmatter plus a `skillhook:` block that sets the runner, model, authentication, filters and working directory. Edits apply to the next delivery without a restart.
+- A repository can carry its own hooks in a version-controlled `skillhook.yaml` (webhook name → a shell command, a `SKILL.md` in the repository, or inline instructions); `skillhook link <dir>` serves them. See [Version-controlled hooks](#version-controlled-hooks-in-a-repository).
 - The runner is the real `claude` or `codex` CLI on the machine, so subscriptions, MCP servers, `CLAUDE.md`/`AGENTS.md` files and tool permissions apply as usual.
 - Responses are immediate (`202` with a job id) or synchronous with `?wait=N` (or `Prefer: wait=N`); the agent's final message becomes the job result.
 - Developed against Claude Code 2.1.270, Codex CLI 0.153.4 and Tailscale 1.102.3. skillhook drives the CLIs through their headless flags (`claude -p --output-format stream-json …`, `codex exec --json …`); `skillhook run <skill> --dry-run` shows the exact command line.
@@ -143,6 +144,46 @@ The complete webhook payload (event metadata, counts, first/last seen) is at `{{
 - The bundled `sentry-triage` example is a fuller version of this skill (latest-event lookup, escalation notes, a triage calendar slot): `skillhook skills add sentry-triage`.
 
 Full field reference, filters, dedupe and placeholders: [docs/skills.md](docs/skills.md).
+
+## Version-controlled hooks in a repository
+
+The skills above live in `~/.skillhook`, per machine. A team usually wants the opposite: the mapping from webhook to action checked into the repository it acts on, reviewed in pull requests, identical on every machine that serves it. That is `skillhook.yaml` at the repository root:
+
+```yaml
+hooks:
+  pull-after-merge:                         # POST <public_url>/hooks/pull-after-merge
+    description: Fast-forward this checkout when a pull request merges.
+    run: git pull --ff-only                 # a shell command; no agent involved
+    auth: { type: github, secret_env: GITHUB_WEBHOOK_SECRET }
+    when:
+      - { header: x-github-event, equals: pull_request }
+      - { path: action, equals: closed }
+      - { path: pull_request.merged, equals: true }
+
+  release-notes:
+    skill: .claude/skills/release-notes     # an Agent Skill in this repository; keys here override its skillhook: block
+    model: sonnet
+    auth: { type: github, secret_env: GITHUB_WEBHOOK_SECRET }
+    when:
+      - { header: x-github-event, equals: release }
+      - { path: action, equals: published }
+```
+
+Each hook is one of `run:` (a command run in the repository with the payload on stdin), `skill:` (a `SKILL.md` directory in the repository, served under the hook's name) or `prompt:` (inline instructions for the agent), plus any field of the `skillhook:` block: `auth`, `when`, `model`, `cwd` (defaults to the repository), `env`, `timeout_seconds`, … Secrets are named, never stored, in the file.
+
+```bash
+skillhook projects init          # in the repository: writes a starter skillhook.yaml and links it
+```
+
+```bash
+skillhook link ~/dev/your-repo   # on any machine that should serve the hooks; live without a restart
+```
+
+```bash
+skillhook projects               # which hook runs what, from which repository, at which URL
+```
+
+`skillhook skills list` shows repository hooks next to local skills with their source, `skillhook unlink <dir>` stops serving them, and a `git pull` that changes the file is enough to deploy the change. Names in `~/.skillhook/skills` win over repositories, and a name defined twice is reported instead of guessed. Details: [docs/projects.md](docs/projects.md).
 
 ## Choosing runner and model
 
@@ -253,6 +294,8 @@ Agents reading this repository should start with [`AGENTS.md`](AGENTS.md) (layou
 | `skillhook jobs list [--skill S] [--status ST] [--limit N]` · `jobs show <id> [--result] [--prompt] [--stdout] [--stderr]` · `jobs logs <id> [-f] [--stderr]` · `jobs cancel <id>` · `jobs resume <id> [--exec]` · `jobs path <id>` · `jobs prune [--keep N]` | Inspect and manage jobs. |
 | `skillhook mcp [--print-config]` | MCP server over stdio; `--print-config` prints client configuration. |
 | `skillhook config show\|get <key>\|set <key> <value>\|unset <key>\|path` | Read and edit `skillhook.json`. |
+| `skillhook link [dir] [--no-secret]` / `skillhook unlink <dir>` | Serve the hooks a repository declares in its `skillhook.yaml` (default `.`); stop serving them. |
+| `skillhook projects [list]` / `skillhook projects init [dir] [--force]` | List linked repositories and their hooks; write a starter `skillhook.yaml` and link it. |
 | `skillhook update [--install]` | Check npm for a newer skillhook; `--install` upgrades with the package manager that installed it and restarts the background service when it is idle. |
 
 Global options: `--dir <path>` (default `$SKILLHOOK_HOME` or `~/.skillhook`), `--json` (machine-readable output for every command), `--help`, `--version`. Exit codes: 0 success, 1 failure, 2 usage error. Environment: `SKILLHOOK_HOME`, `SKILLHOOK_NO_UPDATE_CHECK=1` (or `CI`) to silence the daily update check, `SKILLHOOK_NPM_REGISTRY` for a mirror, `SKILLHOOK_DEBUG=1` for stack traces. HTTP API: [docs/api.md](docs/api.md). Service, logs, jobs, config and troubleshooting: [docs/operations.md](docs/operations.md).
@@ -261,7 +304,7 @@ Global options: `--dir <path>` (default `$SKILLHOOK_HOME` or `~/.skillhook`), `-
 
 ```text
 ~/.skillhook/
-├── skillhook.json            server config (JSON Schema: schema/skillhook.schema.json)
+├── skillhook.json            server config (JSON Schema: schema/skillhook.schema.json); `projects` lists linked repositories
 ├── .env                      secrets, mode 600: SKILLHOOK_ADMIN_TOKEN, SKILLHOOK_SECRET_<NAME>, provider secrets, API keys
 ├── server.json               pid/host/port while `serve` runs; removed on shutdown
 ├── skills/<name>/SKILL.md    one directory per skill (plus any files the skill needs)
@@ -282,6 +325,8 @@ Override the location with `SKILLHOOK_HOME=<path>` or `--dir <path>`.
 **Can I run it on Linux?** Yes. `skillhook service install` writes a systemd user unit (`~/.config/systemd/user/co.meterapp.skillhook.service`); run `loginctl enable-linger $USER` so it starts without a login session. Tailscale, Claude Code and Codex all run on Linux.
 
 **How do I stop everything?** `skillhook service uninstall` removes the service and `skillhook expose off` removes the Funnel mapping. Delete `~/.skillhook` if you also want to drop the configuration, secrets and job history.
+
+**Can I run a plain script instead of an agent?** Yes. In a repository's `skillhook.yaml`, `run: ./scripts/deploy.sh` (or any command) runs it in the repository with the payload on stdin and the `SKILLHOOK_*` variables set; in a `SKILL.md`, `runner: shell` with `shell.command` does the same. Exit code 0 is success, stdout is the result. See [docs/projects.md](docs/projects.md) and [docs/runners.md](docs/runners.md#shell-runner).
 
 **Can several skills run at once?** Two jobs globally by default (`concurrency` in `skillhook.json`) and one per skill (`skillhook.concurrency` in `SKILL.md`); the rest wait in a FIFO queue that survives restarts. The same webhook firing twice with the same payload while the first run is still queued or running does not start a second job; the sender gets the first job's id (`duplicate: true, in_flight: true`).
 

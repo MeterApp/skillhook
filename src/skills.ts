@@ -243,10 +243,25 @@ export function describeAuth(auth: NormalizedAuth): string {
 // Skill loading
 // ---------------------------------------------------------------------------
 
+/** Where a skill came from: its own directory under `<home>/skills`, or a hook in a linked project's `skillhook.yaml`. */
+export type SkillSource =
+  | { type: "home" }
+  | {
+      type: "project";
+      /** The project (repository) directory. */
+      dir: string;
+      /** The `skillhook.yaml` that defines the hook. */
+      file: string;
+      /** How the hook is implemented: a `SKILL.md` in the project, an inline `prompt`, or a shell command (`run`). */
+      kind: "skill" | "prompt" | "run";
+    };
+
 export interface Skill {
   name: string;
   description: string;
+  /** Directory whose files the agent may use (`--add-dir`, `{{skill_dir}}`): the skill directory, or the project directory for `run`/`prompt` hooks. */
   dir: string;
+  /** The file that defines the skill: `SKILL.md`, or the project's `skillhook.yaml` for `run`/`prompt` hooks. */
   file: string;
   /** Markdown instructions (frontmatter removed). */
   body: string;
@@ -259,6 +274,7 @@ export interface Skill {
   /** Set when the file exists but is invalid; the skill is then not routable. */
   error?: string;
   mtimeMs: number;
+  source: SkillSource;
 }
 
 export class SkillError extends Error {
@@ -305,6 +321,7 @@ export function parseSkillDocument(text: string, dir: string): Skill {
     allowedTools,
     enabled: config.enabled !== false,
     mtimeMs: 0,
+    source: { type: "home" },
   };
 }
 
@@ -345,40 +362,6 @@ export function loadSkills(skillsDir: string): SkillLoadResult {
     }
   }
   return result;
-}
-
-/**
- * Cached view of the skills directory. `get()` re-reads a skill whose SKILL.md changed, and
- * `list()` rescans the directory, so edits apply to the next webhook without a restart.
- */
-export class SkillRegistry {
-  private cache = new Map<string, Skill>();
-
-  constructor(public readonly skillsDir: string) {}
-
-  list(): SkillLoadResult {
-    const loaded = loadSkills(this.skillsDir);
-    this.cache = new Map(loaded.skills.map((s) => [s.name, s]));
-    return loaded;
-  }
-
-  get(name: string): Skill | undefined {
-    if (!isValidSkillName(name)) return undefined;
-    const dir = path.join(this.skillsDir, name);
-    const file = skillFile(dir);
-    let mtimeMs: number;
-    try {
-      mtimeMs = statSync(file).mtimeMs;
-    } catch {
-      this.cache.delete(name);
-      return undefined;
-    }
-    const cached = this.cache.get(name);
-    if (cached && cached.mtimeMs === mtimeMs) return cached;
-    const skill = loadSkill(dir); // throws SkillError for an invalid file
-    this.cache.set(name, skill);
-    return skill;
-  }
 }
 
 /** Frontmatter + body for a freshly scaffolded skill. */

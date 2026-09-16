@@ -8,6 +8,12 @@ export function expandTilde(p: string): string {
   return p;
 }
 
+/** Shortens a path under the home directory to `~/…` for display. */
+export function displayPath(p: string, home = homedir()): string {
+  if (p === home) return "~";
+  return p.startsWith(`${home}${path.sep}`) ? `~${p.slice(home.length)}` : p;
+}
+
 export function ensureDir(dir: string): void {
   mkdirSync(dir, { recursive: true });
 }

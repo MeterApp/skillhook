@@ -16,6 +16,7 @@ import { doctorCommand } from "./doctor.js";
 import { configCommand } from "./config.js";
 import { mcpCommand } from "./mcp.js";
 import { updateCommand } from "./update.js";
+import { linkCommand, projectsCommand, unlinkCommand } from "./projects.js";
 import { planUpdateNotice, spawnBackgroundRefresh } from "../update.js";
 import { readJsonFileOr } from "../util.js";
 
@@ -36,6 +37,10 @@ Setup
 Skills (SKILL.md files in ~/.skillhook/skills/<name>/)
   skills list | show <name> | new <name> [options] | add <example> [--as NAME] | examples | validate [name] | path <name>
   secret set <NAME|skill|admin> [--value V|--stdin] | generate <NAME|skill|admin> [--force] | list | unset <NAME>
+
+Projects (a repository's skillhook.yaml: webhook name → shell command, SKILL.md or prompt, version-controlled with the code)
+  link [dir] [--no-secret] | unlink <dir>                 Serve the hooks a repository declares (default dir: .); stop serving them
+  projects [list] | init [dir] [--force]                  List linked projects and their hooks; write a starter skillhook.yaml and link it
 
 Running
   run <skill> [--payload JSON|@file|-] [--header "K: v"]... [--runner R] [--model M] [--effort E] [--cwd DIR] [--wait S] [--dry-run]
@@ -73,6 +78,10 @@ const COMMANDS: Record<string, Command> = {
   mcp: mcpCommand,
   update: updateCommand,
   upgrade: updateCommand,
+  link: linkCommand,
+  unlink: unlinkCommand,
+  projects: projectsCommand,
+  project: projectsCommand,
 };
 
 /** Commands whose output must stay clean, or that handle update checks themselves. */

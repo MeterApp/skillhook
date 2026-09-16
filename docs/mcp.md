@@ -51,7 +51,7 @@ Global options apply to the `mcp` command like any other (`--dir`); the server w
 
 The server announces itself as `skillhook` with these instructions:
 
-> skillhook turns this machine into a webhook endpoint that runs Agent Skills (SKILL.md files) with Claude Code or Codex. Typical flow: skillhook_status → create_skill (or add_example) → set_secret/generate_secret → run_skill to test locally → get_webhook_urls to hand the URL to the sender (Granola, Sentry, GitHub, Zapier…). Skills live in `<home>/skills/<name>/SKILL.md`; the `skillhook:` frontmatter block sets runner, model, auth and filters. Secrets live in `<home>/.env` and are never returned by tools except right after generation. Jobs are directories under `<home>/jobs/<id>` with payload.json, prompt.md, stdout.log and result.md.
+> skillhook turns this machine into a webhook endpoint that runs Agent Skills (SKILL.md files) with Claude Code or Codex. Typical flow: skillhook_status → create_skill (or add_example) → set_secret/generate_secret → run_skill to test locally → get_webhook_urls to hand the URL to the sender (Granola, Sentry, GitHub, Zapier…). Skills live in `<home>/skills/<name>/SKILL.md`; the `skillhook:` frontmatter block sets runner, model, auth and filters. Secrets live in `<home>/.env` and are never returned by tools except right after generation. A repository can declare its own hooks in a version-controlled skillhook.yaml (webhook name → run: shell command | skill: SKILL.md directory | prompt: inline instructions); link_project registers it so the hooks are served, list_projects shows what runs from which webhook. Jobs are directories under `<home>/jobs/<id>` with payload.json, prompt.md, stdout.log and result.md.
 
 Every tool returns a text block (a one-line summary followed by JSON) and the same JSON as `structuredContent`. Failures come back as `isError: true` with `Error: <message>`; nothing throws.
 
@@ -61,14 +61,24 @@ Every tool returns a text block (a one-line summary followed by JSON) and the sa
 
 | Tool | Input | Use it to |
 |---|---|---|
-| `skillhook_status` | none | Get the lay of the land first: version and whether a newer one is on npm (`update`, from the daily check's cache), home, config file, whether a server is running (base URL, queue), public base URL and its source, every skill (runner, model, auth, URL), skill load errors, the 10 most recent jobs, and `defaults`. |
-| `list_skills` | none | List every skill with effective runner/model/effort/cwd/timeout, auth type, whether its secret is configured, `when` conditions and webhook URL. |
+| `skillhook_status` | none | Get the lay of the land first: version and whether a newer one is on npm (`update`, from the daily check's cache), home, config file, whether a server is running (base URL, queue), public base URL and its source, every skill (runner, model, auth, source, URL), skill load errors, linked `projects`, the 10 most recent jobs, and `defaults`. |
+| `list_skills` | none | List every skill and repository hook with effective runner/model/effort/cwd/timeout, auth type, whether its secret is configured, `when` conditions, `source` and webhook URL. |
 | `get_skill` | `name` | Read one skill: the same summary plus the full `SKILL.md` text. |
 | `create_skill` | `name`, `description`, `instructions`; optional `runner`, `model`, `effort`, `auth_type`, `secret_env`, `cwd`, `timeout_seconds`, `when`, `env`, `overwrite` | Write `<home>/skills/<name>/SKILL.md` from structured input. `instructions` is the Markdown body (use `{{payload}}`, `{{payload.some.path}}` or let skillhook append the event block). For `bearer`, `basic` and `hmac` a secret is generated and returned once in `secret`; for provider-signed types the response's `auth_note` says to call `set_secret` with the provider's secret. Returns the webhook URL and whether it is public. |
 | `update_skill_file` | `name`, `content` | Replace a skill's `SKILL.md` after validating the frontmatter (invalid content is rejected and nothing is written). |
 | `validate_skills` | optional `name` | Parse every skill (or one) and report errors plus warnings for `auth: none` and missing secrets. |
 | `list_examples` | none | List the bundled example skills with description, runner and auth type. |
 | `add_example` | `name`, optional `as` | Copy a bundled example into the home (optionally under another name); generates its secret when skillhook manages it. |
+
+### Repositories with a `skillhook.yaml`
+
+| Tool | Input | Use it to |
+|---|---|---|
+| `list_projects` | none | Every linked repository with its hooks (runner, `source.kind` of `run`/`skill`/`prompt`, auth, cwd, URL) and errors: the version-controlled answer to "which skill runs from which webhook". |
+| `link_project` | `dir`; optional `init`, `no_secret` | Register a repository's `skillhook.yaml` (or the file's path) so its hooks are served; the running server needs no restart. `init: true` writes a starter file first when none exists. Returns the hooks with URLs, generated secrets (once) and any hook errors. |
+| `unlink_project` | `dir` | Stop serving a repository's hooks (`404` at once); nothing in the repository is touched. |
+
+`update_skill_file` works for `skill:` hooks (it edits the SKILL.md in the repository) and refuses `run:`/`prompt:` hooks, which live in `skillhook.yaml` itself. See [projects.md](projects.md).
 
 ### Running and testing
 

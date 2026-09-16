@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createServer } from "node:http";
@@ -130,6 +130,73 @@ describe("cli", () => {
     const resume = io();
     expect(await main(["jobs", "resume", job.id, ...dir, "--json"], resume.cli)).toBe(0);
     expect(String(resume.json().resume_command)).toContain("claude --resume");
+  });
+
+  it("links a repository's skillhook.yaml, lists and runs its hooks, and unlinks it", async () => {
+    const repo = path.join(paths.home, "repo");
+    const bare = path.join(paths.home, "bare");
+    mkdirSync(bare, { recursive: true });
+    const nothing = io();
+    expect(await main(["link", bare, ...dir, "--json"], nothing.cli)).toBe(1);
+    expect(String(nothing.json().error)).toContain("skillhook.yaml");
+
+    const init = io();
+    expect(await main(["projects", "init", repo, ...dir, "--json"], init.cli)).toBe(0);
+    const initialized = init.json();
+    expect(initialized.written).toBe(true);
+    expect(existsSync(path.join(repo, "skillhook.yaml"))).toBe(true);
+    expect(((initialized.project as { hooks: { name: string }[] }).hooks).map((h) => h.name)).toEqual(["pull-after-merge"]);
+    expect(JSON.parse(readFileSync(paths.configFile, "utf8")).projects).toEqual([repo]);
+
+    writeFileSync(path.join(repo, "skillhook.yaml"), ["hooks:", "  where:", "    run: pwd", "  greet:", "    prompt: Say hi to {{payload.name}}.", "    model: haiku", ""].join("\n"));
+    const again = io();
+    expect(await main(["link", repo, ...dir, "--json"], again.cli)).toBe(0);
+    const linked = again.json();
+    expect(linked.added).toBe(false);
+    expect((linked.secrets as { env: string; secret: string | null }[]).map((s) => s.env).sort()).toEqual(["SKILLHOOK_SECRET_GREET", "SKILLHOOK_SECRET_WHERE"]);
+    expect(readFileSync(paths.envFile, "utf8")).toContain("SKILLHOOK_SECRET_WHERE=");
+
+    const list = io();
+    expect(await main(["projects", ...dir, "--json"], list.cli)).toBe(0);
+    const projects = list.json().projects as { dir: string; hooks: { name: string; runner: string; source: { kind: string } }[] }[];
+    expect(projects).toHaveLength(1);
+    expect(projects[0]?.hooks.map((h) => [h.name, h.runner, h.source.kind])).toEqual([["where", "shell", "run"], ["greet", "claude", "prompt"]]);
+    const human = io();
+    expect(await main(["projects", ...dir], human.cli)).toBe(0);
+    expect(human.out()).toContain("where");
+    expect(human.out()).toContain("/hooks/greet");
+
+    const skills = io();
+    expect(await main(["skills", "list", ...dir, "--json"], skills.cli)).toBe(0);
+    const where = (skills.json().skills as { name: string; source: { type: string; dir?: string } }[]).find((s) => s.name === "where");
+    expect(where?.source).toMatchObject({ type: "project", dir: repo });
+    const show = io();
+    expect(await main(["skills", "show", "where", ...dir], show.cli)).toBe(0);
+    expect(show.out()).toContain("shell command");
+
+    const run = io();
+    expect(await main(["run", "where", ...dir, "--payload", "{}", "--json"], run.cli)).toBe(0);
+    expect((run.json().job as { result: string; runner: string }).result).toBe(repo);
+    const dry = io();
+    expect(await main(["run", "greet", ...dir, "--payload", '{"name":"Ada"}', "--dry-run", "--json"], dry.cli)).toBe(0);
+    expect(String(dry.json().prompt)).toContain("Say hi to Ada.");
+    expect(dry.json().cwd).toBe(repo);
+
+    const validate = io();
+    expect(await main(["skills", "validate", ...dir, "--json"], validate.cli)).toBe(0);
+    expect(validate.json().valid).toContain("where");
+    const doctor = io({ SKILLHOOK_NO_UPDATE_CHECK: "1" });
+    await main(["doctor", ...dir, "--json"], doctor.cli);
+    expect((doctor.json().checks as { name: string; status: string; detail: string }[]).find((c) => c.name.startsWith("project "))).toMatchObject({ status: "ok", detail: expect.stringContaining("where") });
+
+    const unlink = io();
+    expect(await main(["unlink", repo, ...dir, "--json"], unlink.cli)).toBe(0);
+    expect(unlink.json().removed).toBe(true);
+    expect(JSON.parse(readFileSync(paths.configFile, "utf8")).projects).toBeUndefined();
+    const gone = io();
+    expect(await main(["run", "where", ...dir, "--json"], gone.cli)).toBe(1);
+    const twice = io();
+    expect(await main(["unlink", repo, ...dir, "--json"], twice.cli)).toBe(1);
   });
 
   it("reports failures with a non-zero exit code", async () => {
