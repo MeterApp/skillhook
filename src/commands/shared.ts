@@ -2,7 +2,7 @@ import { loadConfig, type Config } from "../config.js";
 import { loadSecrets, type Secrets } from "../env.js";
 import { JobStore } from "../jobs.js";
 import { resolvePaths, type Paths } from "../paths.js";
-import { SkillRegistry } from "../skills.js";
+import { configProjects, SkillRegistry } from "../registry.js";
 
 export type FlagValue = string | boolean | string[];
 export type Flags = Record<string, FlagValue>;
@@ -159,7 +159,7 @@ export function createCtx(flags: Flags, args: string[], io: CliIO): Ctx {
       return loadSecrets(paths, io.env);
     },
     registry() {
-      registry ??= new SkillRegistry(paths.skillsDir);
+      registry ??= new SkillRegistry(paths.skillsDir, { projects: configProjects(paths) });
       return registry;
     },
     store() {

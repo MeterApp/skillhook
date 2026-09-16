@@ -3,7 +3,8 @@ import { RunnerNameSchema } from "../config.js";
 import { listExamples } from "../examples.js";
 import { addExampleSkill, createOps, createSkill, resolveBaseUrl, webhookUrl } from "../ops.js";
 import { skillSummary } from "../server.js";
-import { AUTH_TYPES, describeAuth, loadSkills, type AuthType } from "../skills.js";
+import { AUTH_TYPES, describeAuth, type AuthType, type Skill } from "../skills.js";
+import { displayPath } from "../util.js";
 import { bool, CommandError, list, num, str, table, UsageError, type Ctx } from "./shared.js";
 
 const USAGE = `Usage:
@@ -49,19 +50,25 @@ function requireName(name: string | undefined): string {
   return name;
 }
 
+/** Where a skill is defined, for tables: the skills directory or the linked project directory. */
+export function sourceLabel(skill: Skill, skillsDir: string): string {
+  return displayPath(skill.source.type === "project" ? skill.source.dir : skillsDir);
+}
+
 async function listSkills(ctx: Ctx): Promise<number> {
   const ops = createOps(ctx.paths, { env: ctx.io.env });
-  const loaded = loadSkills(ctx.paths.skillsDir);
+  const loaded = ops.registry.list();
   const secrets = ops.secrets();
   const summaries = loaded.skills.map((s) => skillSummary(s, ops.config, secrets));
   const { baseUrl, source } = await resolveBaseUrl(ops);
-  const rows = summaries.map((s) => {
+  const rows = loaded.skills.map((skill, i) => {
+    const s = summaries[i] as Record<string, unknown>;
     const auth = s.auth as { type: string; configured: boolean };
-    return [String(s.name), s.enabled ? String(s.runner) : "(disabled)", String(s.model ?? "default"), `${auth.type}${auth.configured ? "" : " (secret missing)"}`, webhookUrl(baseUrl, String(s.name))];
+    return [skill.name, skill.enabled ? String(s.runner) : "(disabled)", String(s.model ?? "default"), `${auth.type}${auth.configured ? "" : " (secret missing)"}`, sourceLabel(skill, ctx.paths.skillsDir), webhookUrl(baseUrl, skill.name)];
   });
   const lines: string[] = [];
-  if (rows.length) lines.push(table(rows, ["skill", "runner", "model", "auth", `url (${source})`]));
-  else lines.push(`No skills in ${ctx.paths.skillsDir}. Create one with: skillhook skills new <name>`);
+  if (rows.length) lines.push(table(rows, ["skill", "runner", "model", "auth", "source", `url (${source})`]));
+  else lines.push(`No skills in ${ctx.paths.skillsDir}. Create one with: skillhook skills new <name>, or link a repository's skillhook.yaml with: skillhook link <dir>`);
   for (const error of loaded.errors) lines.push(`✗ ${error.name}: ${error.error.split("\n")[0]}`);
   ctx.print(lines.join("\n"), { skills: summaries.map((s) => ({ ...s, url: webhookUrl(baseUrl, String(s.name)) })), errors: loaded.errors, base_url: baseUrl, base_url_source: source });
   return loaded.errors.length ? 1 : 0;
@@ -82,6 +89,7 @@ async function showSkill(ctx: Ctx, name: string): Promise<number> {
     `  cwd:     ${summary.cwd}`,
     `  auth:    ${describeAuth(skill.auth)}${(summary.auth as { configured: boolean }).configured ? "" : "  ← secret missing"}`,
     ...(skill.config.when?.length ? [`  when:    ${(summary.when as string[]).join("; ")}`] : []),
+    ...(skill.source.type === "project" ? [`  source:  ${displayPath(skill.source.file)} (hook ${skill.name}, ${skill.source.kind === "run" ? "shell command" : skill.source.kind === "prompt" ? "inline prompt" : `SKILL.md at ${displayPath(skill.dir)}`})`] : []),
     "",
     content,
   ].join("\n");
@@ -136,7 +144,7 @@ function examples(ctx: Ctx): number {
 }
 
 function validate(ctx: Ctx, name?: string): number {
-  const loaded = loadSkills(ctx.paths.skillsDir);
+  const loaded = ctx.registry().list();
   const skills = name ? loaded.skills.filter((s) => s.name === name) : loaded.skills;
   const errors = name ? loaded.errors.filter((e) => e.name === name) : loaded.errors;
   if (name && !skills.length && !errors.length) throw new CommandError(`No skill named "${name}"`);

@@ -2,7 +2,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node
 import path from "node:path";
 import { signRequest } from "./auth.js";
 import { adminRequest, findRunningServer, localBaseUrl } from "./client.js";
-import { loadConfig, type Config, type RunnerName } from "./config.js";
+import { loadConfig, readRawConfig, setConfigValue, type Config, type RunnerName } from "./config.js";
 import { ADMIN_TOKEN_ENV, defaultSecretEnvFor, loadSecrets, readEnvFile, upsertEnvVar, type Secrets } from "./env.js";
 import { findExample } from "./examples.js";
 import { parseFrontmatter, stringifyFrontmatter } from "./frontmatter.js";
@@ -14,9 +14,11 @@ import { redactHeaders, type Trigger, type WebhookEvent } from "./payload.js";
 import { JobQueue } from "./queue.js";
 import { resolveRunSettings } from "./run.js";
 import { publicJob } from "./server.js";
-import { AUTH_TYPES, parseSkillDocument, renderSkillTemplate, SkillRegistry, skillFile, type AuthType, type NormalizedAuth, type Skill } from "./skills.js";
+import { loadProject, PROJECT_FILE_NAMES, renderProjectTemplate, resolveProject, type LoadedProject } from "./projects.js";
+import { configProjects, SkillRegistry } from "./registry.js";
+import { AUTH_TYPES, parseSkillDocument, renderSkillTemplate, skillFile, type AuthType, type NormalizedAuth, type Skill } from "./skills.js";
 import { currentExposures, findTailscale } from "./tailscale.js";
-import { errorMessage, isValidSkillName } from "./util.js";
+import { displayPath, errorMessage, expandTilde, isValidSkillName } from "./util.js";
 
 export interface Ops {
   paths: Paths;
@@ -36,7 +38,7 @@ export function createOps(paths: Paths, options: { env?: NodeJS.ProcessEnv; logg
     config,
     secrets: () => loadSecrets(paths, options.env ?? process.env),
     fileSecrets: () => readEnvFile(paths.envFile),
-    registry: new SkillRegistry(paths.skillsDir),
+    registry: new SkillRegistry(paths.skillsDir, { projects: configProjects(paths) }),
     store: new JobStore(paths.jobsDir, { maxJobs: config.jobs.max_jobs, dedupeWindowSeconds: config.jobs.dedupe_window_seconds }),
     logger: options.logger ?? silentLogger,
   };
@@ -178,6 +180,97 @@ export function addExampleSkill(ops: Ops, exampleName: string, asName = exampleN
   if (!skill) throw new Error(`Example copied but failed to load from ${dir}`);
   const secret = ensureSkillSecret(ops, skill);
   return { skill, file: skillFile(dir), created: true, secret, authNote: authNoteFor(skill, secret) };
+}
+
+// ---------------------------------------------------------------------------
+// Projects: repositories whose skillhook.yaml contributes hooks
+// ---------------------------------------------------------------------------
+
+/** The `projects` entries of skillhook.json as written (no defaults, no resolution). */
+export function linkedProjectEntries(ops: Ops): string[] {
+  const raw = readRawConfig(ops.paths).projects;
+  return Array.isArray(raw) ? raw.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+function sameProject(a: string, b: string): boolean {
+  return path.resolve(expandTilde(a)) === path.resolve(expandTilde(b));
+}
+
+/** Every linked project, loaded. */
+export function listProjects(ops: Ops): LoadedProject[] {
+  return ops.registry.projects();
+}
+
+export interface LinkResult {
+  /** The absolute path written to skillhook.json (a directory, or the YAML file when one was named). */
+  entry: string;
+  project: LoadedProject;
+  /** False when the project was linked before (the entry is left as it was). */
+  added: boolean;
+  /** Secrets generated for hooks whose auth skillhook manages (bearer, basic, generic hmac). */
+  secrets: (SecretResult & { hook: string })[];
+  /** Hooks whose name is already taken by another source, or that failed to compile. */
+  errors: { name: string; error: string }[];
+}
+
+/**
+ * Registers a directory's skillhook.yaml (or the file itself) in `projects` of skillhook.json. The file must
+ * exist and parse; individual hook problems are reported, not fatal. The running server picks the hooks up
+ * without a restart.
+ */
+export function linkProject(ops: Ops, dirOrFile: string, options: { noSecret?: boolean } = {}): LinkResult {
+  const ref = resolveProject(dirOrFile);
+  const entry = ref.file === resolveProject(ref.dir).file ? ref.dir : ref.file;
+  const project = loadProject(entry);
+  if (project.error) throw new Error(project.error);
+  const current = linkedProjectEntries(ops);
+  const added = !current.some((existing) => sameProject(existing, entry));
+  if (added) setConfigValue(ops.paths, "projects", [...current, entry]);
+  const secrets: LinkResult["secrets"] = [];
+  if (!options.noSecret) {
+    for (const hook of project.hooks) {
+      const secret = ensureSkillSecret(ops, hook);
+      if (secret) secrets.push({ ...secret, hook: hook.name });
+    }
+  }
+  const listed = ops.registry.list();
+  const errors = listed.errors.filter((e) => e.dir === project.dir).map((e) => ({ name: e.name, error: e.error }));
+  return { entry, project, added, secrets, errors };
+}
+
+/** Removes a project from `projects`; the hooks stop routing (404) at once. Nothing in the project is touched. */
+export function unlinkProject(ops: Ops, dirOrFile: string): { entry: string; removed: boolean } {
+  const ref = resolveProject(dirOrFile);
+  const current = linkedProjectEntries(ops);
+  const kept = current.filter((existing) => !sameProject(existing, ref.dir) && !sameProject(existing, ref.file));
+  const removed = kept.length !== current.length;
+  if (removed) setConfigValue(ops.paths, "projects", kept.length ? kept : undefined);
+  return { entry: ref.dir, removed };
+}
+
+export interface InitProjectResult {
+  file: string;
+  /** False when the file already existed and `force` was not set (nothing written). */
+  written: boolean;
+  link: LinkResult;
+}
+
+/** Writes a starter skillhook.yaml into a directory (creating it if needed) and links the project. */
+export function initProject(ops: Ops, dir: string, options: { force?: boolean; noSecret?: boolean } = {}): InitProjectResult {
+  const ref = resolveProject(dir);
+  const existing = PROJECT_FILE_NAMES.map((name) => path.join(ref.dir, name)).find((candidate) => existsSync(candidate));
+  const file = existing ?? path.join(ref.dir, PROJECT_FILE_NAMES[0]);
+  const written = !existing || options.force === true;
+  if (written) {
+    mkdirSync(ref.dir, { recursive: true });
+    writeFileSync(file, renderProjectTemplate());
+  }
+  return { file, written, link: linkProject(ops, ref.dir, { noSecret: options.noSecret }) };
+}
+
+/** `~/dev/api (skillhook.yaml)` for humans. */
+export function describeProject(project: LoadedProject): string {
+  return `${displayPath(project.dir)} (${path.basename(project.file)})`;
 }
 
 // ---------------------------------------------------------------------------

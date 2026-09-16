@@ -6,11 +6,11 @@ import { setConfigValue } from "./config.js";
 import { formatDoctor, runDoctor } from "./doctor.js";
 import { listExamples } from "./examples.js";
 import { JOB_ARTIFACTS, JOB_STATUSES, type JobArtifact, type JobStatus } from "./jobs.js";
-import { addExampleSkill, createOps, createSkill, generateSecretFor, publicJob, resolveBaseUrl, runSkillLocally, sendSignedWebhook, setSecret, triggerViaServer, webhookUrl, type Ops } from "./ops.js";
+import { addExampleSkill, createOps, createSkill, generateSecretFor, initProject, linkProject, listProjects, publicJob, resolveBaseUrl, runSkillLocally, sendSignedWebhook, setSecret, triggerViaServer, unlinkProject, webhookUrl, type LinkResult, type Ops } from "./ops.js";
 import type { Paths } from "./paths.js";
 import { skillSummary } from "./server.js";
 import { installService, readServiceLog, restartService, serviceStatus, uninstallService } from "./service.js";
-import { AUTH_TYPES, loadSkills, parseSkillDocument, type AuthType } from "./skills.js";
+import { AUTH_TYPES, parseSkillDocument, type AuthType } from "./skills.js";
 import { currentExposures, disableExposure, enableExposure, tailscaleStatus } from "./tailscale.js";
 import { findRunningServer } from "./client.js";
 import { updateStatusFromCache } from "./update.js";
@@ -20,6 +20,7 @@ import { VERSION } from "./version.js";
 export const MCP_INSTRUCTIONS = `skillhook turns this machine into a webhook endpoint that runs Agent Skills (SKILL.md files) with Claude Code or Codex.
 Typical flow: skillhook_status → create_skill (or add_example) → set_secret/generate_secret → run_skill to test locally → get_webhook_urls to hand the URL to the sender (Granola, Sentry, GitHub, Zapier…).
 Skills live in <home>/skills/<name>/SKILL.md; the \`skillhook:\` frontmatter block sets runner, model, auth and filters. Secrets live in <home>/.env and are never returned by tools except right after generation.
+A repository can declare its own hooks in a version-controlled skillhook.yaml (webhook name → run: shell command | skill: SKILL.md directory | prompt: inline instructions); link_project registers it so the hooks are served, list_projects shows what runs from which webhook.
 Jobs are directories under <home>/jobs/<id> with payload.json, prompt.md, stdout.log and result.md.`;
 
 type ToolResult = { content: { type: "text"; text: string }[]; structuredContent?: Record<string, unknown>; isError?: boolean };
@@ -58,7 +59,7 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
     wrap(async () => {
       const o = ops();
       const running = await findRunningServer(paths);
-      const loaded = loadSkills(paths.skillsDir);
+      const loaded = o.registry.list();
       const { baseUrl, source } = await resolveBaseUrl(o);
       const jobs = o.store.list({ limit: 10 });
       const update = updateStatusFromCache(paths);
@@ -71,12 +72,13 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
           server: running ? { running: true, base_url: running.baseUrl, version: running.health.version, queue: running.health.queue } : { running: false, hint: "skillhook serve  (or: skillhook service install)" },
           public_base_url: source === "local" ? null : baseUrl,
           public_url_source: source,
-          skills: loaded.skills.map((s) => ({ name: s.name, runner: s.config.runner ?? o.config.defaults.runner, model: s.config.model ?? o.config.defaults.model ?? null, auth: s.auth.type, url: webhookUrl(baseUrl, s.name) })),
+          skills: loaded.skills.map((s) => ({ name: s.name, runner: s.config.runner ?? o.config.defaults.runner, model: s.config.model ?? o.config.defaults.model ?? null, auth: s.auth.type, source: s.source, url: webhookUrl(baseUrl, s.name) })),
           skill_errors: loaded.errors,
+          projects: loaded.projects.map((p) => ({ dir: p.dir, file: p.file, hooks: p.hooks.map((h) => h.name), error: p.error ?? null, errors: p.errors })),
           recent_jobs: jobs.map((j) => ({ id: j.id, skill: j.skill, status: j.status, created_at: j.created_at, error: j.error ?? null })),
           defaults: o.config.defaults,
         },
-        `skillhook ${VERSION} at ${paths.home}; server ${running ? "running" : "not running"}; ${loaded.skills.length} skill(s).${update.available ? ` Update ${update.latest} is available (skillhook update --install).` : ""}`,
+        `skillhook ${VERSION} at ${paths.home}; server ${running ? "running" : "not running"}; ${loaded.skills.length} skill(s), ${loaded.projects.length} linked project(s).${update.available ? ` Update ${update.latest} is available (skillhook update --install).` : ""}`,
       );
     }),
   );
@@ -86,7 +88,7 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
     { title: "List skills", description: "Lists every skill with runner, model, auth type, whether its secret is configured, and its webhook URL.", inputSchema: z.object({}) },
     wrap(async () => {
       const o = ops();
-      const loaded = loadSkills(paths.skillsDir);
+      const loaded = o.registry.list();
       const secrets = o.secrets();
       const { baseUrl } = await resolveBaseUrl(o);
       return ok({ skills: loaded.skills.map((s) => ({ ...skillSummary(s, o.config, secrets), url: webhookUrl(baseUrl, s.name) })), errors: loaded.errors });
@@ -139,6 +141,7 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
     wrap(async ({ name, content }) => {
       const o = ops();
       const skill = skillOf(o, name);
+      if (skill.source.type === "project" && skill.source.kind !== "skill") throw new Error(`"${name}" is a ${skill.source.kind === "run" ? "shell command" : "prompt"} hook defined in ${skill.source.file}; edit that file (it is version-controlled with the project)`);
       parseSkillDocument(content, skill.dir);
       writeFileSync(skill.file, content);
       return ok({ ok: true, file: skill.file, ...skillSummary(o.registry.get(name) ?? skill, o.config, o.secrets()) });
@@ -150,7 +153,7 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
     { title: "Validate skills", description: "Parses every SKILL.md (or one) and reports errors and missing secrets.", inputSchema: z.object({ name: z.string().optional() }) },
     wrap(async ({ name }) => {
       const o = ops();
-      const loaded = loadSkills(paths.skillsDir);
+      const loaded = o.registry.list();
       const secrets = o.secrets();
       const skills = name ? loaded.skills.filter((s) => s.name === name) : loaded.skills;
       const errors = name ? loaded.errors.filter((e) => e.name === name) : loaded.errors;
@@ -267,7 +270,7 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
     wrap(async ({ skill }) => {
       const o = ops();
       const { baseUrl, source } = await resolveBaseUrl(o);
-      const names = skill ? [skillOf(o, skill).name] : loadSkills(paths.skillsDir).skills.map((s) => s.name);
+      const names = skill ? [skillOf(o, skill).name] : o.registry.list().skills.map((s) => s.name);
       return ok({ base_url: baseUrl, source, public: source !== "local", urls: Object.fromEntries(names.map((n) => [n, webhookUrl(baseUrl, n)])) }, source === "local" ? "No public URL yet: call expose with mode funnel." : undefined);
     }),
   );
@@ -286,7 +289,7 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
       }
       const result = await enableExposure(mode, o.config.port);
       if (result.ok && result.url) setConfigValue(paths, "public_url", result.url);
-      const skills = loadSkills(paths.skillsDir).skills.map((s) => s.name);
+      const skills = o.registry.list().skills.map((s) => s.name);
       return ok({ ok: result.ok, mode, url: result.url ?? null, approval_url: result.approvalUrl ?? null, output: result.output, webhooks: result.url ? Object.fromEntries(skills.map((n) => [n, webhookUrl(result.url as string, n)])) : {} }, result.ok ? `Exposed at ${result.url}` : result.approvalUrl ? `Funnel needs approval: ${result.approvalUrl}` : "Failed");
     }),
   );
@@ -316,6 +319,54 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
     wrap(async () => {
       const report = await runDoctor(paths);
       return ok({ ...report }, formatDoctor(report));
+    }),
+  );
+
+  const linkResult = (o: Ops, result: LinkResult, baseUrl: string) => ({
+    ok: result.errors.length === 0,
+    entry: result.entry,
+    added: result.added,
+    project: { dir: result.project.dir, file: result.project.file, hooks: result.project.hooks.map((h) => ({ ...skillSummary(h, o.config, o.secrets()), url: webhookUrl(baseUrl, h.name) })), errors: result.project.errors },
+    secrets: result.secrets.map((s) => ({ hook: s.hook, env: s.env, secret: s.generated ?? null, existed: s.existed })),
+    errors: result.errors,
+  });
+
+  server.registerTool(
+    "list_projects",
+    { title: "List linked projects", description: "Repositories whose skillhook.yaml is served by this machine: directory, file, and each hook with its runner, kind (run/skill/prompt), auth, cwd and webhook URL. This is the version-controlled answer to 'which skill runs from which webhook'.", inputSchema: z.object({}) },
+    wrap(async () => {
+      const o = ops();
+      const { baseUrl } = await resolveBaseUrl(o);
+      const secrets = o.secrets();
+      return ok({ projects: listProjects(o).map((p) => ({ dir: p.dir, file: p.file, error: p.error ?? null, hooks: p.hooks.map((h) => ({ ...skillSummary(h, o.config, secrets), url: webhookUrl(baseUrl, h.name) })), errors: p.errors })) });
+    }),
+  );
+
+  server.registerTool(
+    "link_project",
+    {
+      title: "Link project",
+      description: "Registers a repository's skillhook.yaml (dir, or the YAML file itself) in skillhook.json so its hooks are served at /hooks/<name>; the running server picks them up without a restart. With init=true a starter skillhook.yaml is written first when none exists (a `run: git pull --ff-only` hook for merged GitHub pull requests). Secrets skillhook manages (bearer/basic/hmac) are generated and returned once; provider-signed hooks need set_secret afterwards.",
+      inputSchema: z.object({ dir: z.string().describe("repository directory (or path to its skillhook.yaml)"), init: z.boolean().optional().describe("write a starter skillhook.yaml when the directory has none"), no_secret: z.boolean().optional() }),
+    },
+    wrap(async ({ dir, init, no_secret }) => {
+      const o = ops();
+      const { baseUrl } = await resolveBaseUrl(o);
+      if (init) {
+        const result = initProject(o, dir, { noSecret: no_secret });
+        return ok({ file: result.file, written: result.written, ...linkResult(o, result.link, baseUrl) }, `${result.written ? `Wrote ${result.file} and linked` : "Linked"} ${result.link.project.dir} (${result.link.project.hooks.length} hook(s)).`);
+      }
+      const result = linkProject(o, dir, { noSecret: no_secret });
+      return ok(linkResult(o, result, baseUrl), `${result.added ? "Linked" : "Already linked"} ${result.project.dir}: ${result.project.hooks.map((h) => h.name).join(", ") || "no hooks"}.`);
+    }),
+  );
+
+  server.registerTool(
+    "unlink_project",
+    { title: "Unlink project", description: "Stops serving a repository's hooks (they answer 404 at once). The repository and its skillhook.yaml are not touched.", inputSchema: z.object({ dir: z.string() }) },
+    wrap(async ({ dir }) => {
+      const result = unlinkProject(ops(), dir);
+      return ok({ ok: result.removed, ...result }, result.removed ? `Unlinked ${result.entry}.` : `${result.entry} was not linked.`);
     }),
   );
 

@@ -141,7 +141,7 @@ skillhook jobs prune [--keep N]
 
 ## Configuration
 
-`skillhook.json` is validated strictly: unknown keys and wrong types are errors, and `config set` refuses to write an invalid file. `skillhook config show` prints the effective configuration with defaults applied; `config get <dotted.key>`; `config set <dotted.key> <value>` (values that look like JSON, such as `4`, `true`, `["a","b"]`, `{"k":1}`, are parsed, everything else is a string); `config unset <dotted.key>`; `config path`. Restart the server after changing it.
+`skillhook.json` is validated strictly: unknown keys and wrong types are errors, and `config set` refuses to write an invalid file. `skillhook config show` prints the effective configuration with defaults applied; `config get <dotted.key>`; `config set <dotted.key> <value>` (values that look like JSON, such as `4`, `true`, `["a","b"]`, `{"k":1}`, are parsed, everything else is a string); `config unset <dotted.key>`; `config path`. Restart the server after changing it, except for `projects`, which the server re-reads on its own.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -173,6 +173,7 @@ skillhook jobs prune [--keep N]
 | `jobs.dedupe_in_flight` | `true` | Fold a delivery identical to a queued or running job of the same skill into that job; skills override with `dedupe.in_flight`. |
 | `jobs.inline_payload_max_bytes` | `200000` | Payload size inlined in prompts. |
 | `env_passthrough` | `[]` | Extra env var names copied into every run. |
+| `projects` | `[]` | Linked repositories (absolute paths, `~` allowed; a directory holding `skillhook.yaml`, or the file itself). Written by `skillhook link` / `unlink`; re-read without a restart. See [projects.md](projects.md). |
 | `log_level` | `"info"` | `debug`, `info`, `warn`, `error`. |
 | `update_check` | `true` | Daily check of the npm registry for a newer skillhook (`SKILLHOOK_NO_UPDATE_CHECK=1` and `CI` disable it as well). |
 
@@ -202,7 +203,8 @@ skillhook config set defaults.model sonnet
 | `secrets` | `.env` has mode 600 | `.env` missing or another mode | |
 | `admin token` | `SKILLHOOK_ADMIN_TOKEN` set | unset (admin API localhost-only) | |
 | `skills` | all `SKILL.md` files parse | no skills yet | one or more invalid |
-| `skill <name>` | runner, model, auth type and cwd | `auth: none` | secret missing (`webhooks will get 503`); cwd does not exist |
+| `skill <name>` | runner, model, auth type and cwd (and the `skillhook.yaml` it comes from) | `auth: none` | secret missing (`webhooks will get 503`); cwd does not exist |
+| `project <dir>` | the linked repository's `skillhook.yaml` parses; hooks listed | | file missing or invalid; a hook that does not compile (`skip` when nothing is linked) |
 | `claude` / `codex` | CLI found and logged in, or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` present | | not on PATH; not logged in (checked only for runners a skill or the default uses) |
 | `tailscale` | the configured port is exposed via Funnel or Serve (URL shown) | CLI missing; not running; port not exposed | |
 | `public url` | `<public_url>/health` answers | did not answer (certificate still provisioning, or the server is down) | |
@@ -259,7 +261,7 @@ The env var named by the skill's `secret_env` (default `SKILLHOOK_SECRET_<NAME>`
 
 ### `404 unknown_skill`
 
-The directory name and `name:` differ, the name has uppercase letters or underscores, the directory starts with `.` or `_`, the skill has `enabled: false`, or `SKILL.md` is invalid (then the server also logs `skill failed to load` and answers `500 invalid_skill`). `skillhook skills validate` shows the reason.
+The directory name and `name:` differ, the name has uppercase letters or underscores, the directory starts with `.` or `_`, the skill has `enabled: false`, or `SKILL.md` is invalid (then the server also logs `skill failed to load` and answers `500 invalid_skill`). For a repository hook: the repository is not linked on this machine, the hook was removed from `skillhook.yaml`, or its name is shadowed by an earlier definition. `skillhook skills validate` and `skillhook projects` show the reason.
 
 ### Job ends as `interrupted` after a restart
 
