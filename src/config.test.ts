@@ -11,6 +11,8 @@ describe("config", () => {
     expect(config.defaults.runner).toBe("claude");
     expect(config.runners.claude.permission_mode).toBe("bypassPermissions");
     expect(config.runners.codex.sandbox).toBe("workspace-write");
+    expect(config.jobs.dedupe_in_flight).toBe(true);
+    expect(config.update_check).toBe(true);
     expect(defaultConfig()).toEqual(config);
   });
 

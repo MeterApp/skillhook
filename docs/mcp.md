@@ -61,7 +61,7 @@ Every tool returns a text block (a one-line summary followed by JSON) and the sa
 
 | Tool | Input | Use it to |
 |---|---|---|
-| `skillhook_status` | none | Get the lay of the land first: version, home, config file, whether a server is running (base URL, queue), public base URL and its source, every skill (runner, model, auth, URL), skill load errors, the 10 most recent jobs, and `defaults`. |
+| `skillhook_status` | none | Get the lay of the land first: version and whether a newer one is on npm (`update`, from the daily check's cache), home, config file, whether a server is running (base URL, queue), public base URL and its source, every skill (runner, model, auth, URL), skill load errors, the 10 most recent jobs, and `defaults`. |
 | `list_skills` | none | List every skill with effective runner/model/effort/cwd/timeout, auth type, whether its secret is configured, `when` conditions and webhook URL. |
 | `get_skill` | `name` | Read one skill: the same summary plus the full `SKILL.md` text. |
 | `create_skill` | `name`, `description`, `instructions`; optional `runner`, `model`, `effort`, `auth_type`, `secret_env`, `cwd`, `timeout_seconds`, `when`, `env`, `overwrite` | Write `<home>/skills/<name>/SKILL.md` from structured input. `instructions` is the Markdown body (use `{{payload}}`, `{{payload.some.path}}` or let skillhook append the event block). For `bearer`, `basic` and `hmac` a secret is generated and returned once in `secret`; for provider-signed types the response's `auth_note` says to call `set_secret` with the provider's secret. Returns the webhook URL and whether it is public. |

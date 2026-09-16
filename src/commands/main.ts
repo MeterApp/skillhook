@@ -15,6 +15,9 @@ import { serviceCommand } from "./service.js";
 import { doctorCommand } from "./doctor.js";
 import { configCommand } from "./config.js";
 import { mcpCommand } from "./mcp.js";
+import { updateCommand } from "./update.js";
+import { planUpdateNotice, spawnBackgroundRefresh } from "../update.js";
+import { readJsonFileOr } from "../util.js";
 
 export const HELP = `skillhook ${VERSION} — webhook in, agent out.
 
@@ -28,6 +31,7 @@ Setup
   expose tailscale [--serve] [--port N] | status | off     Permanent HTTPS URL via Tailscale Funnel (or tailnet-only Serve)
   expose cloudflare | ngrok                                Recipes for other tunnels
   url [skill] [--public|--local]                           Print webhook URLs
+  update [--install]                                       Check npm for a newer skillhook; --install upgrades and restarts the service
 
 Skills (SKILL.md files in ~/.skillhook/skills/<name>/)
   skills list | show <name> | new <name> [options] | add <example> [--as NAME] | examples | validate [name] | path <name>
@@ -67,7 +71,34 @@ const COMMANDS: Record<string, Command> = {
   doctor: doctorCommand,
   config: configCommand,
   mcp: mcpCommand,
+  update: updateCommand,
+  upgrade: updateCommand,
 };
+
+/** Commands whose output must stay clean, or that handle update checks themselves. */
+const NO_UPDATE_NOTICE = new Set(["serve", "mcp", "update", "upgrade", "version", "help"]);
+
+export function nodeVersionProblem(version: string = process.versions.node): string | undefined {
+  const major = Number(version.split(".")[0]);
+  if (major >= 22) return undefined;
+  return `skillhook needs Node 22 or newer; this is Node ${version}. Install a current Node from https://nodejs.org (or with your version manager) and run the command again.`;
+}
+
+/**
+ * Once a day, in the background, ask npm whether a newer skillhook exists; when one is already known, say so on stderr
+ * after the command's own output. Only for humans at a terminal: never with --json, never in CI, never for scripts.
+ */
+function noticeUpdate(ctx: Ctx, command: string): void {
+  if (!ctx.io.isTTY || ctx.json || NO_UPDATE_NOTICE.has(command)) return;
+  try {
+    const rawConfig = readJsonFileOr<{ update_check?: boolean }>(ctx.paths.configFile, {});
+    const plan = planUpdateNotice(ctx.paths, { env: ctx.io.env, config: rawConfig });
+    if (plan.notice) ctx.io.stderr(`\n${plan.notice}\n`);
+    if (plan.stale) spawnBackgroundRefresh(ctx.paths, ctx.io.env);
+  } catch {
+    /* a failed update check never fails the command */
+  }
+}
 
 export function defaultIO(): CliIO {
   return {
@@ -79,6 +110,11 @@ export function defaultIO(): CliIO {
 }
 
 export async function main(argv: string[], io: CliIO = defaultIO()): Promise<number> {
+  const nodeProblem = nodeVersionProblem();
+  if (nodeProblem) {
+    io.stderr(`${nodeProblem}\n`);
+    return 1;
+  }
   const { flags, positionals } = parseArgs(argv);
   const [name, ...rest] = positionals;
   if (flags.version === true || flags.v === true || name === "version") {
@@ -97,6 +133,7 @@ export async function main(argv: string[], io: CliIO = defaultIO()): Promise<num
   const ctx = createCtx(flags, rest, io);
   try {
     const code = await command(ctx);
+    noticeUpdate(ctx, name);
     return typeof code === "number" ? code : 0;
   } catch (error) {
     if (error instanceof UsageError) {

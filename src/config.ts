@@ -78,6 +78,8 @@ export const ConfigSchema = z
       .object({
         max_jobs: z.number().int().positive().default(1000),
         dedupe_window_seconds: z.number().int().positive().default(86_400),
+        /** Do not queue a webhook whose payload and query string are identical to a job of the same skill that is still queued or running; the response points at that job. `dedupe.in_flight` in a skill overrides it. */
+        dedupe_in_flight: z.boolean().default(true),
         /** Payloads larger than this are truncated in the prompt (the full file is always on disk). */
         inline_payload_max_bytes: z.number().int().positive().default(200_000),
       })
@@ -86,6 +88,8 @@ export const ConfigSchema = z
     /** Extra env var names copied into every agent run (on top of the runner auth vars). */
     env_passthrough: z.array(z.string()).default([]),
     log_level: z.enum(["debug", "info", "warn", "error"]).default("info"),
+    /** Ask the npm registry once a day whether a newer skillhook exists and say so in CLI output, `doctor` and the server log. `SKILLHOOK_NO_UPDATE_CHECK=1` and `CI` disable it too. */
+    update_check: z.boolean().default(true),
   })
   .strict();
 
