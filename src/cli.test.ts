@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { main } from "./commands/main.js";
+import { createServer } from "node:http";
+import { main, nodeVersionProblem } from "./commands/main.js";
 import type { CliIO } from "./commands/shared.js";
 import { FAKE_CLAUDE, tempHome } from "./test-support/helpers.js";
 
@@ -23,6 +24,9 @@ describe("cli", () => {
     const v = io();
     expect(await main(["--version"], v.cli)).toBe(0);
     expect(v.out().trim()).toMatch(/^\d+\.\d+\.\d+/);
+    expect(nodeVersionProblem("20.19.0")).toContain("Node 22 or newer");
+    expect(nodeVersionProblem("22.0.0")).toBeUndefined();
+    expect(nodeVersionProblem()).toBeUndefined();
     const bad = io();
     expect(await main(["bogus"], bad.cli)).toBe(1);
   });
@@ -138,7 +142,7 @@ describe("cli", () => {
   });
 
   it("runs doctor, url and expose status without crashing", async () => {
-    const d = io();
+    const d = io({ SKILLHOOK_NO_UPDATE_CHECK: "1" });
     const code = await main(["doctor", ...dir, "--json"], d.cli);
     expect([0, 1]).toContain(code);
     expect(Array.isArray(d.json().checks)).toBe(true);
@@ -150,5 +154,48 @@ describe("cli", () => {
     const m = io();
     expect(await main(["mcp", "--print-config", ...dir, "--json"], m.cli)).toBe(0);
     expect(String(m.json().claude_code)).toContain("claude mcp add skillhook");
+    const checks = d.json().checks as { name: string; status: string; detail: string }[];
+    expect(checks.find((c) => c.name === "version")).toMatchObject({ status: "skip" });
+    expect(checks.find((c) => c.name === "version")?.detail).toContain("disabled");
+  });
+
+  it("checks for updates against the registry and never installs from a source checkout", async () => {
+    const newer = `${Number(process.env.npm_package_version?.split(".")[0] ?? 99) + 99}.0.0`;
+    const registry = createServer((req, res) => {
+      res.writeHead(req.url === "/skillhook/latest" ? 200 : 404, { "content-type": "application/json" });
+      res.end(JSON.stringify(req.url === "/skillhook/latest" ? { version: newer } : { error: "Not found" }));
+    });
+    await new Promise<void>((resolve) => registry.listen(0, "127.0.0.1", () => resolve()));
+    const address = registry.address();
+    const env = { SKILLHOOK_NPM_REGISTRY: `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}` };
+    try {
+      const check = io(env);
+      expect(await main(["update", ...dir, "--json"], check.cli)).toBe(0);
+      expect(check.json()).toMatchObject({ ok: true, latest: newer, available: true, cached: false, install: { method: "source" } });
+      expect(existsSync(path.join(paths.home, "update-check.json"))).toBe(true);
+      const human = io(env);
+      expect(await main(["update", ...dir], human.cli)).toBe(0);
+      expect(human.out()).toContain(`Update available: skillhook`);
+      expect(human.out()).toContain("git pull");
+      const install = io(env);
+      expect(await main(["update", ...dir, "--install", "--json"], install.cli)).toBe(1);
+      expect(String(install.json().error)).toContain("source checkout");
+      const quiet = io(env);
+      expect(await main(["update", "--refresh", ...dir], quiet.cli)).toBe(0);
+      expect(quiet.out()).toBe("");
+      // The doctor consults the registry too, and points at the release notes.
+      const d = io(env);
+      await main(["doctor", ...dir, "--json"], d.cli);
+      expect((d.json().checks as { name: string; status: string; hint?: string }[]).find((c) => c.name === "version")).toMatchObject({ status: "warn", hint: expect.stringContaining(`releases/tag/v${newer}`) });
+    } finally {
+      registry.close();
+    }
+    const offline = io({ SKILLHOOK_NPM_REGISTRY: "http://127.0.0.1:1" });
+    expect(await main(["update", ...dir, "--json"], offline.cli)).toBe(0);
+    expect(offline.json()).toMatchObject({ latest: newer, cached: true });
+    const fresh = io({ SKILLHOOK_NPM_REGISTRY: "http://127.0.0.1:1", SKILLHOOK_HOME: paths.home });
+    const emptyHome = ["--dir", path.join(paths.home, "empty-home")];
+    expect(await main(["update", ...emptyHome, "--json"], fresh.cli)).toBe(1);
+    expect(fresh.json().ok).toBe(false);
   });
 });

@@ -1,13 +1,13 @@
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { unlinkSync } from "node:fs";
-import { safeEqual, verifyRequest, type InboundRequest } from "./auth.js";
+import { parseAuthorizationScheme, safeEqual, verifyRequest, type InboundRequest } from "./auth.js";
 import type { Config } from "./config.js";
 import { ADMIN_TOKEN_ENV, type Secrets } from "./env.js";
 import { describeCondition, evaluateConditions } from "./filters.js";
 import { newJobId } from "./ids.js";
 import type { JobRecord, JobStatus, JobStore } from "./jobs.js";
 import type { Logger } from "./logger.js";
-import { parseBody, redactHeaders, type Trigger, type WebhookEvent } from "./payload.js";
+import { deliveryFingerprint, parseBody, redactHeaders, type Trigger, type WebhookEvent } from "./payload.js";
 import type { JobQueue } from "./queue.js";
 import { resolveRunSettings } from "./run.js";
 import { describeAuth, SkillError, type Skill, type SkillRegistry } from "./skills.js";
@@ -169,7 +169,7 @@ export function createServer(deps: ServerDeps): Server {
   /** Admin = a valid admin token, or a direct loopback connection with no proxy headers and no token (the CLI on this machine). */
   function isAdmin(headers: Record<string, string>, req: IncomingMessage, viaProxy: boolean): boolean {
     const token = deps.secrets()[ADMIN_TOKEN_ENV];
-    const presented = /^\s*Bearer\s+(.+?)\s*$/i.exec(headers.authorization ?? "")?.[1];
+    const presented = parseAuthorizationScheme(headers.authorization, "Bearer");
     if (token && presented && safeEqual(presented, token)) return true;
     return !viaProxy && isLoopback(req.socket.remoteAddress) && !presented;
   }
@@ -242,8 +242,21 @@ export function createServer(deps: ServerDeps): Server {
       return send(res, 200, { ok: true, skipped: true, reason: `${describeCondition(filter.condition)}: ${filter.reason}` });
     }
 
-    const job = createJob({ skill, trigger: "webhook", payload, kind, rawBody, headers, query, ip, method: req.method ?? "POST", path: url.pathname, deliveryId });
     const wait = parseWait(url, headers, config.max_wait_seconds);
+    // Same skill, same payload and query, still queued or running: point the sender at that job instead of running it twice.
+    const fingerprint = (skill.config.dedupe?.in_flight ?? config.jobs.dedupe_in_flight) ? deliveryFingerprint({ kind, payload, rawBody, query }) : undefined;
+    if (fingerprint) {
+      const inFlight = queue.findInFlight(skill.name, fingerprint);
+      if (inFlight) {
+        const current = store.get(inFlight.id) ?? inFlight;
+        logger.info("identical delivery already in flight; not queued again", { skill: skill.name, job: current.id, status: current.status, ip, delivery_id: deliveryId });
+        if (deliveryId) store.rememberDelivery(skill.name, deliveryId, current.id);
+        if (wait > 0) return respondWithJob(res, current, wait, { duplicate: true, in_flight: true });
+        return send(res, 200, { ok: true, duplicate: true, in_flight: true, job_id: current.id, status: current.status, status_url: `/jobs/${current.id}` });
+      }
+    }
+
+    const job = createJob({ skill, trigger: "webhook", payload, kind, rawBody, headers, query, ip, method: req.method ?? "POST", path: url.pathname, deliveryId, fingerprint });
     await respondWithJob(res, job, wait);
   }
 
@@ -259,6 +272,7 @@ export function createServer(deps: ServerDeps): Server {
     method: string;
     path: string;
     deliveryId?: string;
+    fingerprint?: string;
     overrides?: { runner?: RunnerName; model?: string; effort?: string };
   }
 
@@ -290,6 +304,7 @@ export function createServer(deps: ServerDeps): Server {
       effort: settings.effort,
       source: { ip: args.ip, method: args.method, path: args.path, content_type: event.content_type, user_agent: args.headers["user-agent"] },
       delivery_id: args.deliveryId,
+      fingerprint: args.fingerprint,
       event,
       rawBody: args.rawBody,
     });
@@ -299,16 +314,16 @@ export function createServer(deps: ServerDeps): Server {
     return job;
   }
 
-  async function respondWithJob(res: ServerResponse, job: JobRecord, wait: number): Promise<void> {
+  async function respondWithJob(res: ServerResponse, job: JobRecord, wait: number, extra: Record<string, unknown> = {}): Promise<void> {
     if (wait > 0) {
       const finished = await queue.waitFor(job.id, wait * 1000);
       if (finished && finished.status !== "queued" && finished.status !== "running") {
-        return send(res, 200, { ok: finished.status === "succeeded", job_id: finished.id, status: finished.status, result: finished.result ?? null, error: finished.error ?? null, job: publicJob(finished) });
+        return send(res, 200, { ok: finished.status === "succeeded", ...extra, job_id: finished.id, status: finished.status, result: finished.result ?? null, error: finished.error ?? null, job: publicJob(finished) });
       }
       const current = finished ?? job;
-      return send(res, 202, { ok: true, job_id: current.id, status: current.status, status_url: `/jobs/${current.id}`, note: `still ${current.status} after ${wait}s` });
+      return send(res, 202, { ok: true, ...extra, job_id: current.id, status: current.status, status_url: `/jobs/${current.id}`, note: `still ${current.status} after ${wait}s` });
     }
-    send(res, 202, { ok: true, job_id: job.id, status: "queued", skill: job.skill, status_url: `/jobs/${job.id}` });
+    send(res, 202, { ok: true, ...extra, job_id: job.id, status: "queued", skill: job.skill, status_url: `/jobs/${job.id}` });
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {

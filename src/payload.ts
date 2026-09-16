@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export type BodyKind = "json" | "form" | "text" | "empty" | "binary";
 
 export interface ParsedBody {
@@ -75,6 +77,42 @@ export function redactHeaders(headers: Record<string, string>): Record<string, s
     out[name] = value;
   }
   return out;
+}
+
+/** JSON with object keys sorted at every level, so two payloads that mean the same thing serialize the same way. */
+export function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.keys(value as Record<string, unknown>)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`);
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+export interface FingerprintInput {
+  kind: BodyKind;
+  payload: unknown;
+  /** Needed for binary bodies, whose parsed payload only records the size. */
+  rawBody?: Buffer;
+  /** Query parameters that reach the skill (`token` and `wait` already removed). */
+  query?: Record<string, string>;
+}
+
+/**
+ * SHA-256 over what the skill would actually see: the parsed payload (key order and whitespace ignored for JSON and
+ * form bodies), plus the query string. Headers are left out on purpose: delivery ids, timestamps and signatures differ
+ * on every retry of the same event.
+ */
+export function deliveryFingerprint(input: FingerprintInput): string {
+  const hash = createHash("sha256");
+  hash.update(`${input.kind}\n`);
+  hash.update(canonicalJson(input.query ?? {}));
+  hash.update("\n");
+  if (input.kind === "binary" && input.rawBody) hash.update(input.rawBody);
+  else hash.update(canonicalJson(input.payload ?? null));
+  return hash.digest("hex");
 }
 
 export type Trigger = "webhook" | "cli" | "mcp" | "api";

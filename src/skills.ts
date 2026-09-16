@@ -97,7 +97,17 @@ export const SkillhookBlockSchema = z
     env: z.array(z.string()).optional(),
     /** How many jobs of this skill may run at once (default 1). */
     concurrency: z.number().int().min(1).optional(),
-    dedupe: z.object({ path: z.string().optional(), header: z.string().optional() }).strict().optional(),
+    dedupe: z
+      .object({
+        /** Dotted path into the payload whose value identifies the delivery (wins over `header` and the provider header). */
+        path: z.string().optional(),
+        /** Request header whose value identifies the delivery. */
+        header: z.string().optional(),
+        /** Ignore a delivery whose payload and query string equal those of a job that is still queued or running (default: `jobs.dedupe_in_flight`, true). */
+        in_flight: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
     claude: z
       .object({
         permission_mode: ClaudePermissionModeSchema.optional(),

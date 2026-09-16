@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ipMatches, signRequest, standardWebhooksKey, verifyRequest, type InboundRequest } from "./auth.js";
+import { ipMatches, parseAuthorizationScheme, signRequest, standardWebhooksKey, verifyRequest, type InboundRequest } from "./auth.js";
 import { normalizeAuth, type AuthConfig } from "./skills.js";
 
 const body = Buffer.from(JSON.stringify({ hello: "world", n: 1 }));
@@ -42,6 +42,26 @@ describe("verifyRequest", () => {
     const { normalized, headers } = roundTrip({ type: "basic" });
     expect(verifyRequest(normalized, secrets, request(headers)).ok).toBe(true);
     expect(verifyRequest(normalized, secrets, request({ Authorization: `Basic ${Buffer.from("wrong").toString("base64")}` })).ok).toBe(false);
+    expect(verifyRequest(normalized, secrets, request({ Authorization: "Basic not base64!" }))).toMatchObject({ ok: false, code: "missing_credentials" });
+    expect(verifyRequest(normalized, secrets, request({ Authorization: "Bearer abcd" }))).toMatchObject({ ok: false, code: "missing_credentials" });
+  });
+
+  it("parses authorization schemes without regex backtracking", () => {
+    expect(parseAuthorizationScheme("Bearer tok", "Bearer")).toBe("tok");
+    expect(parseAuthorizationScheme("  bearer\t tok  ", "Bearer")).toBe("tok");
+    expect(parseAuthorizationScheme("Bearer a b", "Bearer")).toBe("a b");
+    expect(parseAuthorizationScheme("Bearer", "Bearer")).toBeUndefined();
+    expect(parseAuthorizationScheme("Bearer   ", "Bearer")).toBeUndefined();
+    expect(parseAuthorizationScheme("Bearerx tok", "Bearer")).toBeUndefined();
+    expect(parseAuthorizationScheme("Basic tok", "Bearer")).toBeUndefined();
+    expect(parseAuthorizationScheme(undefined, "Bearer")).toBeUndefined();
+    const auth = normalizeAuth("demo", undefined);
+    expect(verifyRequest(auth, secrets, request({ Authorization: "  bearer   default-secret  " })).ok).toBe(true);
+    expect(verifyRequest(auth, secrets, request({ Authorization: "Bearer" }))).toMatchObject({ ok: false, code: "missing_token" });
+    const hostile = `Bearer ${" ".repeat(200_000)}x`;
+    const started = Date.now();
+    expect(verifyRequest(auth, secrets, request({ Authorization: hostile }))).toMatchObject({ ok: false, code: "invalid_token" });
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 
   it("verifies GitHub-style HMAC with prefix and returns the delivery id", () => {

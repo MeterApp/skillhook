@@ -1,6 +1,20 @@
 # skillhook
 
-**Webhook in, agent out.** skillhook turns a Mac (or a Linux box) into a permanent, secure webhook endpoint that runs [Agent Skills](https://agentskills.io) (`SKILL.md` files) with Claude Code (`claude -p`) or Codex (`codex exec`), using the machine's existing login (Claude Pro/Max, ChatGPT) or API keys. Granola posts `note.generated` and a skill fetches the meeting note, delegates the action items and creates the calendar invites. Sentry posts a new issue and a skill investigates the repository, fixes it or escalates, and schedules a human follow-up. An iOS Shortcut posts `{"prompt": "…"}` and you are remote-controlling the agent on your desk. Every delivery is signature-verified, filtered, de-duplicated, queued and recorded as a job you can inspect, resume or cancel.
+**Make your skills reactive. Webhook in, agent out.** skillhook turns a Mac (or a Linux box) into a permanent, secure webhook endpoint that runs [Agent Skills](https://agentskills.io) (`SKILL.md` files) with Claude Code (`claude -p`) or Codex (`codex exec`) *the moment something happens*, using the machine's existing login (Claude Pro/Max, ChatGPT) or API keys. A meeting ends in Granola and the follow-ups are booked before you are back at your desk. Sentry opens an issue and a fix branch is waiting for review. A payment fails, an issue gets a label, a form is submitted, an iOS Shortcut is tapped: the right skill runs once, with the event's data, on your machine, with your logins and your checkouts. Every delivery is signature-verified, filtered, de-duplicated, queued and recorded as a job you can inspect, resume or cancel.
+
+## Why not a scheduled task?
+
+A scheduled task polls. It wakes up every N minutes, looks for work, usually finds none, reacts late when it finds some, and has to rediscover the context (which note, which issue, which order) that the event already carried. A webhook is the opposite. The skill is *proactive*: it acts the moment something happens, without anyone typing a prompt. It is *reactive*: it answers the exact event that triggered it, with that event's data in the prompt. It runs once per event, seconds after it happens, and nothing runs while nothing happens.
+
+| | Scheduled task | skillhook |
+|---|---|---|
+| Runs | every interval, whether or not anything changed | when the event fires |
+| Latency | up to a full interval | seconds |
+| Context | has to search for what changed | the event payload is the prompt: `{{payload.data.issue.title}}` |
+| Cost | tokens on empty runs | one run per event; retries and identical deliveries are de-duplicated |
+| Where | wherever the scheduler runs | your machine: your logins, your checkouts, your MCP servers, your `CLAUDE.md` |
+
+Keep schedules for digests and clean-ups; give everything that has a trigger a webhook. Anything that can call a URL can start a skill: SaaS webhooks (Granola, Sentry, GitHub, Linear, Stripe, Slack, Standard Webhooks), Zapier and Make, iOS Shortcuts, `curl` from a cron job, another agent.
 
 ## How it works
 
@@ -11,7 +25,7 @@
  Tailscale Funnel   https://<machine>.<tailnet>.ts.net/hooks/<skill>
         │  proxied to 127.0.0.1:8787 (the server never listens publicly)
         ▼
- skillhook serve    verify signature → de-duplicate → filter (when) → queue
+ skillhook serve    verify signature → de-duplicate (delivery id, identical in-flight payload) → filter (when) → queue
         │
         ▼
  claude -p  /  codex exec  /  a shell command
@@ -149,6 +163,7 @@ Set the default once (`skillhook config set defaults.runner codex`, `skillhook c
 - Secrets live in `~/.skillhook/.env` (mode 600), are never logged or returned (except once when generated), and reach an agent only when a skill lists them in `env:`. Signature and authorization headers are stripped from everything the agent sees.
 - Payloads are delivered as data inside `<webhook_payload>` tags with guardrails; the agent is told it runs unattended and must not follow instructions found in the payload.
 - Per-IP rate limits (120 requests/min, 10 auth failures/min), a 1 MiB body cap, per-skill and global concurrency limits and per-job timeouts bound the damage of floods and runaway jobs.
+- Retries and duplicates are absorbed: provider delivery ids are remembered for 24 h, and a delivery whose payload matches a job of the same skill that is still queued or running is answered with that job's id instead of a second run (`dedupe.in_flight`, on by default).
 - The admin API (`/skills`, `/jobs`) needs `Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN`, except for direct loopback callers such as the CLI.
 
 | `auth.type` | Sender sends | Secret |
@@ -238,8 +253,9 @@ Agents reading this repository should start with [`AGENTS.md`](AGENTS.md) (layou
 | `skillhook jobs list [--skill S] [--status ST] [--limit N]` · `jobs show <id> [--result] [--prompt] [--stdout] [--stderr]` · `jobs logs <id> [-f] [--stderr]` · `jobs cancel <id>` · `jobs resume <id> [--exec]` · `jobs path <id>` · `jobs prune [--keep N]` | Inspect and manage jobs. |
 | `skillhook mcp [--print-config]` | MCP server over stdio; `--print-config` prints client configuration. |
 | `skillhook config show\|get <key>\|set <key> <value>\|unset <key>\|path` | Read and edit `skillhook.json`. |
+| `skillhook update [--install]` | Check npm for a newer skillhook; `--install` upgrades with the package manager that installed it and restarts the background service when it is idle. |
 
-Global options: `--dir <path>` (default `$SKILLHOOK_HOME` or `~/.skillhook`), `--json` (machine-readable output for every command), `--help`, `--version`. Exit codes: 0 success, 1 failure, 2 usage error. HTTP API: [docs/api.md](docs/api.md). Service, logs, jobs, config and troubleshooting: [docs/operations.md](docs/operations.md).
+Global options: `--dir <path>` (default `$SKILLHOOK_HOME` or `~/.skillhook`), `--json` (machine-readable output for every command), `--help`, `--version`. Exit codes: 0 success, 1 failure, 2 usage error. Environment: `SKILLHOOK_HOME`, `SKILLHOOK_NO_UPDATE_CHECK=1` (or `CI`) to silence the daily update check, `SKILLHOOK_NPM_REGISTRY` for a mirror, `SKILLHOOK_DEBUG=1` for stack traces. HTTP API: [docs/api.md](docs/api.md). Service, logs, jobs, config and troubleshooting: [docs/operations.md](docs/operations.md).
 
 ## Project layout of `~/.skillhook`
 
@@ -251,6 +267,7 @@ Global options: `--dir <path>` (default `$SKILLHOOK_HOME` or `~/.skillhook`), `-
 ├── skills/<name>/SKILL.md    one directory per skill (plus any files the skill needs)
 ├── jobs/<id>/                job.json, payload.json, event.json, prompt.md, stdout.log, stderr.log, result.md
 ├── jobs/.deliveries.json     replay-protection index
+├── update-check.json         what npm said at the last daily update check
 └── logs/service.log          server output when run by launchd / systemd
 ```
 
@@ -266,7 +283,9 @@ Override the location with `SKILLHOOK_HOME=<path>` or `--dir <path>`.
 
 **How do I stop everything?** `skillhook service uninstall` removes the service and `skillhook expose off` removes the Funnel mapping. Delete `~/.skillhook` if you also want to drop the configuration, secrets and job history.
 
-**Can several skills run at once?** Two jobs globally by default (`concurrency` in `skillhook.json`) and one per skill (`skillhook.concurrency` in `SKILL.md`); the rest wait in a FIFO queue that survives restarts.
+**Can several skills run at once?** Two jobs globally by default (`concurrency` in `skillhook.json`) and one per skill (`skillhook.concurrency` in `SKILL.md`); the rest wait in a FIFO queue that survives restarts. The same webhook firing twice with the same payload while the first run is still queued or running does not start a second job; the sender gets the first job's id (`duplicate: true, in_flight: true`).
+
+**How do I update?** skillhook asks npm once a day (in the background, cached in `~/.skillhook/update-check.json`) and mentions a newer version after a command, in `skillhook doctor` and in the server log. `skillhook update` checks right now; `skillhook update --install` upgrades with whatever installed it (npm, pnpm, bun, yarn) and restarts the background service if no job is running. Opt out with `SKILLHOOK_NO_UPDATE_CHECK=1` or `"update_check": false` in `skillhook.json`. Releases and notes: [GitHub releases](https://github.com/MeterApp/skillhook/releases).
 
 **What happens if the agent needs a decision?** Nothing waits for a human: the guardrails tell the agent to say so in its final message and stop instead of guessing on destructive actions. `skillhook jobs resume <id>` reopens the session interactively.
 
@@ -280,7 +299,7 @@ git clone https://github.com/MeterApp/skillhook.git && cd skillhook && npm insta
 npm run check          # typecheck, vitest, build, schema check
 ```
 
-`npm test` runs the vitest suites (unit, HTTP integration with fake runners, CLI); `npm run dev -- <command> --dir /tmp/skillhook-dev` runs the CLI from source with tsx without touching `~/.skillhook`. Read [`AGENTS.md`](AGENTS.md) for the layout and hard rules and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the pull-request checklist. Security issues: see [`SECURITY.md`](SECURITY.md).
+`npm test` runs the vitest suites (unit, HTTP integration with fake runners, CLI); `npm run dev -- <command> --dir /tmp/skillhook-dev` runs the CLI from source with tsx without touching `~/.skillhook`. Read [`AGENTS.md`](AGENTS.md) for the layout and hard rules and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the pull-request checklist, the branch rules and how releases are cut (`npm run release`, then a pull request; CI tags, publishes to npm with provenance and creates the GitHub release). Security issues: see [`SECURITY.md`](SECURITY.md).
 
 ## License
 

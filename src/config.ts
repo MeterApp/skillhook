@@ -78,6 +78,8 @@ export const ConfigSchema = z
       .object({
         max_jobs: z.number().int().positive().default(1000),
         dedupe_window_seconds: z.number().int().positive().default(86_400),
+        /** Do not queue a webhook whose payload and query string are identical to a job of the same skill that is still queued or running; the response points at that job. `dedupe.in_flight` in a skill overrides it. */
+        dedupe_in_flight: z.boolean().default(true),
         /** Payloads larger than this are truncated in the prompt (the full file is always on disk). */
         inline_payload_max_bytes: z.number().int().positive().default(200_000),
       })
@@ -86,6 +88,8 @@ export const ConfigSchema = z
     /** Extra env var names copied into every agent run (on top of the runner auth vars). */
     env_passthrough: z.array(z.string()).default([]),
     log_level: z.enum(["debug", "info", "warn", "error"]).default("info"),
+    /** Ask the npm registry once a day whether a newer skillhook exists and say so in CLI output, `doctor` and the server log. `SKILLHOOK_NO_UPDATE_CHECK=1` and `CI` disable it too. */
+    update_check: z.boolean().default(true),
   })
   .strict();
 
@@ -143,11 +147,14 @@ export function setConfigValue(paths: Paths, dotted: string, value: unknown): Re
   const segments = dotted.split(".");
   let cursor: Record<string, unknown> = raw;
   for (const segment of segments.slice(0, -1)) {
+    // `__proto__`, `constructor` and `prototype` would walk into Object.prototype instead of the config file.
+    if (segment === "" || segment === "__proto__" || segment === "constructor" || segment === "prototype") throw new ConfigError(`Invalid config key "${dotted}"`, paths.configFile);
     const next = cursor[segment];
     if (typeof next !== "object" || next === null || Array.isArray(next)) cursor[segment] = {};
     cursor = cursor[segment] as Record<string, unknown>;
   }
   const last = segments[segments.length - 1] as string;
+  if (last === "" || last === "__proto__" || last === "constructor" || last === "prototype") throw new ConfigError(`Invalid config key "${dotted}"`, paths.configFile);
   if (value === undefined) delete cursor[last];
   else cursor[last] = value;
   writeConfig(paths, raw);

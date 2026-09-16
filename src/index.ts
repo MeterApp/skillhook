@@ -19,5 +19,6 @@ export * from "./doctor.js";
 export * from "./tailscale.js";
 export * from "./service.js";
 export * from "./examples.js";
+export * from "./update.js";
 export { createLogger, silentLogger, type Logger } from "./logger.js";
 export { buildMcpServer } from "./mcp.js";

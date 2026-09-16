@@ -27,6 +27,10 @@ What it does not defend against:
 - `GET /health` is public but tells outsiders only `{ok, version}`; queue details are added for admin callers.
 - The public URL exposes every route, including the admin API (`/skills`, `/jobs`), which is protected by the admin token (below). For a tailnet-only deployment use `skillhook expose tailscale --serve` and add `allow_ips: ["100.64.0.0/10"]` to skills.
 
+### Outbound connections
+
+skillhook itself makes one request you did not ask for: the daily update check, `GET https://registry.npmjs.org/skillhook/latest` (no identifiers beyond a `skillhook/<version>` user agent), cached for 24 hours in `<home>/update-check.json` and run only from interactive commands, `doctor` and `serve`. Disable it with `SKILLHOOK_NO_UPDATE_CHECK=1`, `CI=1` or `"update_check": false`; `SKILLHOOK_NPM_REGISTRY` redirects it to a mirror. `skillhook update --install` runs your package manager only when you ask. Everything else that leaves the machine is a request you configured: the runners talking to Anthropic/OpenAI, `skillhook send`, `expose`, and `doctor`'s probe of your own public URL.
+
 ## Authentication schemes
 
 Configure the scheme in `SKILL.md` under `skillhook.auth`. Skipping `auth` means `bearer` with `SKILLHOOK_SECRET_<NAME>`. Every scheme except `none` needs its secret present in `.env` (or the server's environment), or deliveries get `503 skill_not_configured` (and the server logs `skill secret missing`). Failed verification returns `401` with a machine-readable `error` code; IP rejections return `403 ip_not_allowed`.

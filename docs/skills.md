@@ -73,7 +73,7 @@ Unknown top-level keys are allowed. Unknown keys inside `skillhook:` are rejecte
 | `when` | list of conditions | none | All conditions must hold or the delivery is acknowledged with `200 {"skipped": true}`. See [Filters](#filters-when). |
 | `env` | list of env var names | `[]` | Variables from `.env` (or the server's environment) exposed to the agent. Nothing else secret is forwarded. See [Environment](#what-the-agent-receives). |
 | `concurrency` | integer >= 1 | 1 | How many jobs of this skill may run at once. The global cap is `concurrency` in `skillhook.json` (default 2). |
-| `dedupe` | `{ path?: string, header?: string }` | provider delivery-id header | Where to take the delivery id for replay protection. See [Deduplication](#deduplication). |
+| `dedupe` | `{ path?: string, header?: string, in_flight?: boolean }` | provider delivery-id header; `in_flight` from `jobs.dedupe_in_flight` (`true`) | Where to take the delivery id for replay protection, and whether a delivery identical to a job that is still queued or running is folded into that job. See [Deduplication](#deduplication). |
 | `claude` | object | — | Claude-only options, below. |
 | `codex` | object | — | Codex-only options, below. |
 | `shell` | `{ command: string \| string[] }` | — | Required when `runner: shell`. |
@@ -195,6 +195,26 @@ skillhook:
 ```
 
 Bearer, basic, stripe and slack deliveries have no delivery id unless you configure `dedupe`. The index lives in `<home>/jobs/.deliveries.json`. The id is also stored on the job (`delivery_id`) and exposed as `{{delivery_id}}`.
+
+### Identical deliveries in flight
+
+Independently of delivery ids, skillhook does not run the same work twice at the same time. A delivery whose parsed payload and query string equal those of a job of the same skill that is still `queued` or `running` gets that job back:
+
+```json
+{ "ok": true, "duplicate": true, "in_flight": true, "job_id": "20260916T025442Z-w0un7d", "status": "running", "status_url": "/jobs/20260916T025442Z-w0un7d" }
+```
+
+With `?wait=`, the response waits for that job and returns its result, still marked `duplicate`. Once the job has finished, the same payload starts a new run. A delivery folded into a running job is also remembered under its own delivery id, so a later retry of it is a plain duplicate.
+
+The comparison is a SHA-256 of the canonical payload (JSON key order and whitespace do not matter; binary bodies compare by their bytes) plus the query string (`token` and `wait` excluded), stored on the job as `fingerprint`. Headers are ignored on purpose: delivery ids, timestamps and signatures change on every retry of the same event. The check is on by default (`jobs.dedupe_in_flight` in `skillhook.json`); turn it off for a skill whose identical payloads must each run, for example a button that queues one job per press:
+
+```yaml
+skillhook:
+  dedupe:
+    in_flight: false
+```
+
+`skillhook run`, the MCP `run_skill` tool and `POST /skills/<name>/run` never de-duplicate.
 
 ## Template placeholders
 

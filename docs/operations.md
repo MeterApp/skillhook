@@ -13,6 +13,7 @@ Related: [exposure.md](exposure.md) (public URL), [security.md](security.md) (se
 ├── skillhook.json          server configuration (JSON Schema: schema/skillhook.schema.json in the package)
 ├── .env                    secrets, mode 600: SKILLHOOK_ADMIN_TOKEN, SKILLHOOK_SECRET_<NAME>, provider secrets, API keys
 ├── server.json             present while a server runs: pid, host, port, started_at, version, public_url
+├── update-check.json       what npm said at the last daily update check: checked_at, latest, current
 ├── skills/
 │   └── <name>/SKILL.md     one directory per skill, plus any files the skill needs
 ├── jobs/
@@ -30,7 +31,7 @@ Related: [exposure.md](exposure.md) (public URL), [security.md](security.md) (se
 skillhook serve [--port N] [--host H] [--pretty] [--log-level debug|info|warn|error]
 ```
 
-On start the server logs invalid skills, warns about skills with `auth: none` or a missing secret (`deliveries will get 503`) and about a missing admin token, marks jobs left `running` by a previous process as `interrupted`, re-queues jobs that were still `queued`, listens, writes `server.json`, and logs `skillhook listening` plus one `webhook url` line per skill when `public_url` is set.
+On start the server logs invalid skills, warns about skills with `auth: none` or a missing secret (`deliveries will get 503`) and about a missing admin token, marks jobs left `running` by a previous process as `interrupted`, re-queues jobs that were still `queued`, listens, writes `server.json`, and logs `skillhook listening` plus one `webhook url` line per skill when `public_url` is set. Once a day it also logs `update available` when npm has a newer skillhook (see [Upgrading](#upgrading-and-removing)).
 
 Logs go to stderr as one JSON object per line (`{"ts":…,"level":…,"msg":…}`) unless stdin is a TTY or `--pretty` is given. `SIGINT`/`SIGTERM` stop accepting requests, SIGTERM running jobs (they end as `interrupted`; SIGKILL follows after 10 s) and remove `server.json`.
 
@@ -169,9 +170,11 @@ skillhook jobs prune [--keep N]
 | `runners.codex.args` | `[]` | Extra argv for every Codex run. |
 | `jobs.max_jobs` | `1000` | Retention. |
 | `jobs.dedupe_window_seconds` | `86400` | Replay window. |
+| `jobs.dedupe_in_flight` | `true` | Fold a delivery identical to a queued or running job of the same skill into that job; skills override with `dedupe.in_flight`. |
 | `jobs.inline_payload_max_bytes` | `200000` | Payload size inlined in prompts. |
 | `env_passthrough` | `[]` | Extra env var names copied into every run. |
 | `log_level` | `"info"` | `debug`, `info`, `warn`, `error`. |
+| `update_check` | `true` | Daily check of the npm registry for a newer skillhook (`SKILLHOOK_NO_UPDATE_CHECK=1` and `CI` disable it as well). |
 
 Examples:
 
@@ -194,6 +197,7 @@ skillhook config set defaults.model sonnet
 | Check | ok | warn | fail |
 |---|---|---|---|
 | `node` | Node >= 22 | | older Node |
+| `version` | this is the latest skillhook | a newer version is on npm (hint: `skillhook update --install`) | (`skip` when the check is disabled or the registry does not answer) |
 | `home` / `config` | home exists and `skillhook.json` parses (or defaults apply) | | home missing; invalid config |
 | `secrets` | `.env` has mode 600 | `.env` missing or another mode | |
 | `admin token` | `SKILLHOOK_ADMIN_TOKEN` set | unset (admin API localhost-only) | |
@@ -211,11 +215,19 @@ Jobs run only while the machine is awake. On a desktop Mac disable sleep (`sudo 
 
 ## Upgrading and removing
 
+skillhook asks the npm registry once a day whether a newer version exists (in a detached background process after an interactive command, every 24 hours inside `skillhook serve`, and on demand in `skillhook doctor`) and caches the answer in `<home>/update-check.json`. A newer version is mentioned on stderr after the next interactive command (never with `--json`, never in CI), as a `version` warning in `doctor`, as an `update available` line in the server log, and in the MCP `skillhook_status` tool.
+
 ```bash
-npm update -g skillhook && skillhook service install && skillhook doctor
+skillhook update             # ask the registry now and print the upgrade command
 ```
 
-Re-installing the service points launchd/systemd at the new `dist/cli.js`. Configuration, skills, secrets and jobs in `~/.skillhook` are untouched by upgrades.
+```bash
+skillhook update --install   # upgrade with npm, pnpm, bun or yarn (whichever installed skillhook), then restart the service when it is idle
+```
+
+`--install` refuses to touch a source checkout (`git pull && npm ci && npm run build` there) or an `npx` cache (`npx skillhook@latest`). The background service keeps running the old version until it restarts; `update --install` restarts it unless a job is queued or running, and says so either way (`skillhook service restart` later). A global install that moved to another Node (`nvm`, Homebrew major upgrade) needs `skillhook service install` again so launchd/systemd point at the new `dist/cli.js`. Configuration, skills, secrets and jobs in `~/.skillhook` are untouched by upgrades.
+
+Opt out of the check with `SKILLHOOK_NO_UPDATE_CHECK=1` (the conventional `NO_UPDATE_NOTIFIER=1` works too), `CI=1`, or `"update_check": false` in `skillhook.json`; `SKILLHOOK_NPM_REGISTRY=https://…` points it at a mirror. Release notes: https://github.com/MeterApp/skillhook/releases.
 
 To stop everything:
 
@@ -277,7 +289,7 @@ Raise `max_body_bytes` (default 1 MiB) or have the sender post a reference inste
 
 ### Delivery answered `duplicate: true` or `skipped: true`
 
-`duplicate`: the same provider delivery id (or `dedupe` value) was seen within the last `jobs.dedupe_window_seconds`; the original `job_id` is in the response. `skipped`: a `when` condition did not match; the `reason` names it. Both are logged at `info`.
+`duplicate`: the same provider delivery id (or `dedupe` value) was seen within the last `jobs.dedupe_window_seconds`; the original `job_id` is in the response. `duplicate` with `in_flight: true`: a job of the same skill with the same payload and query string was still queued or running; the response names it, and the payload runs again once that job has finished (set `dedupe.in_flight: false` on the skill if every identical delivery must run). `skipped`: a `when` condition did not match; the `reason` names it. All three are logged at `info`.
 
 ### Jobs end as `timed_out`
 

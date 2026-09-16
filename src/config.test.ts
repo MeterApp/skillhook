@@ -11,6 +11,8 @@ describe("config", () => {
     expect(config.defaults.runner).toBe("claude");
     expect(config.runners.claude.permission_mode).toBe("bypassPermissions");
     expect(config.runners.codex.sandbox).toBe("workspace-write");
+    expect(config.jobs.dedupe_in_flight).toBe(true);
+    expect(config.update_check).toBe(true);
     expect(defaultConfig()).toEqual(config);
   });
 
@@ -27,6 +29,15 @@ describe("config", () => {
     expect(JSON.parse(String(require("node:fs").readFileSync(paths.configFile, "utf8")))).toEqual({ defaults: { model: "opus" }, port: 9000 });
     expect(loadConfig(paths).defaults.model).toBe("opus");
     expect(() => setConfigValue(paths, "port", "nope")).toThrow(/invalid config/);
+  });
+
+  it("refuses keys that would reach Object.prototype", () => {
+    const paths = tempHome();
+    for (const key of ["__proto__.polluted", "constructor.prototype.polluted", "defaults.__proto__", "prototype", "defaults..model", ""]) {
+      expect(() => setConfigValue(paths, key, true), key).toThrow(/Invalid config key/);
+    }
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(loadConfig(paths)).toEqual(defaultConfig());
   });
 
   it("coerces CLI values", () => {

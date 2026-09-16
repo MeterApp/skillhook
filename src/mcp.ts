@@ -13,6 +13,7 @@ import { installService, readServiceLog, restartService, serviceStatus, uninstal
 import { AUTH_TYPES, loadSkills, parseSkillDocument, type AuthType } from "./skills.js";
 import { currentExposures, disableExposure, enableExposure, tailscaleStatus } from "./tailscale.js";
 import { findRunningServer } from "./client.js";
+import { updateStatusFromCache } from "./update.js";
 import { errorMessage } from "./util.js";
 import { VERSION } from "./version.js";
 
@@ -60,9 +61,11 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
       const loaded = loadSkills(paths.skillsDir);
       const { baseUrl, source } = await resolveBaseUrl(o);
       const jobs = o.store.list({ limit: 10 });
+      const update = updateStatusFromCache(paths);
       return ok(
         {
           version: VERSION,
+          update: { latest: update.latest, available: update.available, checked_at: update.checked_at, hint: update.available ? "skillhook update --install" : null },
           home: paths.home,
           config_file: paths.configFile,
           server: running ? { running: true, base_url: running.baseUrl, version: running.health.version, queue: running.health.queue } : { running: false, hint: "skillhook serve  (or: skillhook service install)" },
@@ -73,7 +76,7 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
           recent_jobs: jobs.map((j) => ({ id: j.id, skill: j.skill, status: j.status, created_at: j.created_at, error: j.error ?? null })),
           defaults: o.config.defaults,
         },
-        `skillhook ${VERSION} at ${paths.home}; server ${running ? "running" : "not running"}; ${loaded.skills.length} skill(s).`,
+        `skillhook ${VERSION} at ${paths.home}; server ${running ? "running" : "not running"}; ${loaded.skills.length} skill(s).${update.available ? ` Update ${update.latest} is available (skillhook update --install).` : ""}`,
       );
     }),
   );

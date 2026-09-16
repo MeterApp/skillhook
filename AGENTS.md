@@ -27,6 +27,9 @@ Funnel supplies the permanent HTTPS URL. User docs: `README.md`, `docs/`,
 | `src/ops.ts` | Shared operations (create skill, run locally, sign+send, resolve URLs). CLI and MCP both call this; do not duplicate logic in either. |
 | `src/mcp.ts` | MCP server (`@modelcontextprotocol/server` v2, stdio). Tools wrap `ops.ts`. |
 | `src/tailscale.ts`, `src/service.ts`, `src/doctor.ts` | Funnel/Serve, launchd/systemd, diagnostics. |
+| `src/update.ts`, `src/commands/update.ts` | The daily update check (registry lookup, 24 h cache in `<home>/update-check.json`, install-method detection, background refresh) and `skillhook update`. |
+| `scripts/release.ts` | Version bump / consistency check / release notes across `package.json`, the lockfile, the plugin manifests and `CHANGELOG.md`. |
+| `.github/workflows/` | `ci.yml` (PRs and main: checks + packed-tarball install), `release.yml` (tags merged version bumps), `publish.yml` (npm publish with provenance, GitHub release, verification). |
 | `examples/skills/` | Bundled webhook skills; `skillhook skills add <name>` copies them. Shipped in the npm package. |
 | `skills/` | Agent-facing plugin skills (setup, authoring). This repo is itself a Claude Code / Codex / Cursor plugin via the manifests at the root. |
 | `schema/skillhook.schema.json` | Generated from `src/config.ts` by `npm run schema`. Never edit by hand. |
@@ -46,7 +49,8 @@ Runtime state lives outside the repo in `~/.skillhook` (`SKILLHOOK_HOME`):
 - **Jobs are directories.** `job.json` is the record; artifacts sit next to it; nothing outside `~/.skillhook/jobs` is written by the server. Statuses: `queued running succeeded failed timed_out cancelled interrupted`.
 - **Every CLI command supports `--json`** and returns non-zero on failure. Register new commands in `COMMANDS` and `HELP` in `src/commands/main.ts`, then in the README table.
 - **Third-party facts** (Granola, Sentry, GitHub, Tailscale) are stated in `docs/` and the examples with the exact header names; change them only with a source.
-- **Tests are hermetic**: `tempHome()` from `src/test-support/helpers.ts`, fake runners, ephemeral ports. Never touch `~/.skillhook`, the real `claude`/`codex`, `launchctl` or `tailscale` from a test.
+- **Tests are hermetic**: `tempHome()` from `src/test-support/helpers.ts`, fake runners, ephemeral ports. Never touch `~/.skillhook`, the real `claude`/`codex`, `launchctl` or `tailscale` from a test. Never reach the real npm registry either: point `SKILLHOOK_NPM_REGISTRY` at a local `node:http` server or set `SKILLHOOK_NO_UPDATE_CHECK=1`.
+- **The CLI phones home exactly once a day, and only for the update check** (`src/update.ts`: the registry's `latest` dist-tag, cached 24 h, never on `--json`, in CI, or when `SKILLHOOK_NO_UPDATE_CHECK` / `update_check: false` say so). Do not add other outbound requests the user did not ask for, and never auto-install anything.
 
 ## Checks
 
@@ -55,8 +59,16 @@ npm run typecheck          # tsc --noEmit (strict)
 npm test                   # vitest: unit + HTTP integration (src/server.test.ts) + CLI (src/cli.test.ts)
 npm run build              # tsc -p tsconfig.build.json → dist/
 npm run schema -- --check  # schema/skillhook.schema.json is current
+npm run release -- --check # package.json, package-lock.json, plugin manifests and CHANGELOG.md agree on the version
 npm run check              # all of the above
 ```
+
+CodeQL (GitHub default setup) analyses every pull request and the `main` ruleset blocks merges on new
+high-severity alerts. Its recurring findings here: regexes with ambiguous repetition on attacker-controlled
+text (`/\s*(.+?)\s*$/`, `/\n*$/`, `/\/+$/`) are flagged as polynomial ReDoS, so parse headers and env lines
+with plain string operations (`parseAuthorizationScheme`, `trimTrailing`); `.replace("x", …)` on a string
+that may contain several `x` is flagged as incomplete sanitization (use `replaceAll`); dynamic property
+writes from user-supplied keys need an inline `=== "__proto__"` check; random tokens use `crypto.randomInt`.
 
 Manual smoke test on a machine with the real tools:
 
@@ -67,8 +79,13 @@ node dist/cli.js run hello --dir /tmp/sh --payload '{"name":"world"}' --dry-run
 
 ## Releasing
 
-`package.json` version, the four plugin manifests (`.claude-plugin/plugin.json`,
-`.codex-plugin/plugin.json`, `.cursor-plugin/plugin.json`, `.agents/plugins/marketplace.json`
-where present) and `CHANGELOG.md` move together. Pushing a `v*` tag runs
-`.github/workflows/publish.yml` (npm trusted publishing must be configured for the
-package first).
+`npm run release -- <patch|minor|major|X.Y.Z>` bumps `package.json`, `package-lock.json` and the
+plugin manifests (`.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`,
+`.cursor-plugin/plugin.json`) together and moves the `## Unreleased` entries of `CHANGELOG.md`
+under the new version; `npm run release -- --check` (part of `npm run check` and CI) fails when
+they disagree. Open a pull request with the bump. When it merges, `.github/workflows/release.yml`
+tags `vX.Y.Z` and dispatches `.github/workflows/publish.yml`, which publishes to npm with
+provenance (trusted publishing, or an `NPM_TOKEN` secret), creates the GitHub release from the
+changelog section and installs the published package to verify it. `main` is protected by a
+ruleset (pull requests only, CI green, linear history); the full procedure including the one-time
+first publish is in `CONTRIBUTING.md`.

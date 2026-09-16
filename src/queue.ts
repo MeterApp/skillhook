@@ -57,6 +57,12 @@ export class JobQueue extends EventEmitter {
     return this.running.has(id) || this.queued.some((j) => j.id === id);
   }
 
+  /** The running (preferred) or queued job of this skill with the same delivery fingerprint, if any. */
+  findInFlight(skill: string, fingerprint: string): JobRecord | undefined {
+    for (const running of this.running.values()) if (running.job.skill === skill && running.job.fingerprint === fingerprint) return running.job;
+    return this.queued.find((job) => job.skill === skill && job.fingerprint === fingerprint);
+  }
+
   cancel(id: string): boolean {
     const queuedIndex = this.queued.findIndex((j) => j.id === id);
     if (queuedIndex >= 0) {

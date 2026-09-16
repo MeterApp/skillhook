@@ -8,7 +8,9 @@ import { commandParts } from "./runners/types.js";
 import { serviceStatus } from "./service.js";
 import { loadSkills, type Skill } from "./skills.js";
 import { currentExposures, findTailscale, run, tailscaleStatus, which } from "./tailscale.js";
+import { checkForUpdate, registryUrl, releaseNotesUrl, updateChecksDisabled } from "./update.js";
 import { errorMessage, isDirectory } from "./util.js";
+import { VERSION } from "./version.js";
 
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
 
@@ -54,7 +56,14 @@ export async function codexAuth(command: string | string[]): Promise<{ found: bo
   return { found: true, loggedIn: result.code === 0 && !/not logged in/i.test(text), detail: text || (result.code === 0 ? "logged in" : "not logged in") };
 }
 
-export async function runDoctor(paths: Paths): Promise<DoctorReport> {
+export interface DoctorOptions {
+  /** Environment consulted for the update check (`SKILLHOOK_NO_UPDATE_CHECK`, `CI`, `SKILLHOOK_NPM_REGISTRY`). */
+  env?: NodeJS.ProcessEnv;
+  fetchImpl?: typeof fetch;
+}
+
+export async function runDoctor(paths: Paths, options: DoctorOptions = {}): Promise<DoctorReport> {
+  const env = options.env ?? process.env;
   const checks: Check[] = [];
   const [major] = process.versions.node.split(".").map(Number);
   checks.push(check("node", (major ?? 0) >= 22 ? "ok" : "fail", `node ${process.versions.node}`, (major ?? 0) >= 22 ? undefined : "skillhook needs Node 22 or newer"));
@@ -69,6 +78,14 @@ export async function runDoctor(paths: Paths): Promise<DoctorReport> {
     } catch (error) {
       checks.push(check("config", "fail", errorMessage(error)));
     }
+  }
+
+  if (updateChecksDisabled(env, config)) checks.push(check("version", "skip", `skillhook ${VERSION} (update check disabled)`));
+  else {
+    const update = await checkForUpdate(paths, { env, config, force: true, timeoutMs: 4_000, fetchImpl: options.fetchImpl });
+    if (update.latest === null) checks.push(check("version", "skip", `skillhook ${VERSION} (could not reach ${registryUrl(env)} to check for updates)`));
+    else if (update.available) checks.push(check("version", "warn", `skillhook ${VERSION}; ${update.latest} is available`, `run: skillhook update --install   (notes: ${releaseNotesUrl(update.latest)})`));
+    else checks.push(check("version", "ok", `skillhook ${VERSION} (latest)`));
   }
 
   const mode = secretFileMode(paths.envFile);

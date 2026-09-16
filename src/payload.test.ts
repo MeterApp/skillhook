@@ -22,3 +22,19 @@ describe("redactHeaders", () => {
     expect(out).toEqual({ "content-type": "application/json", "x-github-event": "push", "webhook-id": "evt_1" });
   });
 });
+
+describe("delivery fingerprints", () => {
+  it("canonicalizes JSON so key order and whitespace do not matter", async () => {
+    const { canonicalJson, deliveryFingerprint } = await import("./payload.js");
+    expect(canonicalJson({ b: 1, a: { d: [3, { z: 1, y: 2 }], c: null } })).toBe('{"a":{"c":null,"d":[3,{"y":2,"z":1}]},"b":1}');
+    expect(canonicalJson(undefined)).toBe("null");
+    const one = deliveryFingerprint({ kind: "json", payload: { b: 1, a: 2 } });
+    expect(one).toMatch(/^[0-9a-f]{64}$/);
+    expect(deliveryFingerprint({ kind: "json", payload: { a: 2, b: 1 } })).toBe(one);
+    expect(deliveryFingerprint({ kind: "json", payload: { a: 2, b: 2 } })).not.toBe(one);
+    expect(deliveryFingerprint({ kind: "json", payload: { b: 1, a: 2 }, query: { x: "1" } })).not.toBe(one);
+    expect(deliveryFingerprint({ kind: "text", payload: '{"b":1,"a":2}' })).not.toBe(one);
+    const bin = Buffer.from([1, 2, 3]);
+    expect(deliveryFingerprint({ kind: "binary", payload: { binary: true, bytes: 3 }, rawBody: bin })).not.toBe(deliveryFingerprint({ kind: "binary", payload: { binary: true, bytes: 3 }, rawBody: Buffer.from([3, 2, 1]) }));
+  });
+});

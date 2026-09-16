@@ -1,9 +1,10 @@
 import { chmodSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { ensureDir, exists } from "./util.js";
+import { ensureDir, exists, trimTrailing } from "./util.js";
 import type { Paths } from "./paths.js";
 
-const LINE_RE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)?\s*$/;
+/** `KEY=value` with optional `export`; the value is trimmed by the callers (trailing `\s*(.*)?\s*$` would backtrack quadratically). */
+const LINE_RE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/;
 
 /** Parses dotenv-style text. Supports `export KEY=`, single/double quotes and `#` comments. */
 export function parseEnv(text: string): Record<string, string> {
@@ -56,7 +57,7 @@ export function upsertEnvVar(file: string, key: string, value: string): void {
     if (next.length && next[next.length - 1] !== "") next.push("");
     next.splice(next.length - 1, 0, `${key}=${quote(value)}`);
   }
-  writeFileSync(file, next.join("\n").replace(/\n*$/, "\n"), { mode: 0o600 });
+  writeFileSync(file, `${trimTrailing(next.join("\n"), "\n")}\n`, { mode: 0o600 });
   ensureSecretFileMode(file);
 }
 
@@ -68,7 +69,7 @@ export function removeEnvVar(file: string, key: string): boolean {
     return !(match && match[1] === key && !line.trim().startsWith("#"));
   });
   const removed = kept.length !== lines.length;
-  if (removed) writeFileSync(file, kept.join("\n").replace(/\n*$/, "\n"), { mode: 0o600 });
+  if (removed) writeFileSync(file, `${trimTrailing(kept.join("\n"), "\n")}\n`, { mode: 0o600 });
   return removed;
 }
 
