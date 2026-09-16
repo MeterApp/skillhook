@@ -29,7 +29,7 @@ What it does not defend against:
 
 ### Outbound connections
 
-skillhook itself makes one request you did not ask for: the daily update check, `GET https://registry.npmjs.org/skillhook/latest` (no identifiers beyond a `skillhook/<version>` user agent), cached for 24 hours in `<home>/update-check.json` and run only from interactive commands, `doctor` and `serve`. Disable it with `SKILLHOOK_NO_UPDATE_CHECK=1`, `CI=1` or `"update_check": false`; `SKILLHOOK_NPM_REGISTRY` redirects it to a mirror. `skillhook update --install` runs your package manager only when you ask. Everything else that leaves the machine is a request you configured: the runners talking to Anthropic/OpenAI, `skillhook send`, `expose`, and `doctor`'s probe of your own public URL.
+skillhook itself makes one request you did not ask for: the daily update check, `GET https://registry.npmjs.org/@meterapp%2Fskillhook/latest` (no identifiers beyond a `skillhook/<version>` user agent), cached for 24 hours in `<home>/update-check.json` and run only from interactive commands, `doctor` and `serve`. Disable it with `SKILLHOOK_NO_UPDATE_CHECK=1`, `CI=1` or `"update_check": false`; `SKILLHOOK_NPM_REGISTRY` redirects it to a mirror. `skillhook update --install` runs your package manager only when you ask. Everything else that leaves the machine is a request you configured: the runners talking to Anthropic/OpenAI, `skillhook send`, `expose`, and `doctor`'s probe of your own public URL.
 
 ## Authentication schemes
 

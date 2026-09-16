@@ -4,6 +4,19 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.1.1 (2026-09-16)
+
+- The npm package is now `@meterapp/skillhook`; the command is still `skillhook`. Install with
+  `npm install -g @meterapp/skillhook`. Coming from the unscoped `skillhook` 0.1.0 package, run
+  `npm uninstall -g skillhook` first (npm refuses a second package that installs a `skillhook`
+  command), then `skillhook service install` again if the service ran from that install. The old
+  package's update check does not see the new name.
+- The plugin's MCP server starts with `npx -y @meterapp/skillhook mcp`, and
+  `skillhook mcp --print-config` prints the same `npx` fallback when skillhook is not installed.
+- Releases: the Publish workflow takes the package name from `package.json`, and its verification
+  waits until the new tarball downloads (then retries the install) instead of failing while the
+  registry catches up. CI installs the tarball `npm pack` reports.
+
 ## 0.1.0 (2026-09-16)
 
 Initial release.

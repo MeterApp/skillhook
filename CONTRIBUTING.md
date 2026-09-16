@@ -48,8 +48,8 @@ Versions are cut from `main` by pull request:
    **Publish** workflow.
 5. **Publish** checks the tag against `package.json`, runs `npm publish --provenance` (versions
    already on npm are skipped, so re-runs are safe), creates the GitHub release with the changelog
-   section as its notes, then installs `skillhook@1.2.0` from the registry on a clean runner and
-   runs it.
+   section as its notes, then installs `@meterapp/skillhook@1.2.0` from the registry on a clean
+   runner and runs it.
 
 Publishing by hand also works: `git tag v1.2.0 && git push origin v1.2.0`, or **Releases → Draft a
 new release** in the GitHub UI; both trigger Publish. If something fails after the tag exists, re-run
@@ -57,16 +57,25 @@ Publish from the Actions tab (**Run workflow** with the tag).
 
 ### First publish and npm trusted publishing
 
-npm's trusted publishing (short-lived OIDC credentials, no long-lived token) can only be configured
-for a package that already exists on npm, so the very first version is published from a laptop:
+The package is `@meterapp/skillhook` in the `meterapp` npm organization (0.1.0 went out as the
+unscoped `skillhook`). The workflows read the name from `package.json`. npm's trusted publishing
+(short-lived OIDC credentials, no long-lived token) can only be configured for a package that already
+exists on npm, so the first version under a new name is published from a laptop by an organization
+member:
 
 ```bash
 npm login
-git fetch --tags && git checkout v0.1.0 && npm ci
+git fetch --tags && git checkout v0.1.1 && npm ci
 npm publish --access public          # prepublishOnly runs the full check first
 ```
 
-Then on npmjs.com → skillhook → Settings → Trusted publisher → GitHub Actions: organization
+Then trust the Publish workflow, with npm 11.10 or newer:
+
+```bash
+npm trust github @meterapp/skillhook --repo MeterApp/skillhook --file publish.yml --env npm --allow-publish
+```
+
+or on npmjs.com → @meterapp/skillhook → Settings → Trusted publisher → GitHub Actions: organization
 `MeterApp`, repository `skillhook`, workflow filename `publish.yml`, environment `npm`. From then on
 the workflow publishes without any secret. Re-run Publish for that first tag afterwards so it creates
 the GitHub release and verifies the package. Alternative: store an npm granular access token with

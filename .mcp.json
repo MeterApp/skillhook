@@ -2,7 +2,7 @@
   "mcpServers": {
     "skillhook": {
       "command": "npx",
-      "args": ["-y", "skillhook", "mcp"]
+      "args": ["-y", "@meterapp/skillhook", "mcp"]
     }
   }
 }

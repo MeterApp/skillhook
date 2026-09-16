@@ -117,7 +117,7 @@ export async function fetchLatestVersion(options: FetchLatestOptions = {}): Prom
   const doFetch = options.fetchImpl ?? fetch;
   try {
     const response = await doFetch(`${registry}/${name}/latest`, {
-      headers: { accept: "application/json", "user-agent": `${PACKAGE.name}/${VERSION} (update check)` },
+      headers: { accept: "application/json", "user-agent": `skillhook/${VERSION} (update check)` }, // a product token cannot contain the scope's "@" or "/"
       signal: AbortSignal.any(signals),
     });
     if (!response.ok) return null;

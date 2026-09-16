@@ -104,7 +104,8 @@ jobs:
 
       - name: Install the tarball globally and use it
         run: |
-          npm install -g ./skillhook-*.tgz
+          tarball="$(node -p 'require(process.argv[1])[0].filename' "$RUNNER_TEMP/pack.json")" # @scope/name packs as scope-name-X.Y.Z.tgz
+          npm install -g "./$tarball"
           version="$(node -p "require('./package.json').version")"
           test "$(skillhook --version)" = "$version"
           home="$RUNNER_TEMP/home"

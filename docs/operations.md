@@ -225,7 +225,9 @@ skillhook update             # ask the registry now and print the upgrade comman
 skillhook update --install   # upgrade with npm, pnpm, bun or yarn (whichever installed skillhook), then restart the service when it is idle
 ```
 
-`--install` refuses to touch a source checkout (`git pull && npm ci && npm run build` there) or an `npx` cache (`npx skillhook@latest`). The background service keeps running the old version until it restarts; `update --install` restarts it unless a job is queued or running, and says so either way (`skillhook service restart` later). A global install that moved to another Node (`nvm`, Homebrew major upgrade) needs `skillhook service install` again so launchd/systemd point at the new `dist/cli.js`. Configuration, skills, secrets and jobs in `~/.skillhook` are untouched by upgrades.
+`--install` refuses to touch a source checkout (`git pull && npm ci && npm run build` there) or an `npx` cache (`npx @meterapp/skillhook@latest`). The background service keeps running the old version until it restarts; `update --install` restarts it unless a job is queued or running, and says so either way (`skillhook service restart` later). A global install that moved to another Node (`nvm`, Homebrew major upgrade) needs `skillhook service install` again so launchd/systemd point at the new `dist/cli.js`. Configuration, skills, secrets and jobs in `~/.skillhook` are untouched by upgrades.
+
+skillhook 0.1.0 was published as the unscoped `skillhook` package; 0.1.1 and later are `@meterapp/skillhook`, which the old package's update check never sees. Move with `npm uninstall -g skillhook && npm install -g @meterapp/skillhook` (npm refuses the new package while the old one owns the `skillhook` command), then run `skillhook service install` again if the service ran from the old global install. `~/.skillhook` stays as it is.
 
 Opt out of the check with `SKILLHOOK_NO_UPDATE_CHECK=1` (the conventional `NO_UPDATE_NOTIFIER=1` works too), `CI=1`, or `"update_check": false` in `skillhook.json`; `SKILLHOOK_NPM_REGISTRY=https://…` points it at a mirror. Release notes: https://github.com/MeterApp/skillhook/releases.
 

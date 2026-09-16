@@ -31,11 +31,11 @@ No Claude or Codex login? An API key works instead: after step 2, `skillhook sec
 ## 2. Install and initialize
 
 ```bash
-npm install -g skillhook          # install globally: the background service points at this install
-skillhook init                    # add --runner codex, --model <name>, --port <n> as needed
+npm install -g @meterapp/skillhook   # install globally: the background service points at this install
+skillhook init                       # add --runner codex, --model <name>, --port <n> as needed
 ```
 
-`init` creates the directory, `skillhook.json`, `.env` with an admin token, and copies the bundled `hello` skill with a fresh bearer secret. Re-running it keeps existing files (`--force` rewrites the config). `npx -y skillhook <command>` works for one-off commands, but install globally before `service install`. Later, `skillhook update --install` upgrades that global install and restarts the service when it is idle; skillhook mentions new versions after commands and in `doctor`, and `SKILLHOOK_NO_UPDATE_CHECK=1` silences that.
+`init` creates the directory, `skillhook.json`, `.env` with an admin token, and copies the bundled `hello` skill with a fresh bearer secret. Re-running it keeps existing files (`--force` rewrites the config). `npx -y @meterapp/skillhook <command>` works for one-off commands, but install globally before `service install`. The package is `@meterapp/skillhook`; the command it installs is `skillhook`. Later, `skillhook update --install` upgrades that global install and restarts the service when it is idle; skillhook mentions new versions after commands and in `doctor`, and `SKILLHOOK_NO_UPDATE_CHECK=1` silences that.
 
 ## 3. Read the doctor
 
@@ -136,3 +136,4 @@ Install the plugin (`/plugin marketplace add MeterApp/skillhook`, then `/plugin 
 | service installed but not running | Node path changed, or the port is taken | `skillhook service logs`, `skillhook service restart`; `lsof -i :8787` |
 | works locally, sender gets connection errors | Funnel off, or the service not running | `skillhook expose status`, `skillhook service status`, `curl https://<node>.ts.net/health` |
 | `skillhook send` says no server is running | nothing listens on the configured port | `skillhook serve` or `skillhook service install`; `--url http://127.0.0.1:8787` targets a specific server |
+| `npm install -g @meterapp/skillhook` fails with `EEXIST` on `bin/skillhook` | the old unscoped `skillhook` 0.1.0 package owns the command | `npm uninstall -g skillhook`, install again, then `skillhook service install` if the service ran from the old install |

@@ -45,10 +45,10 @@ Keep schedules for digests and clean-ups; give everything that has a trigger a w
 Requirements: Node 22 or newer; Claude Code logged in (`claude login`) and/or Codex logged in (`codex login`), or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`; Tailscale installed and signed in for the default public URL.
 
 ```bash
-npm install -g skillhook
+npm install -g @meterapp/skillhook
 ```
 
-(`npx skillhook <command>` works too.)
+(`npx @meterapp/skillhook <command>` works too; the command is `skillhook` either way. Had the unscoped `skillhook` 0.1.0 package installed? Run `npm uninstall -g skillhook` first: npm will not let a second package install the `skillhook` command. See [Upgrading](docs/operations.md#upgrading-and-removing).)
 
 ```bash
 skillhook init
