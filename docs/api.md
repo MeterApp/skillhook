@@ -177,7 +177,25 @@ Public: `{"ok": true, "version": "0.1.0"}`. Admin or direct local: adds `"uptime
         "how": "Authorization: Bearer <$SKILLHOOK_SECRET_HELLO>"
       },
       "when": ["payload.action equals \"created\""],
-      "dir": "/Users/me/.skillhook/skills/hello"
+      "dir": "/Users/me/.skillhook/skills/hello",
+      "file": "/Users/me/.skillhook/skills/hello/SKILL.md",
+      "source": { "type": "home" }
+    },
+    {
+      "name": "pull-after-merge",
+      "description": "Fast-forward this checkout when a pull request merges.",
+      "enabled": true,
+      "runner": "shell",
+      "model": null,
+      "effort": null,
+      "cwd": "/Users/me/dev/api",
+      "timeout_seconds": 900,
+      "path": "/hooks/pull-after-merge",
+      "auth": { "type": "hmac", "secret_env": "GITHUB_WEBHOOK_SECRET", "configured": true, "how": "github HMAC-SHA256 of the body in x-hub-signature-256 (prefix sha256=), secret $GITHUB_WEBHOOK_SECRET" },
+      "when": ["header x-github-event equals \"pull_request\"", "payload.action equals \"closed\"", "payload.pull_request.merged equals true"],
+      "dir": "/Users/me/dev/api",
+      "file": "/Users/me/dev/api/skillhook.yaml",
+      "source": { "type": "project", "dir": "/Users/me/dev/api", "file": "/Users/me/dev/api/skillhook.yaml", "kind": "run" }
     }
   ],
   "errors": [
@@ -186,7 +204,7 @@ Public: `{"ok": true, "version": "0.1.0"}`. Admin or direct local: adds `"uptime
 }
 ```
 
-`runner`, `model`, `effort`, `cwd` and `timeout_seconds` are effective values after `defaults`. `auth.type` is the normalized type: `github`, `sentry` and `linear` appear as `hmac`, `granola` and `svix` as `standard-webhooks`; `auth.how` spells out the preset. `auth.configured` says whether the secret is present. This call rescans the skills directory, so new directories appear immediately.
+`runner`, `model`, `effort`, `cwd` and `timeout_seconds` are effective values after `defaults`. `auth.type` is the normalized type: `github`, `sentry` and `linear` appear as `hmac`, `granola` and `svix` as `standard-webhooks`; `auth.how` spells out the preset. `auth.configured` says whether the secret is present. `source` says where the skill is defined: `{"type": "home"}` for `<home>/skills/<name>`, or `{"type": "project", "dir", "file", "kind"}` for a hook of a linked repository's `skillhook.yaml` (`kind` is `run`, `skill` or `prompt`; see [projects.md](projects.md)). This call rescans the skills directory and every linked repository, so new directories and hooks appear immediately.
 
 ## `POST /skills/<skill>/run`
 

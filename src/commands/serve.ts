@@ -19,6 +19,7 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
 
   const loaded = registry.list();
   for (const error of loaded.errors) logger.error("skill failed to load", { skill: error.name, error: error.error });
+  for (const project of loaded.projects) if (!project.error) logger.info("project linked", { dir: project.dir, file: project.file, hooks: project.hooks.map((h) => h.name) });
   const current = secrets();
   for (const skill of loaded.skills) {
     if (skill.auth.type === "none") logger.warn("skill has no authentication", { skill: skill.name });

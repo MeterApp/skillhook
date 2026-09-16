@@ -4,6 +4,8 @@ export * from "./config.js";
 export * from "./env.js";
 export * from "./frontmatter.js";
 export * from "./skills.js";
+export * from "./projects.js";
+export * from "./registry.js";
 export * from "./auth.js";
 export * from "./filters.js";
 export * from "./payload.js";

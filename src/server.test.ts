@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { signRequest } from "./auth.js";
@@ -7,7 +7,7 @@ import { JobStore } from "./jobs.js";
 import { silentLogger } from "./logger.js";
 import { JobQueue } from "./queue.js";
 import { createServer } from "./server.js";
-import { SkillRegistry } from "./skills.js";
+import { SkillRegistry } from "./registry.js";
 import { FAKE_CLAUDE, FAKE_CODEX, tempHome, writeConfigFile, writeEnv, writeSkill } from "./test-support/helpers.js";
 import type { Server } from "node:http";
 
@@ -17,6 +17,7 @@ let base = "";
 let queue: JobQueue;
 let store: JobStore;
 const recordFile = path.join(paths.home, "record.json");
+const projectDir = path.join(paths.home, "repo");
 const ADMIN = "admin-token-123";
 
 function sleep(ms: number) {
@@ -73,8 +74,12 @@ beforeAll(async () => {
   writeSkill(paths, "twinoff", "description: two\nskillhook:\n  dedupe:\n    in_flight: false\n  env: [FAKE_CLAUDE_SLEEP_MS]");
   writeSkill(paths, "slacky", "description: sl\nskillhook:\n  auth:\n    type: slack\n    secret_env: SLACK_SECRET");
   writeSkill(paths, "unconfigured", "description: u");
+  mkdirSync(projectDir, { recursive: true });
+  writeFileSync(path.join(projectDir, "skillhook.yaml"), ["hooks:", "  where-am-i:", "    description: Prints the working directory and the payload it got on stdin.", '    run: printf "%s\\n" "$PWD" && cat', "    auth: { type: bearer, secret_env: SKILLHOOK_SECRET_HELLO }", "    when:", "      - { path: action, equals: closed }", "  by-skill:", "    skill: skills/greeter", "    model: haiku", "    auth: { type: bearer, secret_env: SKILLHOOK_SECRET_HELLO }", ""].join("\n"));
+  mkdirSync(path.join(projectDir, "skills", "greeter"), { recursive: true });
+  writeFileSync(path.join(projectDir, "skills", "greeter", "SKILL.md"), "---\nname: greeter\ndescription: Greets.\nskillhook:\n  model: opus\n  env: [FAKE_CLAUDE_RECORD]\n---\n\nGreet {{payload.name}} from the project.\n");
   const config = loadConfig(paths);
-  const registry = new SkillRegistry(paths.skillsDir);
+  const registry = new SkillRegistry(paths.skillsDir, { projects: () => [projectDir] });
   store = new JobStore(paths.jobsDir, { maxJobs: 100, dedupeWindowSeconds: 3600 });
   const { loadSecrets } = await import("./env.js");
   const secrets = () => loadSecrets(paths, {});
@@ -282,6 +287,35 @@ describe("HTTP surface", () => {
     expect(again.status).toBe("queued");
     expect(again.job_id).not.toBe(first.job_id);
     for (const id of [other.job_id, otherQuery.job_id, again.job_id]) await waitForJob(String(id), 25_000);
+  });
+
+  it("serves the hooks of a linked project: a shell command in the project directory, and a SKILL.md under the hook's name", async () => {
+    const skipped = await fetch(`${base}/hooks/where-am-i`, { method: "POST", body: JSON.stringify({ action: "opened" }), headers: { authorization: "Bearer hello-secret", "content-type": "application/json" } });
+    expect((await json(skipped)).skipped).toBe(true);
+    const res = await fetch(`${base}/hooks/where-am-i?wait=20`, { method: "POST", body: JSON.stringify({ action: "closed", pr: 7 }), headers: { authorization: "Bearer hello-secret", "content-type": "application/json" } });
+    const body = await json(res);
+    expect(body.status).toBe("succeeded");
+    expect(String(body.result).split("\n")[0]).toBe(projectDir);
+    expect(String(body.result)).toContain('"pr": 7');
+    const job = store.get(String(body.job_id));
+    expect(job).toMatchObject({ runner: "shell", cwd: projectDir });
+    expect(job?.command?.slice(0, 2)).toEqual(["/bin/sh", "-c"]);
+
+    const viaSkill = await fetch(`${base}/hooks/by-skill?wait=20`, { method: "POST", body: JSON.stringify({ name: "Grace" }), headers: { authorization: "Bearer hello-secret", "content-type": "application/json" } });
+    const skillBody = await json(viaSkill);
+    expect(skillBody.status).toBe("succeeded");
+    expect(String(skillBody.result)).toContain("model=haiku");
+    const record = JSON.parse(readFileSync(recordFile, "utf8")) as { prompt: string; cwd: string; env: Record<string, string>; args: string[] };
+    expect(record.prompt).toContain("Greet Grace from the project.");
+    expect(record.cwd).toBe(projectDir);
+    expect(record.env.SKILLHOOK_SKILL).toBe("by-skill");
+    expect(record.env.SKILLHOOK_SKILL_DIR).toBe(path.join(projectDir, "skills", "greeter"));
+    expect(record.args).toContain(path.join(projectDir, "skills", "greeter"));
+
+    const skills = await json(await fetch(`${base}/skills`, { headers: { authorization: `Bearer ${ADMIN}` } }));
+    const hook = (skills.skills as { name: string; source: { type: string; kind?: string; dir?: string }; cwd: string }[]).find((s) => s.name === "where-am-i");
+    expect(hook).toMatchObject({ source: { type: "project", kind: "run", dir: projectDir }, cwd: projectDir });
+    expect((skills.skills as { name: string; source: { type: string } }[]).find((s) => s.name === "hello")?.source).toEqual({ type: "home" });
   });
 
   it("runs identical deliveries when in-flight de-duplication is off for the skill", async () => {

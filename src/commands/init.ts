@@ -69,6 +69,7 @@ export async function initCommand(ctx: Ctx): Promise<number> {
     "skillhook expose tailscale            # permanent public HTTPS URL via Tailscale Funnel",
     "skillhook send hello --wait 60        # POST a signed test webhook to the running server",
     "skillhook skills new my-skill         # add your own skill",
+    "skillhook link ~/dev/your-repo        # serve the hooks a repository declares in its skillhook.yaml",
   ];
   const human = [
     `Initialized skillhook in ${paths.home}`,

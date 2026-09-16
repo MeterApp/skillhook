@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MeterApp/skillhook/main/schema/skillhook.yaml.schema.json
+# The webhooks of this repository, version-controlled with it. Serve them from a checkout with:
+#   skillhook link .            (then: skillhook secret set GITHUB_WEBHOOK_SECRET; skillhook url pull-after-merge)
+# Reference: docs/projects.md
+
+hooks:
+  # GitHub → Settings → Webhooks: payload URL from `skillhook url pull-after-merge`, content type
+  # application/json, event "Pull requests". Fast-forwards the branch this checkout is on; a checkout
+  # with local changes or a diverged branch makes the job fail instead of touching anything.
+  pull-after-merge:
+    description: Fast-forward this checkout when a pull request merges into main.
+    run: git pull --ff-only
+    timeout_seconds: 120
+    auth: { type: github, secret_env: GITHUB_WEBHOOK_SECRET }
+    when:
+      - { header: x-github-event, equals: pull_request }
+      - { path: action, equals: closed }
+      - { path: pull_request.merged, equals: true }
+      - { path: pull_request.base.ref, equals: main }
