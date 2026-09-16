@@ -10,8 +10,9 @@ turns a Mac or Linux box into a permanent webhook endpoint. Each endpoint
 runs an Agent Skill (`SKILL.md`) with Claude Code (`claude -p`), Codex
 (`codex exec`) or a shell command, in the directory the skill names, using the
 machine's own logins (Claude subscription / ChatGPT) or API keys. Tailscale
-Funnel supplies the permanent HTTPS URL. User docs: `README.md`, `docs/`,
-`llms.txt`.
+Funnel supplies the permanent HTTPS URL. Published to npm as
+`@meterapp/skillhook` (0.1.0 shipped as the unscoped `skillhook`); the command
+is `skillhook`. User docs: `README.md`, `docs/`, `llms.txt`.
 
 ## Layout
 

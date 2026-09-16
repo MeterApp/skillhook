@@ -162,8 +162,8 @@ describe("cli", () => {
   it("checks for updates against the registry and never installs from a source checkout", async () => {
     const newer = `${Number(process.env.npm_package_version?.split(".")[0] ?? 99) + 99}.0.0`;
     const registry = createServer((req, res) => {
-      res.writeHead(req.url === "/skillhook/latest" ? 200 : 404, { "content-type": "application/json" });
-      res.end(JSON.stringify(req.url === "/skillhook/latest" ? { version: newer } : { error: "Not found" }));
+      res.writeHead(req.url === "/@meterapp%2Fskillhook/latest" ? 200 : 404, { "content-type": "application/json" });
+      res.end(JSON.stringify(req.url === "/@meterapp%2Fskillhook/latest" ? { version: newer } : { error: "Not found" }));
     });
     await new Promise<void>((resolve) => registry.listen(0, "127.0.0.1", () => resolve()));
     const address = registry.address();
@@ -175,7 +175,7 @@ describe("cli", () => {
       expect(existsSync(path.join(paths.home, "update-check.json"))).toBe(true);
       const human = io(env);
       expect(await main(["update", ...dir], human.cli)).toBe(0);
-      expect(human.out()).toContain(`Update available: skillhook`);
+      expect(human.out()).toContain(`Update available: @meterapp/skillhook`);
       expect(human.out()).toContain("git pull");
       const install = io(env);
       expect(await main(["update", ...dir, "--install", "--json"], install.cli)).toBe(1);

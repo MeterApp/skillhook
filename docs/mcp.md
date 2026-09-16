@@ -6,7 +6,7 @@ Related: [skills.md](skills.md) (what `create_skill` writes), [api.md](api.md) (
 
 ## Setup
 
-Print the configuration lines for your install (it uses `skillhook` when it is on `PATH`, otherwise the absolute Node binary and `dist/cli.js`, otherwise `npx -y skillhook`; it appends `--dir <home>` when `SKILLHOOK_HOME` or `--dir` is set):
+Print the configuration lines for your install (it uses `skillhook` when it is on `PATH`, otherwise the absolute Node binary and `dist/cli.js`, otherwise `npx -y @meterapp/skillhook`; it appends `--dir <home>` when `SKILLHOOK_HOME` or `--dir` is set):
 
 ```bash
 skillhook mcp --print-config

@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { serveMcp } from "../mcp.js";
 import { cliEntrypoint, stableNodePath } from "../service.js";
 import { which } from "../tailscale.js";
+import { PACKAGE } from "../version.js";
 import { bool, type Ctx } from "./shared.js";
 
 export async function mcpCommand(ctx: Ctx): Promise<number> {
@@ -9,7 +10,7 @@ export async function mcpCommand(ctx: Ctx): Promise<number> {
     const onPath = which("skillhook");
     const cli = cliEntrypoint();
     const command = onPath ? "skillhook" : cli.exists ? stableNodePath() : "npx";
-    const args = onPath ? ["mcp"] : cli.exists ? [cli.path, "mcp"] : ["-y", "skillhook", "mcp"];
+    const args = onPath ? ["mcp"] : cli.exists ? [cli.path, "mcp"] : ["-y", PACKAGE.name, "mcp"];
     const dirArgs = ctx.io.env.SKILLHOOK_HOME || ctx.flags.dir ? ["--dir", ctx.paths.home] : [];
     const json = { mcpServers: { skillhook: { command, args: [...args, ...dirArgs] } } };
     const shell = [command, ...args, ...dirArgs].join(" ");

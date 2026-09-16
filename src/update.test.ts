@@ -8,7 +8,7 @@ import { VERSION } from "./version.js";
 
 const NEWER = `${Number(VERSION.split(".")[0]) + 1}.0.0`;
 
-/** A stand-in registry: answers `/skillhook/latest` with whatever `latest` is at the time, or 404 when null. */
+/** A stand-in registry: answers `/@meterapp%2Fskillhook/latest` with whatever `latest` is at the time, or 404 when null. */
 let registry: Server;
 let registryUrl = "";
 let latest: string | null = NEWER;
@@ -17,9 +17,9 @@ let hits = 0;
 beforeAll(async () => {
   registry = createServer((req, res) => {
     hits++;
-    if (req.url === "/skillhook/latest" && latest) {
+    if (req.url === "/@meterapp%2Fskillhook/latest" && latest) {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ name: "skillhook", version: latest }));
+      res.end(JSON.stringify({ name: "@meterapp/skillhook", version: latest }));
     } else {
       res.writeHead(404, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "Not found" }));
@@ -63,21 +63,21 @@ describe("policy", () => {
   });
 
   it("guesses the install method from the module path", () => {
-    expect(detectInstall("/opt/homebrew/lib/node_modules/skillhook/dist/update.js")).toEqual({ method: "npm", command: ["npm", "install", "-g", "skillhook@latest"], display: "npm install -g skillhook@latest" });
-    expect(detectInstall("/Users/me/Library/pnpm/global/5/node_modules/skillhook/dist/update.js", "2.0.0").command).toEqual(["pnpm", "add", "-g", "skillhook@2.0.0"]);
-    expect(detectInstall("/Users/me/.bun/install/global/node_modules/skillhook/dist/update.js").method).toBe("bun");
-    expect(detectInstall("/Users/me/.config/yarn/global/node_modules/skillhook/dist/update.js").method).toBe("yarn");
-    expect(detectInstall("/Users/me/.npm/_npx/abc123/node_modules/skillhook/dist/update.js")).toEqual({ method: "npx", display: "npx skillhook@latest" });
+    expect(detectInstall("/opt/homebrew/lib/node_modules/@meterapp/skillhook/dist/update.js")).toEqual({ method: "npm", command: ["npm", "install", "-g", "@meterapp/skillhook@latest"], display: "npm install -g @meterapp/skillhook@latest" });
+    expect(detectInstall("/Users/me/Library/pnpm/global/5/node_modules/@meterapp/skillhook/dist/update.js", "2.0.0").command).toEqual(["pnpm", "add", "-g", "@meterapp/skillhook@2.0.0"]);
+    expect(detectInstall("/Users/me/.bun/install/global/node_modules/@meterapp/skillhook/dist/update.js").method).toBe("bun");
+    expect(detectInstall("/Users/me/.config/yarn/global/node_modules/@meterapp/skillhook/dist/update.js").method).toBe("yarn");
+    expect(detectInstall("/Users/me/.npm/_npx/abc123/node_modules/@meterapp/skillhook/dist/update.js")).toEqual({ method: "npx", display: "npx @meterapp/skillhook@latest" });
     expect(detectInstall("/Users/me/dev/skillhook/dist/update.js").method).toBe("source");
-    expect(detectInstall("C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\skillhook\\dist\\update.js").method).toBe("npm");
+    expect(detectInstall("C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@meterapp\\skillhook\\dist\\update.js").method).toBe("npm");
   });
 
   it("formats a notice with the matching upgrade command", () => {
     const status = { current: "0.1.0", latest: "0.2.0", available: true, checked_at: null, disabled: false, cached: true };
-    const npm = formatUpdateNotice(status, detectInstall("/usr/lib/node_modules/skillhook/dist/update.js"));
+    const npm = formatUpdateNotice(status, detectInstall("/usr/lib/node_modules/@meterapp/skillhook/dist/update.js"));
     expect(npm).toContain("0.1.0 → 0.2.0");
     expect(npm).toContain("skillhook update --install");
-    expect(npm).toContain("npm install -g skillhook@latest");
+    expect(npm).toContain("npm install -g @meterapp/skillhook@latest");
     expect(npm).toContain("/releases/tag/v0.2.0");
     expect(formatUpdateNotice(status, detectInstall("/src/skillhook/dist/update.js"))).toContain("git pull");
   });
@@ -88,12 +88,15 @@ describe("registry lookup and cache", () => {
     expect(await fetchLatestVersion({ registry: registryUrl })).toBe(NEWER);
     expect(await fetchLatestVersion({ registry: `${registryUrl}///` })).toBe(NEWER);
     const urls: string[] = [];
-    const capture: typeof fetch = async (input) => {
+    const agents: (string | null)[] = [];
+    const capture: typeof fetch = async (input, init) => {
       urls.push(String(input));
+      agents.push(new Headers(init?.headers).get("user-agent"));
       return new Response(JSON.stringify({ version: "1.0.0" }), { status: 200, headers: { "content-type": "application/json" } });
     };
     expect(await fetchLatestVersion({ registry: "https://mirror.example/npm/", name: "@meterapp/skill/hook", fetchImpl: capture })).toBe("1.0.0");
     expect(urls).toEqual(["https://mirror.example/npm/@meterapp%2Fskill%2Fhook/latest"]);
+    expect(agents).toEqual([`skillhook/${VERSION} (update check)`]);
     expect(await fetchLatestVersion({ registry: registryUrl, name: "nope" })).toBeNull();
     expect(await fetchLatestVersion({ registry: "http://127.0.0.1:1", timeoutMs: 500 })).toBeNull();
     const bogus = createServer((_req, res) => {
