@@ -1,4 +1,4 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Secrets } from "./env.js";
 import type { NormalizedAuth } from "./skills.js";
 
@@ -101,6 +101,22 @@ export function ipMatches(ip: string, patterns: string[]): boolean {
 // Verification
 // ---------------------------------------------------------------------------
 
+/**
+ * Splits an `Authorization`-style header value into scheme and parameter with plain string operations: a regex such
+ * as `/^\s*Bearer\s+(.+?)\s*$/` backtracks quadratically on long runs of whitespace, and the header is attacker
+ * controlled. Returns the trimmed parameter when the scheme matches case-insensitively and is followed by whitespace.
+ */
+export function parseAuthorizationScheme(headerValue: string | undefined, scheme: string): string | undefined {
+  if (!headerValue) return undefined;
+  const trimmed = headerValue.trim();
+  if (trimmed.length <= scheme.length || trimmed.slice(0, scheme.length).toLowerCase() !== scheme.toLowerCase()) return undefined;
+  if (trimmed.charAt(scheme.length).trim() !== "") return undefined; // the scheme must be followed by whitespace
+  const parameter = trimmed.slice(scheme.length + 1).trim();
+  return parameter || undefined;
+}
+
+const BASE64_RE = /^[A-Za-z0-9+/=]+$/;
+
 export function verifyRequest(auth: NormalizedAuth, secrets: Secrets, req: InboundRequest): AuthOutcome {
   if (auth.allow_ips && auth.allow_ips.length > 0 && !ipMatches(req.ip, auth.allow_ips)) {
     return fail(403, "ip_not_allowed", "source address is not allowed for this skill");
@@ -115,20 +131,16 @@ export function verifyRequest(auth: NormalizedAuth, secrets: Secrets, req: Inbou
     case "bearer": {
       let presented: string | undefined;
       const headerValue = req.headers[auth.header];
-      if (auth.header === "authorization") {
-        const match = /^\s*Bearer\s+(.+?)\s*$/i.exec(headerValue ?? "");
-        presented = match?.[1];
-      } else {
-        presented = headerValue?.trim();
-      }
+      if (auth.header === "authorization") presented = parseAuthorizationScheme(headerValue, "Bearer");
+      else presented = headerValue?.trim();
       if (!presented && auth.allow_query_token) presented = req.query.get("token") ?? undefined;
       if (!presented) return fail(401, "missing_token", "missing bearer token");
       return safeEqual(presented, secret) ? { ok: true } : fail(401, "invalid_token", "invalid token");
     }
     case "basic": {
-      const match = /^\s*Basic\s+([A-Za-z0-9+/=]+)\s*$/i.exec(req.headers.authorization ?? "");
-      if (!match) return fail(401, "missing_credentials", "missing basic credentials");
-      const decoded = Buffer.from(match[1] as string, "base64").toString("utf8");
+      const credential = parseAuthorizationScheme(req.headers.authorization, "Basic");
+      if (!credential || !BASE64_RE.test(credential)) return fail(401, "missing_credentials", "missing basic credentials");
+      const decoded = Buffer.from(credential, "base64").toString("utf8");
       return safeEqual(decoded, secret) ? { ok: true } : fail(401, "invalid_credentials", "invalid credentials");
     }
     case "hmac": {
@@ -212,7 +224,7 @@ export interface SignOptions {
 /** Produces the headers a real sender would attach for the given auth scheme. */
 export function signRequest(auth: NormalizedAuth, secret: string, rawBody: Buffer, options: SignOptions = {}): Record<string, string> {
   const now = options.nowSeconds ?? Math.floor(Date.now() / 1000);
-  const deliveryId = options.deliveryId ?? `skillhook-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const deliveryId = options.deliveryId ?? `skillhook-${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
   switch (auth.type) {
     case "none":
       return {};

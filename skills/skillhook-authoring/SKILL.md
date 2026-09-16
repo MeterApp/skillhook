@@ -37,7 +37,7 @@ Start from an example when one is close — `skillhook skills examples`, then `s
 | `timeout_seconds` | the job is killed after this | 900 |
 | `auth` | how the sender is verified (next table) | `bearer` |
 | `when` | list of conditions; all must hold or the delivery is acknowledged and skipped | always run |
-| `dedupe` | `{ path: … }` or `{ header: … }`: the value that identifies a delivery | the provider's delivery id |
+| `dedupe` | `{ path: … }` or `{ header: … }`: the value that identifies a delivery; `in_flight: false` lets identical payloads run at the same time | the provider's delivery id; in-flight de-duplication on |
 | `env` | names of `.env` variables the agent may see, e.g. `[GRANOLA_API_KEY]` | none |
 | `concurrency` | jobs of this skill allowed at once | 1 |
 | `claude` | `permission_mode`, `allowed_tools`, `disallowed_tools`, `add_dirs`, `max_budget_usd`, `append_system_prompt`, `args` | server `runners.claude` |
@@ -93,6 +93,8 @@ when:
 ```
 
 Dedupe runs before the filter. GitHub, Sentry, Linear and Standard-Webhooks senders carry a delivery id, and skillhook drops repeats of it for `jobs.dedupe_window_seconds` (24 hours). `dedupe: { path: note_id }` makes the *entity* the key instead — one run per note, issue or order, however many events arrive. Duplicates get `200 {"duplicate": true, "job_id": …}`.
+
+Separately, after the filter, a delivery whose payload and query string equal those of a job of the same skill that is still queued or running is folded into that job (`200 {"duplicate": true, "in_flight": true, "job_id": …}`; with `?wait=` the caller gets that job's result). It runs again once the job has finished. This is on by default; set `dedupe: { in_flight: false }` only when each identical delivery must produce its own run (a button that queues one job per press).
 
 ## Secrets and environment
 

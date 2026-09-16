@@ -1,0 +1,77 @@
+name: Release
+
+# When a version bump lands on main (a pull request prepared with `npm run release -- <patch|minor|major>`), tag it
+# as vX.Y.Z and hand the tag to the Publish workflow. The tag is created with GITHUB_TOKEN, and GitHub never starts
+# workflows for events caused by GITHUB_TOKEN, so Publish is dispatched explicitly instead of relying on `push: tags`.
+# "Run workflow" retries the same logic for the current main.
+
+on:
+  push:
+    branches: [main]
+    paths: [package.json]
+  workflow_dispatch:
+
+permissions:
+  contents: write # push the tag
+  actions: write # dispatch the Publish workflow
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag the new version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Is this version tagged yet?
+        id: state
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          tag="v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists; nothing to do"
+            echo "create=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "create=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Release metadata is consistent
+        if: steps.state.outputs.create == 'true'
+        run: npm run release -- --check
+
+      - name: Create and push the tag
+        if: steps.state.outputs.create == 'true'
+        env:
+          TAG: ${{ steps.state.outputs.tag }}
+          VERSION: ${{ steps.state.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "skillhook $VERSION"
+          git push origin "refs/tags/$TAG"
+          echo "created $TAG at $(git rev-parse HEAD)"
+
+      - name: Publish
+        if: steps.state.outputs.create == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.state.outputs.tag }}
+        run: |
+          gh workflow run publish.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG" -f "tag=$TAG"
+          echo "dispatched Publish for $TAG: https://github.com/$GITHUB_REPOSITORY/actions/workflows/publish.yml"

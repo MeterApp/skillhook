@@ -208,6 +208,10 @@
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991
         },
+        "dedupe_in_flight": {
+          "default": true,
+          "type": "boolean"
+        },
         "inline_payload_max_bytes": {
           "default": 200000,
           "type": "integer",
@@ -233,6 +237,10 @@
         "warn",
         "error"
       ]
+    },
+    "update_check": {
+      "default": true,
+      "type": "boolean"
     }
   },
   "additionalProperties": false

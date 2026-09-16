@@ -54,6 +54,8 @@ beforeAll(async () => {
     SKILLHOOK_SECRET_FAILING: "x",
     SKILLHOOK_SECRET_SLOW: "s",
     SKILLHOOK_SECRET_SLOWTIMEOUT: "t",
+    SKILLHOOK_SECRET_TWIN: "tw",
+    SKILLHOOK_SECRET_TWINOFF: "two",
     SLACK_SECRET: "slack-secret",
     FAKE_CLAUDE_RECORD: recordFile,
     FAKE_CLAUDE_FAIL: "simulated failure",
@@ -67,6 +69,8 @@ beforeAll(async () => {
   writeSkill(paths, "slow", "description: s\nskillhook:\n  env: [FAKE_CLAUDE_SLEEP_MS]");
   writeSkill(paths, "slowtimeout", "description: t\nskillhook:\n  timeout_seconds: 1\n  env: [FAKE_CLAUDE_SLEEP_MS]");
   writeSkill(paths, "open", "description: o\nskillhook:\n  auth:\n    type: none");
+  writeSkill(paths, "twin", "description: tw\nskillhook:\n  env: [FAKE_CLAUDE_SLEEP_MS]");
+  writeSkill(paths, "twinoff", "description: two\nskillhook:\n  dedupe:\n    in_flight: false\n  env: [FAKE_CLAUDE_SLEEP_MS]");
   writeSkill(paths, "slacky", "description: sl\nskillhook:\n  auth:\n    type: slack\n    secret_env: SLACK_SECRET");
   writeSkill(paths, "unconfigured", "description: u");
   const config = loadConfig(paths);
@@ -247,5 +251,47 @@ describe("HTTP surface", () => {
     const detail = await json(await fetch(`${base}/jobs/${runBody.job_id}?include=result,prompt`, { headers: { authorization: `Bearer ${ADMIN}` } }));
     expect((detail.artifacts as Record<string, string>).prompt).toContain("Cy");
     expect((detail.job as { trigger: string }).trigger).toBe("api");
+  });
+
+  it("does not queue a delivery identical to one still in flight", async () => {
+    const post = (body: string, suffix = "", extra: Record<string, string> = {}) => fetch(`${base}/hooks/twin${suffix}`, { method: "POST", body, headers: { authorization: "Bearer tw", "content-type": "application/json", ...extra } });
+    const first = await json(await post('{"note": "n1", "x": 1}'));
+    expect(first.status).toBe("queued");
+    expect(store.get(String(first.job_id))?.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+    // Same payload, different key order, whitespace and headers: the sender is pointed at the job that is already running.
+    const same = await post('{ "x": 1,   "note": "n1" }', "", { "x-request-id": "another-delivery" });
+    expect(same.status).toBe(200);
+    const sameBody = await json(same);
+    expect(sameBody).toMatchObject({ ok: true, duplicate: true, in_flight: true, job_id: first.job_id });
+    expect(["queued", "running"]).toContain(sameBody.status);
+    expect(String(sameBody.status_url)).toBe(`/jobs/${first.job_id}`);
+    // A different payload, or a different query string, is new work.
+    const other = await json(await post('{"note": "n2", "x": 1}'));
+    expect(other.status).toBe("queued");
+    expect(other.job_id).not.toBe(first.job_id);
+    const otherQuery = await json(await post('{"note": "n1", "x": 1}', "?env=prod"));
+    expect(otherQuery.job_id).not.toBe(first.job_id);
+    // ?wait= on a duplicate waits for the original job and returns its result, still marked as a duplicate.
+    const waited = await post('{"x":1,"note":"n1"}', "?wait=20");
+    expect(waited.status).toBe(200);
+    const waitedBody = await json(waited);
+    expect(waitedBody).toMatchObject({ ok: true, duplicate: true, in_flight: true, job_id: first.job_id, status: "succeeded" });
+    expect(String(waitedBody.result)).toContain("FAKE OK");
+    // Once the job has finished, the same payload runs again.
+    const again = await json(await post('{"note": "n1", "x": 1}'));
+    expect(again.status).toBe("queued");
+    expect(again.job_id).not.toBe(first.job_id);
+    for (const id of [other.job_id, otherQuery.job_id, again.job_id]) await waitForJob(String(id), 25_000);
+  });
+
+  it("runs identical deliveries when in-flight de-duplication is off for the skill", async () => {
+    const post = () => fetch(`${base}/hooks/twinoff`, { method: "POST", body: '{"same": true}', headers: { authorization: "Bearer two" } });
+    const a = await json(await post());
+    const b = await json(await post());
+    expect(a.status).toBe("queued");
+    expect(b.status).toBe("queued");
+    expect(b.job_id).not.toBe(a.job_id);
+    await waitForJob(String(a.job_id));
+    await waitForJob(String(b.job_id));
   });
 });

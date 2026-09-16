@@ -62,6 +62,18 @@ Do it.
   });
 });
 
+describe("dedupe options", () => {
+  it("accepts path, header and in_flight and rejects anything else", () => {
+    const doc = (block: string) => `---\nname: d\ndescription: d\nskillhook:\n  dedupe:\n${block}\n---\nBody\n`;
+    const skill = parseSkillDocument(doc("    path: event.id\n    in_flight: false"), "/tmp/d");
+    expect(skill.config.dedupe).toEqual({ path: "event.id", in_flight: false });
+    expect(parseSkillDocument(doc("    header: X-Delivery"), "/tmp/d").config.dedupe).toEqual({ header: "X-Delivery" });
+    expect(parseSkillDocument(`---\nname: d\ndescription: d\n---\nBody\n`, "/tmp/d").config.dedupe).toBeUndefined();
+    expect(() => parseSkillDocument(doc("    in_flight: sometimes"), "/tmp/d")).toThrow();
+    expect(() => parseSkillDocument(doc("    window: 5"), "/tmp/d")).toThrow();
+  });
+});
+
 describe("loadSkills / SkillRegistry", () => {
   it("loads valid skills and reports broken ones", () => {
     const paths = tempHome();

@@ -1,9 +1,14 @@
 name: CI
 
+# Every pull request and every push to main: typecheck, tests, build, schema and release-metadata checks on the
+# supported Node versions, plus a "Package" job that installs the packed tarball exactly like `npm install -g` would.
+# Branch rulesets on main require "Node.js 22", "Node.js 24" and "Package" to pass.
+
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -23,10 +28,10 @@ jobs:
         node-version: [22, 24]
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
@@ -46,6 +51,9 @@ jobs:
       - name: Config schema is current
         run: npm run schema -- --check
 
+      - name: Release metadata is consistent
+        run: npm run release -- --check
+
       - name: CLI smoke test
         run: |
           node dist/cli.js --version
@@ -54,3 +62,57 @@ jobs:
 
       - name: Audit production dependencies
         run: npm audit --omit=dev
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Pack
+        run: npm pack --json > "$RUNNER_TEMP/pack.json"
+
+      - name: Tarball contains what it should and nothing else
+        run: |
+          node - "$RUNNER_TEMP/pack.json" <<'JS'
+          const fs = require("node:fs");
+          const [info] = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          const files = new Set(info.files.map((f) => f.path));
+          const required = ["package.json", "README.md", "CHANGELOG.md", "LICENSE", "dist/cli.js", "dist/index.js", "dist/index.d.ts", "dist/update.js", "schema/skillhook.schema.json", "examples/skills/hello/SKILL.md", "examples/skills/sentry-triage/SKILL.md"];
+          const missing = required.filter((f) => !files.has(f));
+          const unwanted = [...files].filter((f) => /^(src|test|scripts|docs|skills|\.github)\//.test(f) || /\.test\.|\.env|\.tgz$|\.map$/.test(f));
+          if (missing.length || unwanted.length) {
+            console.error(JSON.stringify({ missing, unwanted }, null, 2));
+            process.exit(1);
+          }
+          console.log(`${info.filename}: ${info.entryCount} files, ${info.unpackedSize} bytes unpacked`);
+          JS
+
+      - name: Install the tarball globally and use it
+        run: |
+          npm install -g ./skillhook-*.tgz
+          version="$(node -p "require('./package.json').version")"
+          test "$(skillhook --version)" = "$version"
+          home="$RUNNER_TEMP/home"
+          skillhook init --dir "$home" --json
+          skillhook skills add sentry-triage --dir "$home" --json
+          skillhook skills validate --dir "$home" --json
+          skillhook run hello --dir "$home" --payload '{"name":"ci"}' --dry-run --json > /dev/null
+          skillhook mcp --print-config --dir "$home" --json > /dev/null
+          skillhook doctor --dir "$home" --json > "$RUNNER_TEMP/doctor.json" || true
+          node -e 'const r = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if (!Array.isArray(r.checks)) process.exit(1);' "$RUNNER_TEMP/doctor.json"
+          skillhook update --dir "$home" --json || true

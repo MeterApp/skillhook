@@ -2,6 +2,7 @@ import { ADMIN_TOKEN_ENV, readEnvFile } from "../env.js";
 import { JobQueue } from "../queue.js";
 import { createLogger } from "../logger.js";
 import { clearServerState, createServer, writeServerState } from "../server.js";
+import { checkForUpdate, detectInstall, releaseNotesUrl, UPDATE_CHECK_INTERVAL_MS } from "../update.js";
 import { VERSION } from "../version.js";
 import { bool, num, str, type Ctx } from "./shared.js";
 
@@ -38,6 +39,18 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   writeServerState(ctx.paths, { pid: process.pid, host, port: boundPort, started_at: new Date().toISOString(), version: VERSION, public_url: config.public_url });
   logger.info("skillhook listening", { url: `http://${host}:${boundPort}`, public_url: config.public_url, skills: loaded.skills.map((s) => s.name), concurrency: config.concurrency, home: ctx.paths.home, version: VERSION });
   if (config.public_url) for (const skill of loaded.skills) logger.info("webhook url", { skill: skill.name, url: `${config.public_url}/hooks/${skill.name}` });
+
+  // A long-running server is the one place a daily update check is free: log it, never act on it.
+  const announceUpdate = async () => {
+    try {
+      const status = await checkForUpdate(ctx.paths, { env: ctx.io.env, config });
+      if (status.available) logger.info("update available", { current: status.current, latest: status.latest, command: detectInstall(undefined, status.latest ?? "latest").display, release_notes: releaseNotesUrl(status.latest ?? "") });
+    } catch {
+      /* never fatal */
+    }
+  };
+  void announceUpdate();
+  setInterval(() => void announceUpdate(), UPDATE_CHECK_INTERVAL_MS).unref();
 
   let shuttingDown = false;
   const shutdown = async (signal: string) => {

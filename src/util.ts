@@ -62,6 +62,13 @@ export function tail(text: string, maxChars: number): string {
   return text.length <= maxChars ? text : text.slice(text.length - maxChars);
 }
 
+/** Removes every trailing occurrence of `char` in linear time (a regex such as `/x*$/` backtracks quadratically on long runs). */
+export function trimTrailing(text: string, char: string): string {
+  let end = text.length;
+  while (end > 0 && text[end - 1] === char) end--;
+  return end === text.length ? text : text.slice(0, end);
+}
+
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

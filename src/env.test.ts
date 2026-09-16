@@ -8,6 +8,20 @@ describe("env file handling", () => {
   it("parses dotenv syntax", () => {
     const parsed = parseEnv(`# comment\nA=1\nexport B="two words"\nC='single # not comment'\nD=plain # trailing comment\n\nBAD LINE\nE=\n`);
     expect(parsed).toEqual({ A: "1", B: "two words", C: "single # not comment", D: "plain", E: "" });
+    expect(parseEnv("A = 1\nB=   spaced out   \n  export  C=3")).toEqual({ A: "1", B: "spaced out", C: "3" });
+    const started = Date.now();
+    expect(parseEnv(`A=${" ".repeat(200_000)}\n${"\n".repeat(50_000)}`)).toEqual({ A: "" });
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it("normalizes the file to exactly one trailing newline", () => {
+    const paths = tempHome();
+    writeFileSync(paths.envFile, "A=1\n\n\n\n");
+    upsertEnvVar(paths.envFile, "B", "2");
+    expect(readFileSync(paths.envFile, "utf8")).toBe("A=1\n\n\n\nB=2\n"); // interior blank lines are kept, the trailing run collapses to one newline
+    writeFileSync(paths.envFile, `A=1\nB=2${"\n".repeat(20_000)}`);
+    expect(removeEnvVar(paths.envFile, "A")).toBe(true);
+    expect(readFileSync(paths.envFile, "utf8")).toBe("B=2\n");
   });
 
   it("upserts and removes keys while preserving other lines", () => {

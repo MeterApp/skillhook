@@ -39,7 +39,8 @@ Processing order:
 6. Slack skills only: `{"type":"url_verification","challenge":"…"}` -> `200 {"challenge":"…"}`, no job.
 7. Delivery id (provider header, `dedupe.header`, `dedupe.path`); a repeat within `jobs.dedupe_window_seconds` -> `200` with `duplicate: true` and the original `job_id`.
 8. `when` filters -> `200` with `skipped: true` when they do not match.
-9. The job is written to disk and queued; the response is sent.
+9. In-flight check (`dedupe.in_flight`, default `jobs.dedupe_in_flight` = `true`): a payload and query string identical to a job of this skill that is still queued or running -> `200` with `duplicate: true`, `in_flight: true` and that job's `job_id`; with `?wait=` the response waits for that job instead.
+10. The job is written to disk and queued; the response is sent.
 
 ### Responses
 
@@ -98,6 +99,12 @@ Duplicate delivery: `200`
 
 ```json
 { "ok": true, "duplicate": true, "job_id": "20260916T025442Z-w0un7d", "status_url": "/jobs/20260916T025442Z-w0un7d" }
+```
+
+Identical delivery still in flight: `200`
+
+```json
+{ "ok": true, "duplicate": true, "in_flight": true, "job_id": "20260916T025442Z-w0un7d", "status": "running", "status_url": "/jobs/20260916T025442Z-w0un7d" }
 ```
 
 Filtered out: `200`
@@ -256,6 +263,7 @@ Ids that do not exist (or do not look like `YYYYMMDDTHHMMSSZ-xxxxxx`) are `404 u
 | `result` | string, optional | Final agent message, truncated to 20 000 characters here; complete in `result.md`. |
 | `error` | string, optional | Failure reason. |
 | `delivery_id` | string, optional | Provider delivery id when known. |
+| `fingerprint` | string, optional | SHA-256 of the payload and query string of a webhook delivery; what the in-flight duplicate check compares. |
 | `source` | object | `ip`, `method` (`POST`, `PUT`, or `LOCAL` for CLI/MCP runs), `path`, `content_type`, `user_agent`. |
 
 `job.json` on disk also contains `command` (the exact argv); API responses omit it.

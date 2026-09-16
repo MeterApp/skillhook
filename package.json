@@ -1,7 +1,7 @@
 {
   "name": "skillhook",
   "version": "0.1.0",
-  "description": "Turn your Mac (or any machine) into a permanent, secure webhook endpoint that runs Agent Skills with Claude Code or Codex. Webhook in, agent out.",
+  "description": "Make your Agent Skills reactive. A permanent, secure webhook endpoint on your own machine that runs SKILL.md files with Claude Code or Codex the moment something happens, instead of on a schedule. Webhook in, agent out.",
   "license": "MIT",
   "author": "Meter <hello@meterapp.co> (https://meterapp.co)",
   "homepage": "https://github.com/MeterApp/skillhook#readme",
@@ -14,8 +14,12 @@
   },
   "keywords": [
     "webhook",
+    "webhooks",
+    "event-driven",
+    "reactive",
     "agent",
     "agent-skills",
+    "skills",
     "claude-code",
     "codex",
     "mcp",
@@ -44,10 +48,14 @@
     "examples",
     "schema",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "engines": {
     "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -56,8 +64,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "npm run typecheck && npm test && npm run build && npm run schema -- --check",
+    "check": "npm run typecheck && npm test && npm run build && npm run schema -- --check && npm run release -- --check",
     "prepublishOnly": "npm run check",
+    "release": "tsx scripts/release.ts",
     "schema": "tsx scripts/generate-schema.ts"
   },
   "dependencies": {

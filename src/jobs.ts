@@ -45,6 +45,8 @@ export interface JobRecord {
   result?: string;
   error?: string;
   delivery_id?: string;
+  /** Hash of payload + query for in-flight de-duplication of webhook deliveries (see `deliveryFingerprint`). */
+  fingerprint?: string;
   source: JobSource;
 }
 
@@ -70,6 +72,7 @@ export interface CreateJobInput {
   effort?: string;
   source: JobSource;
   delivery_id?: string;
+  fingerprint?: string;
   event: WebhookEvent;
   rawBody?: Buffer;
 }
@@ -132,6 +135,7 @@ export class JobStore {
       effort: input.effort,
       created_at: nowIso(),
       delivery_id: input.delivery_id,
+      fingerprint: input.fingerprint,
       source: input.source,
     };
     writeFileSync(paths.payload, `${payloadJson(input.event.payload)}\n`, { mode: 0o600 });

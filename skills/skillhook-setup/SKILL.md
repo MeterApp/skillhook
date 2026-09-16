@@ -35,7 +35,7 @@ npm install -g skillhook          # install globally: the background service poi
 skillhook init                    # add --runner codex, --model <name>, --port <n> as needed
 ```
 
-`init` creates the directory, `skillhook.json`, `.env` with an admin token, and copies the bundled `hello` skill with a fresh bearer secret. Re-running it keeps existing files (`--force` rewrites the config). `npx -y skillhook <command>` works for one-off commands, but install globally before `service install`.
+`init` creates the directory, `skillhook.json`, `.env` with an admin token, and copies the bundled `hello` skill with a fresh bearer secret. Re-running it keeps existing files (`--force` rewrites the config). `npx -y skillhook <command>` works for one-off commands, but install globally before `service install`. Later, `skillhook update --install` upgrades that global install and restarts the service when it is idle; skillhook mentions new versions after commands and in `doctor`, and `SKILLHOOK_NO_UPDATE_CHECK=1` silences that.
 
 ## 3. Read the doctor
 
@@ -128,6 +128,7 @@ Install the plugin (`/plugin marketplace add MeterApp/skillhook`, then `/plugin 
 | `404 unknown_skill` | wrong name in the URL, `enabled: false`, or SKILL.md fails to parse | `skillhook skills validate`, `skillhook url` |
 | `200` with `"skipped": true` | the `when` filter rejected the event | expected for other event types (GitHub's `ping`); otherwise fix the filter |
 | `200` with `"duplicate": true` | same delivery id or `dedupe` value within 24 hours | expected on retries; change the id to run again |
+| `200` with `"duplicate": true, "in_flight": true` | the same payload is still queued or running for that skill | wait for the job named in the response (or `?wait=`); set `dedupe.in_flight: false` on the skill if every identical delivery must run |
 | `Funnel not enabled` / an approval URL is printed | one-time tailnet approval pending | open the `login.tailscale.com` link, enable Funnel, rerun `skillhook expose tailscale` |
 | doctor: `claude … not logged in` | headless runs use the same login as the terminal | `claude login` in a terminal, or `skillhook secret set ANTHROPIC_API_KEY` |
 | doctor: `codex … not logged in`, or runs fail on a usage limit | ChatGPT login missing or exhausted | `codex login`; wait for the limit to reset, or `skillhook secret set OPENAI_API_KEY` |
