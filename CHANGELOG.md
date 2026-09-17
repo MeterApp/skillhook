@@ -4,6 +4,8 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.2.0 (2026-09-17)
+
 - Version-controlled hooks: a repository can declare its webhooks in a `skillhook.yaml` at its root.
   Each hook maps a webhook name to what runs: `run:` (a shell command, executed in the repository
   with the payload on stdin), `skill:` (a `SKILL.md` directory in the repository, served under the
