@@ -13,6 +13,8 @@ Related: [security.md](security.md) (auth types in depth), [runners.md](runners.
 - The default secret variable is `SKILLHOOK_SECRET_<NAME>`: the name upper-cased with every run of non-alphanumerics replaced by `_` (`granola-meeting-actions` becomes `SKILLHOOK_SECRET_GRANOLA_MEETING_ACTIONS`).
 - Other files in the directory (scripts, reference docs, templates) are available to the agent: the directory is passed as `--add-dir` and exposed as `{{skill_dir}}` and `$SKILLHOOK_SKILL_DIR`.
 
+A repository can also declare hooks in a version-controlled `skillhook.yaml` (a shell command, a `SKILL.md` in the repository, or an inline prompt per webhook name); `skillhook link <dir>` serves them next to the skills here. Every field below applies to those hooks as well. See [projects.md](projects.md).
+
 Edits take effect without a restart. The server re-reads a `SKILL.md` whose modification time changed before the next delivery, and rescans the directory on every `GET /skills`. Changes to `skillhook.json` do require a restart; changes to `.env` do not (secrets are re-read on every request).
 
 ## Anatomy
@@ -112,7 +114,7 @@ The Codex approval policy is server-wide: `runners.codex.approval_policy` (defau
 | `command` | string | Run through `/bin/sh -c "<string>"`. |
 | `command` | string[] | Executed directly; the first element is the executable. |
 
-The command receives the payload JSON on stdin and the `SKILLHOOK_*` variables in its environment; its stdout becomes the job result and a non-zero exit code fails the job. See [runners.md](runners.md#shell-runner).
+The command receives the payload JSON on stdin and the `SKILLHOOK_*` variables in its environment; its stdout becomes the job result and a non-zero exit code fails the job. See [runners.md](runners.md#shell-runner). In a repository's `skillhook.yaml` the same thing is spelled `run: <command>` ([projects.md](projects.md#run-hooks)).
 
 ## Authentication
 

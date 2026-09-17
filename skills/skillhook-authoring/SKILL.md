@@ -47,6 +47,27 @@ Start from an example when one is close — `skillhook skills examples`, then `s
 
 Unknown keys fail validation and the skill stops routing — `skillhook skills validate <name>` tells you.
 
+## Hooks in a repository (`skillhook.yaml`)
+
+When the webhook belongs to a repository (pull the checkout after a merge, run a script on deploy, triage that repository's issues), put the mapping in a `skillhook.yaml` at its root instead of `~/.skillhook/skills`, so it is reviewed and versioned with the code and identical on every machine that runs `skillhook link <repo>`:
+
+```yaml
+hooks:
+  pull-after-merge:                      # POST /hooks/pull-after-merge
+    run: git pull --ff-only              # a shell command in the repository, payload on stdin; no agent
+    auth: { type: github, secret_env: GITHUB_WEBHOOK_SECRET }
+    when: [{ header: x-github-event, equals: pull_request }, { path: action, equals: closed }, { path: pull_request.merged, equals: true }]
+  issue-triage:
+    skill: .claude/skills/issue-triage   # a SKILL.md directory in the repository, served under this hook's name
+    when: [{ header: x-github-event, equals: issues }, { path: action, equals: opened }]
+    auth: { type: github, secret_env: GITHUB_WEBHOOK_SECRET }
+  summarize:
+    prompt: Summarize the payload into {{job_dir}}/summary.md.   # inline instructions for the agent
+    model: haiku
+```
+
+Each hook is exactly one of `run` / `skill` / `prompt` plus any key of the table above. Differences from a skill directory: `cwd` defaults to the repository (a relative `cwd` is resolved against it), the default secret is `SKILLHOOK_SECRET_<HOOK>`, and keys on a `skill:` hook replace the same keys of the SKILL.md's block (so one SKILL.md can back several hooks with different filters). `run` commands read the payload from stdin or `$SKILLHOOK_PAYLOAD_PATH`; never build the command line from payload data. Scaffold with `skillhook projects init` (MCP `link_project` with `init: true`), check with `skillhook skills validate`, test with `skillhook run <hook> --payload … --dry-run` like any skill. Secrets are named in the file and set per machine with `skillhook secret set`. Reference: docs/projects.md.
+
 ## Auth presets and what each verifies
 
 | `type` | Header(s) checked | Secret |

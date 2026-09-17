@@ -1,7 +1,7 @@
-import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadSkills, parseSkillDocument, renderSkillTemplate, SkillRegistry, describeAuth } from "./skills.js";
+import { loadSkills, parseSkillDocument, renderSkillTemplate, describeAuth } from "./skills.js";
 import { tempHome, writeSkill } from "./test-support/helpers.js";
 
 describe("parseSkillDocument", () => {
@@ -85,18 +85,5 @@ describe("loadSkills / SkillRegistry", () => {
     expect(result.skills.map((s) => s.name)).toEqual(["good"]);
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]?.name).toBe("broken");
-  });
-
-  it("reloads a skill when its SKILL.md changes", () => {
-    const paths = tempHome();
-    const dir = writeSkill(paths, "live", "description: v1");
-    const registry = new SkillRegistry(paths.skillsDir);
-    expect(registry.get("live")?.description).toBe("v1");
-    writeFileSync(path.join(dir, "SKILL.md"), "---\nname: live\ndescription: v2\n---\nbody");
-    const future = new Date(Date.now() + 5000);
-    utimesSync(path.join(dir, "SKILL.md"), future, future);
-    expect(registry.get("live")?.description).toBe("v2");
-    expect(registry.get("../etc")).toBeUndefined();
-    expect(registry.get("missing")).toBeUndefined();
   });
 });

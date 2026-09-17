@@ -6,10 +6,11 @@ import type { Paths } from "./paths.js";
 import { resolveRunSettings } from "./run.js";
 import { commandParts } from "./runners/types.js";
 import { serviceStatus } from "./service.js";
-import { loadSkills, type Skill } from "./skills.js";
+import { configProjects, SkillRegistry } from "./registry.js";
+import type { Skill } from "./skills.js";
 import { currentExposures, findTailscale, run, tailscaleStatus, which } from "./tailscale.js";
 import { checkForUpdate, registryUrl, releaseNotesUrl, updateChecksDisabled } from "./update.js";
-import { errorMessage, isDirectory } from "./util.js";
+import { displayPath, errorMessage, isDirectory } from "./util.js";
 import { VERSION } from "./version.js";
 
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
@@ -95,9 +96,14 @@ export async function runDoctor(paths: Paths, options: DoctorOptions = {}): Prom
   const secrets: Secrets = loadSecrets(paths);
   checks.push(check("admin token", secrets[ADMIN_TOKEN_ENV] ? "ok" : "warn", secrets[ADMIN_TOKEN_ENV] ? `${ADMIN_TOKEN_ENV} set` : `${ADMIN_TOKEN_ENV} not set (admin API only reachable from localhost)`, secrets[ADMIN_TOKEN_ENV] ? undefined : "run: skillhook secret generate admin"));
 
-  const loaded = loadSkills(paths.skillsDir);
+  const loaded = new SkillRegistry(paths.skillsDir, { projects: configProjects(paths), base: paths.home }).list();
   if (loaded.errors.length) checks.push(check("skills", "fail", `${loaded.errors.length} invalid skill(s): ${loaded.errors.map((e) => `${e.name} (${e.error.split("\n")[0]})`).join("; ")}`, "run: skillhook skills validate"));
   else checks.push(check("skills", loaded.skills.length ? "ok" : "warn", loaded.skills.length ? `${loaded.skills.length} skill(s): ${loaded.skills.map((s) => s.name).join(", ")}` : "no skills yet", loaded.skills.length ? undefined : "run: skillhook skills new <name>"));
+  if (!loaded.projects.length) checks.push(check("projects", "skip", "no linked projects", "skillhook link <repo> serves the hooks a repository declares in skillhook.yaml"));
+  for (const project of loaded.projects) {
+    const broken = project.error ? 1 : project.errors.length;
+    checks.push(check(`project ${displayPath(project.dir)}`, broken ? "fail" : "ok", project.error ?? `${project.hooks.length} hook(s): ${project.hooks.map((h) => h.name).join(", ") || "none"}${project.errors.length ? `; ${project.errors.length} invalid: ${project.errors.map((e) => e.name).join(", ")}` : ""}`, broken ? "run: skillhook skills validate" : undefined));
+  }
 
   const runnersNeeded = new Set<string>();
   if (config) {
@@ -107,7 +113,7 @@ export async function runDoctor(paths: Paths, options: DoctorOptions = {}): Prom
       const auth = skill.auth;
       if (auth.type === "none") checks.push(check(`skill ${skill.name}`, "warn", "auth: none — anyone with the URL can trigger it", "set skillhook.auth.type in SKILL.md"));
       else if (!secrets[auth.secret_env]) checks.push(check(`skill ${skill.name}`, "fail", `secret ${auth.secret_env} not set (webhooks will get 503)`, `run: skillhook secret generate ${skill.name}  (or: skillhook secret set ${auth.secret_env})`));
-      else checks.push(check(`skill ${skill.name}`, isDirectory(settings.cwd) ? "ok" : "fail", `${settings.runner}${settings.model ? ` ${settings.model}` : ""}, auth ${auth.type}, cwd ${settings.cwd}`, isDirectory(settings.cwd) ? undefined : "cwd does not exist"));
+      else checks.push(check(`skill ${skill.name}`, isDirectory(settings.cwd) ? "ok" : "fail", `${settings.runner}${settings.model ? ` ${settings.model}` : ""}, auth ${auth.type}, cwd ${settings.cwd}${skill.source.type === "project" ? `, from ${displayPath(skill.source.file)}` : ""}`, isDirectory(settings.cwd) ? undefined : "cwd does not exist"));
     }
   }
 

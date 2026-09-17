@@ -10,7 +10,8 @@ import type { Logger } from "./logger.js";
 import { deliveryFingerprint, parseBody, redactHeaders, type Trigger, type WebhookEvent } from "./payload.js";
 import type { JobQueue } from "./queue.js";
 import { resolveRunSettings } from "./run.js";
-import { describeAuth, SkillError, type Skill, type SkillRegistry } from "./skills.js";
+import type { SkillRegistry } from "./registry.js";
+import { describeAuth, SkillError, type Skill } from "./skills.js";
 import { errorMessage, getPath, isPlainObject, isValidSkillName, nowIso, writeJsonFile } from "./util.js";
 import { VERSION } from "./version.js";
 import type { Paths } from "./paths.js";
@@ -157,6 +158,8 @@ export function skillSummary(skill: Skill, config: Config, secrets: Secrets): Re
     auth: { type: skill.auth.type, secret_env: secretEnv ?? null, configured: secretEnv ? Boolean(secrets[secretEnv]) : true, how: describeAuth(skill.auth) },
     when: skill.config.when?.map(describeCondition) ?? [],
     dir: skill.dir,
+    file: skill.file,
+    source: skill.source,
   };
 }
 
