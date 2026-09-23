@@ -3,7 +3,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
 import { CommandSpecSchema } from "./config.js";
-import { loadSkill, normalizeAuth, SkillError, SkillhookBlockSchema, type Skill, type SkillhookBlock } from "./skills.js";
+import { loadSkill, normalizeAuth, resolveSchedule, SkillError, SkillhookBlockSchema, type Skill, type SkillhookBlock } from "./skills.js";
 import { displayPath, exists, expandTilde, isDirectory, isValidSkillName, SKILL_NAME_RE } from "./util.js";
 
 // ---------------------------------------------------------------------------
@@ -173,12 +173,15 @@ export function compileHook(project: ProjectRef, name: string, hook: Hook): Skil
     const doc = loadSkill(skillDir);
     const config: SkillhookBlock = { ...doc.config, ...block };
     config.cwd = path.resolve(project.dir, expandTilde(block.cwd ?? doc.config.cwd ?? "."));
+    const { schedule, ...rest } = doc;
+    void schedule; // the hook's own schedule (possibly inherited, possibly `false`) replaces the SKILL.md's
     return {
-      ...doc,
+      ...rest,
       name,
       description: description ?? doc.description,
       config,
       auth: normalizeAuth(name, config.auth),
+      ...resolveSchedule(name, config, project.dir),
       enabled: config.enabled !== false,
       source: { type: "project", dir: project.dir, file: project.file, kind: "skill" },
     };
@@ -195,6 +198,7 @@ export function compileHook(project: ProjectRef, name: string, hook: Hook): Skil
     frontmatter: { name, description, ...hook },
     config,
     auth: normalizeAuth(name, config.auth),
+    ...resolveSchedule(name, config, project.dir),
     allowedTools: [],
     enabled: config.enabled !== false,
     mtimeMs: mtimeOf(project.file),

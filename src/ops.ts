@@ -284,6 +284,10 @@ export interface ManualRunInput {
   query?: Record<string, string>;
   trigger: Trigger;
   overrides?: { runner?: RunnerName; model?: string; effort?: string; cwd?: string };
+  /** Recorded on the job and the event; the caller is responsible for `rememberDelivery`. The scheduler uses `schedule:<slot>`. */
+  deliveryId?: string;
+  /** `source.method` on the job (default `LOCAL`; the scheduler writes `SCHEDULE`). */
+  sourceMethod?: string;
 }
 
 export function buildManualEvent(input: ManualRunInput, id = newJobId()): WebhookEvent {
@@ -302,11 +306,13 @@ export function buildManualEvent(input: ManualRunInput, id = newJobId()): Webhoo
     content_type: headers["content-type"],
     content_length: Buffer.byteLength(body),
     body_kind: typeof input.payload === "string" ? "text" : "json",
+    delivery_id: input.deliveryId,
     payload: input.payload,
   };
 }
 
-export function createManualJob(ops: Ops, input: ManualRunInput, store = ops.store): JobRecord {
+/** Creates (but does not enqueue) a job for a run that did not arrive over HTTP. Needs only the config and the job store, so the scheduler can call it with the server's own instances. */
+export function createManualJob(ops: Pick<Ops, "config" | "store">, input: ManualRunInput, store = ops.store): JobRecord {
   const settings = resolveRunSettings(input.skill, ops.config, input.overrides);
   const id = newJobId();
   const event = buildManualEvent(input, id);
@@ -317,7 +323,8 @@ export function createManualJob(ops: Ops, input: ManualRunInput, store = ops.sto
     runner: settings.runner,
     model: settings.model,
     effort: settings.effort,
-    source: { ip: "127.0.0.1", method: "LOCAL", path: event.path, content_type: event.content_type, user_agent: event.headers["user-agent"] },
+    source: { ip: "127.0.0.1", method: input.sourceMethod ?? "LOCAL", path: event.path, content_type: event.content_type, user_agent: event.headers["user-agent"] },
+    delivery_id: input.deliveryId,
     event,
   });
 }

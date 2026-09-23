@@ -4,7 +4,8 @@ import { z } from "zod";
 import { parseFrontmatter } from "./frontmatter.js";
 import { ClaudePermissionModeSchema, CodexSandboxSchema, CommandSpecSchema, RunnerNameSchema, type RunnerName } from "./config.js";
 import { defaultSecretEnvFor } from "./env.js";
-import { isDirectory, isValidSkillName } from "./util.js";
+import { isValidTimeZone, parseCron, type CronSpec } from "./schedule.js";
+import { errorMessage, isDirectory, isValidSkillName } from "./util.js";
 
 // ---------------------------------------------------------------------------
 // Frontmatter schema: the standard Agent Skills fields plus a `skillhook:` block.
@@ -80,6 +81,24 @@ export type AuthConfig = z.infer<typeof AuthSchema>;
 export type AuthType = AuthConfig["type"];
 export const AUTH_TYPES = AuthSchema.options.map((o) => o.shape.type.value) as AuthType[];
 
+export const ScheduleObjectSchema = z
+  .object({
+    /** Five-field cron expression (`minute hour day-of-month month day-of-week`) or an alias: `@hourly`, `@daily`, `@midnight`, `@weekly`, `@monthly`, `@yearly`. */
+    cron: z.string().min(1),
+    /** IANA time zone the expression is read in (default `UTC`). */
+    timezone: z.string().optional(),
+    /** Slots missed while the server was stopped or the machine asleep: run the most recent one (`latest`, default), every one up to 24 (`all`), or none. */
+    catch_up: z.enum(["latest", "all", "none"]).optional(),
+    /** When the previous run of this skill is still queued or running at the next slot: skip that slot (default) or queue behind it. */
+    overlap: z.enum(["skip", "queue"]).optional(),
+    /** Static object merged into the payload of every scheduled run (under the `scheduled_for` and `schedule` fields skillhook adds). */
+    payload: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
+/** A cron expression (read in UTC), a full object, or `false` to cancel a schedule a hook would inherit from its SKILL.md. */
+export const ScheduleSchema = z.union([z.string().min(1), z.literal(false), ScheduleObjectSchema]);
+export type ScheduleConfig = z.infer<typeof ScheduleSchema>;
+
 export const SkillhookBlockSchema = z
   .object({
     runner: RunnerNameSchema.optional(),
@@ -132,6 +151,10 @@ export const SkillhookBlockSchema = z
       .optional(),
     shell: z.object({ command: CommandSpecSchema }).strict().optional(),
     enabled: z.boolean().optional(),
+    /** Also run this skill on a cron schedule, without a webhook delivery: `"5 * * * *"` (UTC) or `{ cron, timezone, catch_up, overlap, payload }`. See docs/schedules.md. */
+    schedule: ScheduleSchema.optional(),
+    /** `false` makes a scheduled skill schedule-only: `POST /hooks/<name>` answers `404 schedule_only` and no secret is required. */
+    webhook: z.boolean().optional(),
   })
   .strict();
 export type SkillhookBlock = z.infer<typeof SkillhookBlockSchema>;
@@ -219,6 +242,43 @@ export function normalizeAuth(skillName: string, auth: AuthConfig | undefined): 
   }
 }
 
+// ---------------------------------------------------------------------------
+// Normalized schedule (cron parsed, defaults applied)
+// ---------------------------------------------------------------------------
+
+export interface NormalizedSchedule {
+  /** The expression as written (aliases expanded). */
+  cron: string;
+  timezone: string;
+  catch_up: "latest" | "all" | "none";
+  overlap: "skip" | "queue";
+  payload?: Record<string, unknown>;
+  spec: CronSpec;
+}
+
+/** Parses and validates a `schedule:` value; throws `SkillError` so an unusable schedule stops the skill from loading rather than silently never firing. */
+export function normalizeSchedule(skillName: string, schedule: ScheduleConfig | undefined, dir: string): NormalizedSchedule | undefined {
+  if (schedule === undefined || schedule === false) return undefined;
+  const object = typeof schedule === "string" ? { cron: schedule } : schedule;
+  let spec: CronSpec;
+  try {
+    spec = parseCron(object.cron);
+  } catch (error) {
+    throw new SkillError(`Skill "${skillName}": invalid schedule: ${errorMessage(error)}`, dir);
+  }
+  const timezone = object.timezone ?? "UTC";
+  if (!isValidTimeZone(timezone)) throw new SkillError(`Skill "${skillName}": unknown time zone "${timezone}" in schedule (use an IANA name such as Europe/Berlin)`, dir);
+  return { cron: spec.text, timezone, catch_up: object.catch_up ?? "latest", overlap: object.overlap ?? "skip", payload: object.payload, spec };
+}
+
+/** The `schedule` and `webhook` fields of a `Skill`, validated together: a hook that is neither reachable nor scheduled can never run. */
+export function resolveSchedule(skillName: string, config: SkillhookBlock, dir: string): { schedule?: NormalizedSchedule; webhook: boolean } {
+  const schedule = normalizeSchedule(skillName, config.schedule, dir);
+  const webhook = config.webhook !== false;
+  if (!webhook && !schedule) throw new SkillError(`Skill "${skillName}": \`webhook: false\` needs a \`schedule\`; without either the skill could never run`, dir);
+  return schedule ? { schedule, webhook } : { webhook };
+}
+
 /** Human-readable description of what a sender must do to authenticate. */
 export function describeAuth(auth: NormalizedAuth): string {
   switch (auth.type) {
@@ -268,6 +328,10 @@ export interface Skill {
   frontmatter: Record<string, unknown>;
   config: SkillhookBlock;
   auth: NormalizedAuth;
+  /** The cron schedule this skill runs on, when it has one (`schedule:` in the block). */
+  schedule?: NormalizedSchedule;
+  /** False for schedule-only skills (`webhook: false`): `POST /hooks/<name>` answers 404 and no secret is required. */
+  webhook: boolean;
   /** From the standard `allowed-tools` frontmatter field, mapped to `claude --allowedTools`. */
   allowedTools: string[];
   enabled: boolean;
@@ -305,6 +369,7 @@ export function parseSkillDocument(text: string, dir: string): Skill {
     throw new SkillError(`Skill name "${data.name}" must match its directory name "${dirName}"`, dir);
   }
   const config = data.skillhook ?? {};
+  const { schedule, webhook } = resolveSchedule(data.name, config, dir);
   const allowedTools = (data["allowed-tools"] ?? "")
     .split(/\s+/)
     .map((t) => t.trim())
@@ -318,6 +383,8 @@ export function parseSkillDocument(text: string, dir: string): Skill {
     frontmatter: fm.data,
     config,
     auth: normalizeAuth(data.name, config.auth),
+    schedule,
+    webhook,
     allowedTools,
     enabled: config.enabled !== false,
     mtimeMs: 0,

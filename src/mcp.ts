@@ -8,6 +8,7 @@ import { listExamples } from "./examples.js";
 import { JOB_ARTIFACTS, JOB_STATUSES, type JobArtifact, type JobStatus } from "./jobs.js";
 import { addExampleSkill, createOps, createSkill, generateSecretFor, initProject, linkProject, listProjects, publicJob, resolveBaseUrl, runSkillLocally, sendSignedWebhook, setSecret, triggerViaServer, unlinkProject, webhookUrl, type LinkResult, type Ops } from "./ops.js";
 import type { Paths } from "./paths.js";
+import { listSchedules, scheduleStatus } from "./scheduler.js";
 import { skillSummary } from "./server.js";
 import { installService, readServiceLog, restartService, serviceStatus, uninstallService } from "./service.js";
 import { AUTH_TYPES, parseSkillDocument, type AuthType } from "./skills.js";
@@ -21,6 +22,7 @@ export const MCP_INSTRUCTIONS = `skillhook turns this machine into a webhook end
 Typical flow: skillhook_status → create_skill (or add_example) → set_secret/generate_secret → run_skill to test locally → get_webhook_urls to hand the URL to the sender (Granola, Sentry, GitHub, Zapier…).
 Skills live in <home>/skills/<name>/SKILL.md; the \`skillhook:\` frontmatter block sets runner, model, auth and filters. Secrets live in <home>/.env and are never returned by tools except right after generation.
 A repository can declare its own hooks in a version-controlled skillhook.yaml (webhook name → run: shell command | skill: SKILL.md directory | prompt: inline instructions); link_project registers it so the hooks are served, list_projects shows what runs from which webhook.
+A \`schedule:\` key (cron expression, optional timezone/catch_up/overlap) on any skill or hook makes the running server fire it on time without a webhook; \`webhook: false\` makes it schedule-only. list_schedules shows the next and last runs.
 Jobs are directories under <home>/jobs/<id> with payload.json, prompt.md, stdout.log and result.md.`;
 
 type ToolResult = { content: { type: "text"; text: string }[]; structuredContent?: Record<string, unknown>; isError?: boolean };
@@ -157,7 +159,7 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
       const secrets = o.secrets();
       const skills = name ? loaded.skills.filter((s) => s.name === name) : loaded.skills;
       const errors = name ? loaded.errors.filter((e) => e.name === name) : loaded.errors;
-      const warnings = skills.flatMap((s) => (s.auth.type === "none" ? [`${s.name}: auth none`] : !secrets[s.auth.secret_env] ? [`${s.name}: secret ${s.auth.secret_env} not set`] : []));
+      const warnings = skills.flatMap((s) => (!s.webhook ? [] : s.auth.type === "none" ? [`${s.name}: auth none`] : !secrets[s.auth.secret_env] ? [`${s.name}: secret ${s.auth.secret_env} not set`] : []));
       return ok({ ok: errors.length === 0, valid: skills.map((s) => s.name), errors, warnings });
     }),
   );
@@ -367,6 +369,18 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
     wrap(async ({ dir }) => {
       const result = unlinkProject(ops(), dir);
       return ok({ ok: result.removed, ...result }, result.removed ? `Unlinked ${result.entry}.` : `${result.entry} was not linked.`);
+    }),
+  );
+
+  server.registerTool(
+    "list_schedules",
+    { title: "List schedules", description: "Every skill or hook with a `schedule:`: cron, time zone, catch_up and overlap policy, whether it is enabled and also has a webhook, the next due time, and the last slot, job and status (live from the running server when there is one). A hook with `webhook: false` runs only on its schedule.", inputSchema: z.object({}) },
+    wrap(async () => {
+      const o = ops();
+      const running = await findRunningServer(paths);
+      if (running?.health.schedules) return ok({ via: "server", schedules: running.health.schedules }, `${running.health.schedules.length} schedule(s) on the running server.`);
+      const schedules = listSchedules({ registry: o.registry, jobsDir: o.store.jobsDir });
+      return ok({ via: running ? "server-without-scheduler" : "local", schedules }, `${schedules.length} schedule(s); ${running ? "the running server predates the scheduler" : "no server is running, so nothing fires until `skillhook serve`"}.`);
     }),
   );
 

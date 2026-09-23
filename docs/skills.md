@@ -80,6 +80,8 @@ Unknown top-level keys are allowed. Unknown keys inside `skillhook:` are rejecte
 | `codex` | object | — | Codex-only options, below. |
 | `shell` | `{ command: string \| string[] }` | — | Required when `runner: shell`. |
 | `enabled` | boolean | `true` | `false` makes the webhook answer `404 unknown_skill`; `skills list` shows `(disabled)`. |
+| `schedule` | string, object or `false` | none | Also run on a cron schedule: `"5 * * * *"` (UTC) or `{ cron, timezone, catch_up, overlap, payload }`; `false` cancels a schedule inherited from a SKILL.md. See [schedules.md](schedules.md). |
+| `webhook` | boolean | `true` | `false` makes a scheduled skill schedule-only: `POST /hooks/<name>` answers `404 schedule_only` and no secret is required. |
 
 Precedence for `runner`, `model`, `effort` and `cwd`: an explicit override (`skillhook run --model …`, the `POST /skills/<name>/run` body, the MCP `run_skill` tool) beats the skill, which beats `defaults` in `skillhook.json`. `timeout_seconds` comes from the skill or the config defaults.
 
@@ -218,6 +220,10 @@ skillhook:
 
 `skillhook run`, the MCP `run_skill` tool and `POST /skills/<name>/run` never de-duplicate.
 
+## Schedules
+
+A skill that should run on time rather than on an event takes `schedule:` (a cron expression and optionally a time zone, a catch-up policy for slots missed while the machine slept, an overlap policy and a static payload) and, when it needs no URL at all, `webhook: false`. The server fires it as an ordinary job with `trigger: schedule`. Everything about it is in [schedules.md](schedules.md).
+
 ## Template placeholders
 
 The Markdown body is rendered with a minimal template engine before it is sent to the agent. Placeholders are `{{name}}` with optional dotted paths; whitespace inside the braces is allowed.
@@ -239,7 +245,7 @@ The Markdown body is rendered with a minimal template engine before it is sent t
 | `{{received_at}}` | ISO-8601 timestamp of the delivery. |
 | `{{source_ip}}` | Client IP (taken from `X-Forwarded-For`, `X-Real-IP` or `CF-Connecting-IP` when the request came through a loopback proxy such as Tailscale). |
 | `{{delivery_id}}` | Delivery id (empty when none). |
-| `{{trigger}}` | `webhook`, `cli` (`skillhook run`), `mcp` (MCP `run_skill` without a server) or `api` (`POST /skills/<name>/run`, including MCP runs through a running server). |
+| `{{trigger}}` | `webhook`, `cli` (`skillhook run`), `mcp` (MCP `run_skill` without a server), `api` (`POST /skills/<name>/run`, including MCP runs through a running server) or `schedule` (a `schedule:` slot fired; the payload is then skillhook's `{scheduled_for, schedule}` object, see [schedules.md](schedules.md)). |
 
 Unknown placeholders render as an empty string. Headers whose name matches `signature`, `token`, `secret`, `api-key`/`apikey`, `authorization`, `cookie` or `password` are removed before they reach `{{headers}}`, `event.json` or the agent.
 

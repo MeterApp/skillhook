@@ -199,6 +199,50 @@ describe("cli", () => {
     expect(await main(["unlink", repo, ...dir, "--json"], twice.cli)).toBe(1);
   });
 
+  it("lists, previews and fires schedules", async () => {
+    const tickDir = path.join(paths.skillsDir, "tick");
+    mkdirSync(tickDir, { recursive: true });
+    writeFileSync(path.join(tickDir, "SKILL.md"), '---\nname: tick\ndescription: Prints tick on a schedule.\nskillhook:\n  runner: shell\n  shell:\n    command: ["sh", "-c", "echo tick"]\n  webhook: false\n  schedule:\n    cron: "*/5 * * * *"\n    timezone: Europe/Berlin\n---\n\nNot used by the shell runner.\n');
+    const list = io();
+    expect(await main(["schedules", "list", ...dir, "--json"], list.cli)).toBe(0);
+    const listed = list.json();
+    expect(listed.server_running).toBe(false);
+    const tick = (listed.schedules as { skill: string; next_due: string | null }[]).find((s) => s.skill === "tick");
+    expect(tick).toMatchObject({ cron: "*/5 * * * *", timezone: "Europe/Berlin", webhook: false, catch_up: "latest", last_job: null });
+    expect(tick?.next_due).toMatch(/Z$/);
+    const human = io();
+    expect(await main(["schedules", ...dir], human.cli)).toBe(0);
+    expect(human.out()).toContain("tick");
+    expect(human.out()).toContain("No server is running");
+    const next = io();
+    expect(await main(["schedules", "next", "tick", ...dir, "--count", "3", "--json"], next.cli)).toBe(0);
+    expect(next.json().next as string[]).toHaveLength(3);
+    const run = io();
+    expect(await main(["schedules", "run", "tick", ...dir, "--json"], run.cli)).toBe(0);
+    expect(run.json().job as Record<string, unknown>).toMatchObject({ status: "succeeded", result: "tick", trigger: "cli" });
+    const payload = JSON.parse(readFileSync(path.join(String(run.json().job_dir), "payload.json"), "utf8")) as { scheduled_for: string; schedule: { manual: boolean; cron: string } };
+    expect(payload.schedule).toMatchObject({ manual: true, cron: "*/5 * * * *" });
+    expect(payload.scheduled_for).toMatch(/Z$/);
+    const validate = io();
+    expect(await main(["skills", "validate", "tick", ...dir, "--json"], validate.cli)).toBe(0);
+    expect(validate.json().warnings as string[]).toEqual([]);
+    const skills = io();
+    expect(await main(["skills", "list", ...dir], skills.cli)).toBe(0);
+    expect(skills.out()).toContain("schedule only");
+    const show = io();
+    expect(await main(["skills", "show", "tick", ...dir], show.cli)).toBe(0);
+    expect(show.out()).toContain("schedule: */5 * * * * (Europe/Berlin)");
+    const doctor = io({ SKILLHOOK_NO_UPDATE_CHECK: "1" });
+    await main(["doctor", ...dir, "--json"], doctor.cli);
+    const checks = doctor.json().checks as { name: string; status: string; detail: string }[];
+    expect(checks.find((c) => c.name === "skill tick")).toMatchObject({ status: "ok", detail: expect.stringContaining("schedule only") });
+    expect(checks.find((c) => c.name === "schedules")).toMatchObject({ status: "ok", detail: expect.stringContaining("tick (*/5 * * * *") });
+    const none = io();
+    expect(await main(["schedules", "next", "hello", ...dir, "--json"], none.cli)).toBe(1);
+    const usage = io();
+    expect(await main(["schedules", "bogus", ...dir], usage.cli)).toBe(2);
+  });
+
   it("reports failures with a non-zero exit code", async () => {
     const missing = io();
     expect(await main(["run", "nope", ...dir, "--json"], missing.cli)).toBe(1);

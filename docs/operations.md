@@ -17,7 +17,8 @@ Related: [exposure.md](exposure.md) (public URL), [security.md](security.md) (se
 ├── skills/
 │   └── <name>/SKILL.md     one directory per skill, plus any files the skill needs
 ├── jobs/
-│   ├── .deliveries.json    delivery-id index for replay protection
+│   ├── .deliveries.json    delivery-id index for replay protection (also the slots the scheduler fired)
+│   ├── .schedules.json     per schedule: last slot handled, last job and its status
 │   └── <job id>/           one directory per job (see Jobs)
 └── logs/
     └── service.log         server output when run by launchd / systemd
@@ -31,7 +32,7 @@ Related: [exposure.md](exposure.md) (public URL), [security.md](security.md) (se
 skillhook serve [--port N] [--host H] [--pretty] [--log-level debug|info|warn|error]
 ```
 
-On start the server logs invalid skills, warns about skills with `auth: none` or a missing secret (`deliveries will get 503`) and about a missing admin token, marks jobs left `running` by a previous process as `interrupted`, re-queues jobs that were still `queued`, listens, writes `server.json`, and logs `skillhook listening` plus one `webhook url` line per skill when `public_url` is set. Once a day it also logs `update available` when npm has a newer skillhook (see [Upgrading](#upgrading-and-removing)).
+On start the server logs invalid skills, warns about skills with `auth: none` or a missing secret (`deliveries will get 503`; schedule-only skills are exempt) and about a missing admin token, marks jobs left `running` by a previous process as `interrupted`, re-queues jobs that were still `queued`, starts the scheduler (one `schedule registered` line per `schedule:` with its next due time; afterwards `schedule fired` and `schedule slots skipped` lines, see [schedules.md](schedules.md)), listens, writes `server.json`, and logs `skillhook listening` plus one `webhook url` line per skill when `public_url` is set. Once a day it also logs `update available` when npm has a newer skillhook (see [Upgrading](#upgrading-and-removing)).
 
 Logs go to stderr as one JSON object per line (`{"ts":…,"level":…,"msg":…}`) unless stdin is a TTY or `--pretty` is given. `SIGINT`/`SIGTERM` stop accepting requests, SIGTERM running jobs (they end as `interrupted`; SIGKILL follows after 10 s) and remove `server.json`.
 
@@ -203,7 +204,9 @@ skillhook config set defaults.model sonnet
 | `secrets` | `.env` has mode 600 | `.env` missing or another mode | |
 | `admin token` | `SKILLHOOK_ADMIN_TOKEN` set | unset (admin API localhost-only) | |
 | `skills` | all `SKILL.md` files parse | no skills yet | one or more invalid |
-| `skill <name>` | runner, model, auth type and cwd (and the `skillhook.yaml` it comes from) | `auth: none` | secret missing (`webhooks will get 503`); cwd does not exist |
+| `skill <name>` | runner, model, auth type, schedule and cwd (and the `skillhook.yaml` it comes from); a `webhook: false` skill needs no secret | `auth: none` | secret missing (`webhooks will get 503`); cwd does not exist |
+| `schedules` | every enabled `schedule:` with its next run | | (`skip` when there is none) |
+| `sleep` (macOS, when schedules exist) | `pmset` reports `sleep 0` | the Mac may sleep; schedules only fire while it is awake | (`skip` when `pmset` is unavailable) |
 | `project <dir>` | the linked repository's `skillhook.yaml` parses; hooks listed | | file missing or invalid; a hook that does not compile (`skip` when nothing is linked) |
 | `claude` / `codex` | CLI found and logged in, or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` present | | not on PATH; not logged in (checked only for runners a skill or the default uses) |
 | `tailscale` | the configured port is exposed via Funnel or Serve (URL shown) | CLI missing; not running; port not exposed | |
@@ -213,7 +216,7 @@ skillhook config set defaults.model sonnet
 
 ## Keeping a Mac awake
 
-Jobs run only while the machine is awake. On a desktop Mac disable sleep (`sudo pmset -a sleep 0`, or System Settings → Energy → Prevent automatic sleeping when the display is off). A laptop that stays on power can run `caffeinate -s` in a terminal, or use the same `pmset` setting. Tailscale reconnects after wake and providers such as Granola retry failed deliveries for days, so a short sleep loses nothing, but a long one delays every job until wake.
+Jobs run only while the machine is awake. On a desktop Mac disable sleep (`sudo pmset -a sleep 0`, or System Settings → Energy → Prevent automatic sleeping when the display is off). A laptop that stays on power can run `caffeinate -s` in a terminal, or use the same `pmset` setting. Tailscale reconnects after wake and providers such as Granola retry failed deliveries for days, so a short sleep loses nothing, but a long one delays every job until wake. Schedules are caught up at wake according to each hook's `catch_up` ([schedules.md](schedules.md)); `skillhook doctor` warns when a machine with schedules is allowed to sleep.
 
 ## Upgrading and removing
 
@@ -302,6 +305,10 @@ The agent exceeded `timeout_seconds` (skill, else `defaults.timeout_seconds`, de
 ### Public URL does not answer
 
 Right after `expose`, Tailscale may still be issuing the certificate: wait a minute and run `skillhook expose status` or `skillhook doctor` (the `public url` check). Otherwise confirm the server is running and the mapping targets the right port.
+
+### A schedule did not fire
+
+`skillhook schedules list` shows the next due time and the last run per schedule. No server running, or a server that predates the scheduler: nothing fires until `skillhook serve` / `skillhook service restart`. The machine slept through the slot: it is caught up at wake per `catch_up` (`none` skips anything older than five minutes). A previous run was still queued or running: `overlap: skip` skipped the slot, the log says `schedule slot skipped; previous run still in flight`, and `skipped` in the list grows. The hook is disabled, or its SKILL.md is invalid: `skillhook skills validate`. A newly added schedule waits for its next slot rather than running at once. Wall-clock minutes that do not exist on a spring-forward day are skipped like a wall clock would.
 
 ### The MCP server sees a different home than the CLI
 

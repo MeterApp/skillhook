@@ -1,6 +1,7 @@
 import { ADMIN_TOKEN_ENV, readEnvFile } from "../env.js";
 import { JobQueue } from "../queue.js";
 import { createLogger } from "../logger.js";
+import { Scheduler } from "../scheduler.js";
 import { clearServerState, createServer, writeServerState } from "../server.js";
 import { checkForUpdate, detectInstall, releaseNotesUrl, UPDATE_CHECK_INTERVAL_MS } from "../update.js";
 import { VERSION } from "../version.js";
@@ -15,13 +16,15 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   const store = ctx.store();
   const secrets = () => ctx.secrets();
   const queue = new JobQueue({ store, config, registry, secrets, fileSecrets: () => readEnvFile(ctx.paths.envFile), logger });
-  const server = createServer({ config, paths: ctx.paths, store, queue, registry, secrets, logger });
+  const scheduler = new Scheduler({ registry, store, queue, config, logger });
+  const server = createServer({ config, paths: ctx.paths, store, queue, registry, secrets, logger, schedules: () => scheduler.status() });
 
   const loaded = registry.list();
   for (const error of loaded.errors) logger.error("skill failed to load", { skill: error.name, error: error.error });
   for (const project of loaded.projects) if (!project.error) logger.info("project linked", { dir: project.dir, file: project.file, hooks: project.hooks.map((h) => h.name) });
   const current = secrets();
   for (const skill of loaded.skills) {
+    if (!skill.webhook) continue; // schedule-only: nothing to deliver, no secret needed
     if (skill.auth.type === "none") logger.warn("skill has no authentication", { skill: skill.name });
     else if (!current[skill.auth.secret_env]) logger.warn("skill secret not set; deliveries will get 503", { skill: skill.name, secret_env: skill.auth.secret_env });
   }
@@ -30,6 +33,7 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   const recovered = store.recoverOnStartup();
   if (recovered.interrupted.length) logger.warn("marked jobs interrupted from a previous run", { jobs: recovered.interrupted.map((j) => j.id) });
   for (const job of recovered.queued) queue.enqueue(job);
+  scheduler.start();
 
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -58,6 +62,7 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info("shutting down", { signal, running: queue.stats().running });
+    scheduler.stop();
     server.close();
     await queue.shutdown();
     clearServerState(ctx.paths);
