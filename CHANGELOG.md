@@ -4,6 +4,8 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.3.0 (2026-09-23)
+
 - Scheduled hooks. A `schedule:` key on any skill (`skillhook:` block) or hook (`skillhook.yaml`) runs it
   on a cron schedule from the running server, without a webhook: a five-field expression or an alias
   (`@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`), read in an IANA `timezone` (default UTC), with
