@@ -64,7 +64,8 @@ async function listSkills(ctx: Ctx): Promise<number> {
   const rows = loaded.skills.map((skill, i) => {
     const s = summaries[i] as Record<string, unknown>;
     const auth = s.auth as { type: string; configured: boolean };
-    return [skill.name, skill.enabled ? String(s.runner) : "(disabled)", String(s.model ?? "default"), `${auth.type}${auth.configured ? "" : " (secret missing)"}`, sourceLabel(skill, ctx.paths.skillsDir), webhookUrl(baseUrl, skill.name)];
+    const trigger = skill.webhook ? webhookUrl(baseUrl, skill.name) : `(schedule ${skill.schedule?.cron})`;
+    return [skill.name, skill.enabled ? String(s.runner) : "(disabled)", String(s.model ?? "default"), skill.webhook ? `${auth.type}${auth.configured ? "" : " (secret missing)"}` : "schedule only", sourceLabel(skill, ctx.paths.skillsDir), trigger];
   });
   const lines: string[] = [];
   if (rows.length) lines.push(table(rows, ["skill", "runner", "model", "auth", "source", `url (${source})`]));
@@ -87,7 +88,8 @@ async function showSkill(ctx: Ctx, name: string): Promise<number> {
     `  url:     ${webhookUrl(baseUrl, skill.name)}`,
     `  runner:  ${summary.runner}${summary.model ? ` (${summary.model})` : ""}${summary.effort ? ` effort=${summary.effort}` : ""}`,
     `  cwd:     ${summary.cwd}`,
-    `  auth:    ${describeAuth(skill.auth)}${(summary.auth as { configured: boolean }).configured ? "" : "  ← secret missing"}`,
+    ...(skill.webhook ? [`  auth:    ${describeAuth(skill.auth)}${(summary.auth as { configured: boolean }).configured ? "" : "  ← secret missing"}`] : ["  webhook: none (schedule only)"]),
+    ...(skill.schedule ? [`  schedule: ${skill.schedule.cron} (${skill.schedule.timezone}); catch_up ${skill.schedule.catch_up}, overlap ${skill.schedule.overlap}; next ${(summary.schedule as { next_run_at: string | null }).next_run_at ?? "never"}`] : []),
     ...(skill.config.when?.length ? [`  when:    ${(summary.when as string[]).join("; ")}`] : []),
     ...(skill.source.type === "project" ? [`  source:  ${displayPath(skill.source.file)} (hook ${skill.name}, ${skill.source.kind === "run" ? "shell command" : skill.source.kind === "prompt" ? "inline prompt" : `SKILL.md at ${displayPath(skill.dir)}`})`] : []),
     "",
@@ -151,6 +153,7 @@ function validate(ctx: Ctx, name?: string): number {
   const secrets = ctx.secrets();
   const warnings: string[] = [];
   for (const skill of skills) {
+    if (!skill.webhook) continue; // schedule-only: no webhook, no secret to check
     if (skill.auth.type === "none") warnings.push(`${skill.name}: auth none (anyone with the URL can trigger it)`);
     else if (!secrets[skill.auth.secret_env]) warnings.push(`${skill.name}: secret ${skill.auth.secret_env} not set`);
   }

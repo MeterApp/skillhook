@@ -6,6 +6,7 @@ import { loadConfig } from "./config.js";
 import { JobStore } from "./jobs.js";
 import { silentLogger } from "./logger.js";
 import { JobQueue } from "./queue.js";
+import { Scheduler } from "./scheduler.js";
 import { createServer } from "./server.js";
 import { SkillRegistry } from "./registry.js";
 import { FAKE_CLAUDE, FAKE_CODEX, tempHome, writeConfigFile, writeEnv, writeSkill } from "./test-support/helpers.js";
@@ -74,6 +75,7 @@ beforeAll(async () => {
   writeSkill(paths, "twinoff", "description: two\nskillhook:\n  dedupe:\n    in_flight: false\n  env: [FAKE_CLAUDE_SLEEP_MS]");
   writeSkill(paths, "slacky", "description: sl\nskillhook:\n  auth:\n    type: slack\n    secret_env: SLACK_SECRET");
   writeSkill(paths, "unconfigured", "description: u");
+  writeSkill(paths, "nightly", "description: n\nskillhook:\n  webhook: false\n  schedule: \"0 3 * * *\"");
   mkdirSync(projectDir, { recursive: true });
   writeFileSync(path.join(projectDir, "skillhook.yaml"), ["hooks:", "  where-am-i:", "    description: Prints the working directory and the payload it got on stdin.", '    run: printf "%s\\n" "$PWD" && cat', "    auth: { type: bearer, secret_env: SKILLHOOK_SECRET_HELLO }", "    when:", "      - { path: action, equals: closed }", "  by-skill:", "    skill: skills/greeter", "    model: haiku", "    auth: { type: bearer, secret_env: SKILLHOOK_SECRET_HELLO }", ""].join("\n"));
   mkdirSync(path.join(projectDir, "skills", "greeter"), { recursive: true });
@@ -84,7 +86,8 @@ beforeAll(async () => {
   const { loadSecrets } = await import("./env.js");
   const secrets = () => loadSecrets(paths, {});
   queue = new JobQueue({ store, config, registry, secrets, fileSecrets: secrets, logger: silentLogger });
-  server = createServer({ config, paths, store, queue, registry, secrets, logger: silentLogger });
+  const scheduler = new Scheduler({ registry, store, queue, config, logger: silentLogger, now: () => new Date("2026-09-23T10:00:00Z") });
+  server = createServer({ config, paths, store, queue, registry, secrets, logger: silentLogger, schedules: () => scheduler.status() });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const address = server.address();
   base = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
@@ -316,6 +319,24 @@ describe("HTTP surface", () => {
     const hook = (skills.skills as { name: string; source: { type: string; kind?: string; dir?: string }; cwd: string }[]).find((s) => s.name === "where-am-i");
     expect(hook).toMatchObject({ source: { type: "project", kind: "run", dir: projectDir }, cwd: projectDir });
     expect((skills.skills as { name: string; source: { type: string } }[]).find((s) => s.name === "hello")?.source).toEqual({ type: "home" });
+  });
+
+  it("answers 404 for a schedule-only hook, lists schedules in health, and still lets admins run it", async () => {
+    const post = await fetch(`${base}/hooks/nightly`, { method: "POST", body: "{}", headers: { authorization: "Bearer anything" } });
+    expect(post.status).toBe(404);
+    expect((await json(post)).error).toBe("schedule_only");
+    expect((await fetch(`${base}/hooks/nightly`)).status).toBe(404);
+    const health = await json(await fetch(`${base}/health`));
+    expect((health.schedules as { skill: string }[]).find((s) => s.skill === "nightly")).toMatchObject({ cron: "0 3 * * *", timezone: "UTC", webhook: false, enabled: true, next_due: "2026-09-24T03:00:00.000Z", last_job: null });
+    const proxied = await json(await fetch(`${base}/health`, { headers: { "x-forwarded-proto": "https" } }));
+    expect(proxied.schedules).toBeUndefined();
+    const skills = await json(await fetch(`${base}/skills`, { headers: { authorization: `Bearer ${ADMIN}` } }));
+    const list = skills.skills as { name: string; webhook: boolean; schedule: { cron: string; next_run_at: string | null } | null }[];
+    expect(list.find((s) => s.name === "nightly")).toMatchObject({ webhook: false, schedule: { cron: "0 3 * * *", timezone: "UTC", catch_up: "latest", overlap: "skip" } });
+    expect(list.find((s) => s.name === "nightly")?.schedule?.next_run_at).toMatch(/T03:00:00\.000Z$/);
+    expect(list.find((s) => s.name === "hello")).toMatchObject({ webhook: true, schedule: null });
+    const run = await fetch(`${base}/skills/nightly/run`, { method: "POST", headers: { authorization: `Bearer ${ADMIN}`, "content-type": "application/json" }, body: JSON.stringify({ payload: { manual: true }, wait: 20 }) });
+    expect((await json(run)).status).toBe("succeeded");
   });
 
   it("runs identical deliveries when in-flight de-duplication is off for the skill", async () => {

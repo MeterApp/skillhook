@@ -43,7 +43,7 @@ skillhook init                       # add --runner codex, --model <name>, --por
 skillhook doctor                  # add --json for the same report as data
 ```
 
-One line per check — `✓` fine, `!` warning, `✗` must be fixed — each with a `→ hint` naming the command that fixes it. In order: `node`; `home` / `config`; `secrets` (file mode 600); `admin token`; `skills` (every SKILL.md parses); one `skill <name>` line per skill (secret present, `cwd` exists); `claude` / `codex` (installed and logged in, or API key set); `tailscale` (installed, running, port exposed); `server` (running, and where); `service` (installed and running). Fix every `✗` before exposing anything. The tailscale, server and service warnings disappear in steps 5 and 6.
+One line per check — `✓` fine, `!` warning, `✗` must be fixed — each with a `→ hint` naming the command that fixes it. In order: `node`; `home` / `config`; `secrets` (file mode 600); `admin token`; `skills` (every SKILL.md parses); one `skill <name>` line per skill (secret present unless it is schedule-only, `cwd` exists); `schedules` and, on a Mac with schedules, `sleep` (warns when the machine may sleep: `sudo pmset -a sleep 0`); `claude` / `codex` (installed and logged in, or API key set); `tailscale` (installed, running, port exposed); `server` (running, and where); `service` (installed and running). Fix every `✗` before exposing anything. The tailscale, server and service warnings disappear in steps 5 and 6.
 
 ## 4. Choose runner and model
 
@@ -113,6 +113,8 @@ skillhook secret set GITHUB_WEBHOOK_SECRET   # the file names secrets; values st
 
 Hooks are live without a restart, `git pull` deploys changes, and `skillhook unlink <dir>` stops serving them. Names in `~/.skillhook/skills` win over repositories; a duplicate is reported by `skillhook skills list` and `doctor`. MCP: `link_project` (`init: true` to scaffold), `list_projects`, `unlink_project`. Writing the file itself is covered by skillhook-authoring.
 
+Hooks with a `schedule:` (cron + time zone) fire from the running server without a webhook; `skillhook schedules list` shows the next and last run of each, `skillhook schedules run <name>` fires one now. They need the server running and the machine awake (`doctor` checks both). A server older than the version that added schedules rejects a `skillhook.yaml` that uses them, so `skillhook update --install` every linked machine before merging one.
+
 ## The same through MCP
 
 Install the plugin (`/plugin marketplace add MeterApp/skillhook`, then `/plugin install skillhook@meterapp-skillhook`) or add the server directly — `skillhook mcp --print-config` prints the command for Claude Code, Codex and mcp.json hosts. Tools map onto the CLI:
@@ -127,6 +129,7 @@ Install the plugin (`/plugin marketplace add MeterApp/skillhook`, then `/plugin 
 | Service | `skillhook service …` | `service` (action `install` / `status` / `restart` / `logs` / `uninstall`) |
 | Jobs | `skillhook jobs show / logs / cancel` | `get_job`, `list_jobs`, `cancel_job` |
 | Repository hooks | `skillhook link`, `unlink`, `projects [init]` | `link_project`, `unlink_project`, `list_projects` |
+| Schedules | `skillhook schedules list / next / run` | `list_schedules` |
 
 `skillhook_status` reports the home directory, whether the server runs, the public URL and every skill with its auth type. The MCP server never returns secret values except right after `generate_secret`. `run_skill` uses the running server when there is one, otherwise runs in-process.
 

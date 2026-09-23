@@ -5,6 +5,7 @@ import { ADMIN_TOKEN_ENV, loadSecrets, secretFileMode, type Secrets } from "./en
 import type { Paths } from "./paths.js";
 import { resolveRunSettings } from "./run.js";
 import { commandParts } from "./runners/types.js";
+import { nextRun } from "./schedule.js";
 import { serviceStatus } from "./service.js";
 import { configProjects, SkillRegistry } from "./registry.js";
 import type { Skill } from "./skills.js";
@@ -111,9 +112,24 @@ export async function runDoctor(paths: Paths, options: DoctorOptions = {}): Prom
       const settings = resolveRunSettings(skill, config);
       runnersNeeded.add(settings.runner);
       const auth = skill.auth;
-      if (auth.type === "none") checks.push(check(`skill ${skill.name}`, "warn", "auth: none — anyone with the URL can trigger it", "set skillhook.auth.type in SKILL.md"));
-      else if (!secrets[auth.secret_env]) checks.push(check(`skill ${skill.name}`, "fail", `secret ${auth.secret_env} not set (webhooks will get 503)`, `run: skillhook secret generate ${skill.name}  (or: skillhook secret set ${auth.secret_env})`));
-      else checks.push(check(`skill ${skill.name}`, isDirectory(settings.cwd) ? "ok" : "fail", `${settings.runner}${settings.model ? ` ${settings.model}` : ""}, auth ${auth.type}, cwd ${settings.cwd}${skill.source.type === "project" ? `, from ${displayPath(skill.source.file)}` : ""}`, isDirectory(settings.cwd) ? undefined : "cwd does not exist"));
+      const where = `cwd ${settings.cwd}${skill.source.type === "project" ? `, from ${displayPath(skill.source.file)}` : ""}`;
+      const scheduleNote = skill.schedule ? `, schedule ${skill.schedule.cron} (${skill.schedule.timezone})` : "";
+      if (!skill.webhook) checks.push(check(`skill ${skill.name}`, isDirectory(settings.cwd) ? "ok" : "fail", `${settings.runner}${settings.model ? ` ${settings.model}` : ""}${scheduleNote}, schedule only, ${where}`, isDirectory(settings.cwd) ? undefined : "cwd does not exist"));
+      else if (auth.type === "none") checks.push(check(`skill ${skill.name}`, "warn", `auth: none — anyone with the URL can trigger it${scheduleNote}`, "set skillhook.auth.type in SKILL.md (or webhook: false for a schedule-only hook)"));
+      else if (!secrets[auth.secret_env]) checks.push(check(`skill ${skill.name}`, "fail", `secret ${auth.secret_env} not set (webhooks will get 503)${scheduleNote}`, `run: skillhook secret generate ${skill.name}  (or: skillhook secret set ${auth.secret_env}${skill.schedule ? ", or webhook: false when only the schedule should run it" : ""})`));
+      else checks.push(check(`skill ${skill.name}`, isDirectory(settings.cwd) ? "ok" : "fail", `${settings.runner}${settings.model ? ` ${settings.model}` : ""}, auth ${auth.type}${scheduleNote}, ${where}`, isDirectory(settings.cwd) ? undefined : "cwd does not exist"));
+    }
+  }
+
+  const scheduled = loaded.skills.filter((skill) => skill.schedule && skill.enabled);
+  if (scheduled.length) {
+    const now = new Date();
+    checks.push(check("schedules", "ok", `${scheduled.length} scheduled: ${scheduled.map((s) => `${s.name} (${s.schedule?.cron}, next ${nextRun(s.schedule!.spec, now, s.schedule!.timezone)?.toISOString() ?? "never"})`).join("; ")}`));
+    if (process.platform === "darwin") {
+      const sleep = await macSleepMinutes();
+      if (sleep === undefined) checks.push(check("sleep", "skip", "could not read pmset; schedules only fire while the machine is awake"));
+      else if (sleep === 0) checks.push(check("sleep", "ok", "system sleep is disabled (pmset sleep 0)"));
+      else checks.push(check("sleep", "warn", `this Mac sleeps after ${sleep} min; schedules only fire while it is awake (missed slots follow each hook's catch_up)`, "run: sudo pmset -a sleep 0"));
     }
   }
 
@@ -169,6 +185,31 @@ export async function runDoctor(paths: Paths, options: DoctorOptions = {}): Prom
   const summary = { ok: 0, warn: 0, fail: 0, skip: 0 };
   for (const c of checks) summary[c.status]++;
   return { checks, ok: summary.fail === 0, summary, public_url: publicUrl, server };
+}
+
+/** The `sleep` value of `pmset -g custom` on macOS (AC power when listed), in minutes; undefined when pmset is unavailable or unreadable. */
+export async function macSleepMinutes(): Promise<number | undefined> {
+  const pmset = which("pmset");
+  if (!pmset) return undefined;
+  const result = await run(pmset, ["-g", "custom"], { timeoutMs: 5_000 });
+  if (result.code !== 0) return undefined;
+  let section = "";
+  let value: number | undefined;
+  let acValue: number | undefined;
+  for (const raw of result.stdout.split("\n")) {
+    const line = raw.trim();
+    if (line.endsWith(":")) {
+      section = line.slice(0, -1);
+      continue;
+    }
+    const parts = line.split(/\s+/);
+    if (parts[0] === "sleep" && parts[1] !== undefined && /^\d+$/.test(parts[1])) {
+      const minutes = Number(parts[1]);
+      if (section === "AC Power") acValue = minutes;
+      value ??= minutes;
+    }
+  }
+  return acValue ?? value;
 }
 
 export function formatDoctor(report: DoctorReport): string {

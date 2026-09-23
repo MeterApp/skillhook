@@ -87,3 +87,29 @@ describe("loadSkills / SkillRegistry", () => {
     expect(result.errors[0]?.name).toBe("broken");
   });
 });
+
+describe("schedule options", () => {
+  const doc = (block: string) => `---\nname: s\ndescription: s\nskillhook:\n${block}\n---\nBody\n`;
+
+  it("accepts a cron string, a full object, and false", () => {
+    const short = parseSkillDocument(doc('  schedule: "*/30 * * * *"'), "/tmp/s");
+    expect(short.schedule).toMatchObject({ cron: "*/30 * * * *", timezone: "UTC", catch_up: "latest", overlap: "skip" });
+    expect(short.schedule?.spec.minutes).toEqual(new Set([0, 30]));
+    expect(short.webhook).toBe(true);
+    const full = parseSkillDocument(doc('  schedule:\n    cron: "@daily"\n    timezone: Europe/Berlin\n    catch_up: all\n    overlap: queue\n    payload: { reason: digest }\n  webhook: false'), "/tmp/s");
+    expect(full.schedule).toMatchObject({ cron: "0 0 * * *", timezone: "Europe/Berlin", catch_up: "all", overlap: "queue", payload: { reason: "digest" } });
+    expect(full.webhook).toBe(false);
+    expect(parseSkillDocument(doc("  schedule: false"), "/tmp/s").schedule).toBeUndefined();
+    expect(parseSkillDocument(`---\nname: s\ndescription: s\n---\nBody\n`, "/tmp/s")).toMatchObject({ webhook: true });
+    expect(parseSkillDocument(`---\nname: s\ndescription: s\n---\nBody\n`, "/tmp/s").schedule).toBeUndefined();
+  });
+
+  it("rejects unusable schedules with the reason", () => {
+    expect(() => parseSkillDocument(doc('  schedule: "* * * *"'), "/tmp/s")).toThrow(/invalid schedule: .*5 fields/);
+    expect(() => parseSkillDocument(doc('  schedule: "61 * * * *"'), "/tmp/s")).toThrow(/out of range/);
+    expect(() => parseSkillDocument(doc('  schedule:\n    cron: "0 9 * * *"\n    timezone: Mars/Olympus'), "/tmp/s")).toThrow(/unknown time zone "Mars\/Olympus"/);
+    expect(() => parseSkillDocument(doc('  schedule:\n    cron: "0 9 * * *"\n    catch_up: sometimes'), "/tmp/s")).toThrow(/Invalid SKILL.md frontmatter/);
+    expect(() => parseSkillDocument(doc('  schedule:\n    cron: "0 9 * * *"\n    every: 5m'), "/tmp/s")).toThrow(/Invalid SKILL.md frontmatter/);
+    expect(() => parseSkillDocument(doc("  webhook: false"), "/tmp/s")).toThrow(/needs a `schedule`/);
+  });
+});
