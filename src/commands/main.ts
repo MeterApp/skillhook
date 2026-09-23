@@ -17,6 +17,7 @@ import { configCommand } from "./config.js";
 import { mcpCommand } from "./mcp.js";
 import { updateCommand } from "./update.js";
 import { linkCommand, projectsCommand, unlinkCommand } from "./projects.js";
+import { schedulesCommand } from "./schedules.js";
 import { planUpdateNotice, spawnBackgroundRefresh } from "../update.js";
 import { readJsonFileOr } from "../util.js";
 
@@ -45,6 +46,7 @@ Projects (a repository's skillhook.yaml: webhook name → shell command, SKILL.m
 Running
   run <skill> [--payload JSON|@file|-] [--header "K: v"]... [--runner R] [--model M] [--effort E] [--cwd DIR] [--wait S] [--dry-run]
   send <skill> [--payload …] [--wait S] [--url BASE|--public|--local] [--header "K: v"]...   POST a signed test webhook
+  schedules list | next <name> [--count N] | run <name> [--wait S]   Skills with a schedule: next and last runs; fire one now
   jobs list [--skill S] [--status ST] [--limit N] | show <id> [--result|--prompt|--stdout|--stderr] | logs <id> [-f]
   jobs cancel <id> | resume <id> [--exec] | path <id> | prune [--keep N]
 
@@ -82,6 +84,8 @@ const COMMANDS: Record<string, Command> = {
   unlink: unlinkCommand,
   projects: projectsCommand,
   project: projectsCommand,
+  schedules: schedulesCommand,
+  schedule: schedulesCommand,
 };
 
 /** Commands whose output must stay clean, or that handle update checks themselves. */

@@ -6,6 +6,8 @@ export * from "./frontmatter.js";
 export * from "./skills.js";
 export * from "./projects.js";
 export * from "./registry.js";
+export * from "./schedule.js";
+export * from "./scheduler.js";
 export * from "./auth.js";
 export * from "./filters.js";
 export * from "./payload.js";

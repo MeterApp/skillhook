@@ -115,7 +115,8 @@ export function deliveryFingerprint(input: FingerprintInput): string {
   return hash.digest("hex");
 }
 
-export type Trigger = "webhook" | "cli" | "mcp" | "api";
+/** `webhook`: a delivery to `/hooks/<skill>`; `api`: `POST /skills/<skill>/run`; `cli`: `skillhook run`; `mcp`: the MCP `run_skill` tool in-process; `schedule`: the scheduler fired a `schedule:` slot. */
+export type Trigger = "webhook" | "cli" | "mcp" | "api" | "schedule";
 
 /** Everything the skill learns about one delivery. Persisted as `event.json` in the job directory. */
 export interface WebhookEvent {

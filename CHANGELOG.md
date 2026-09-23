@@ -4,6 +4,31 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- Scheduled hooks. A `schedule:` key on any skill (`skillhook:` block) or hook (`skillhook.yaml`) runs it
+  on a cron schedule from the running server, without a webhook: a five-field expression or an alias
+  (`@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`), read in an IANA `timezone` (default UTC), with
+  `catch_up` for slots missed while the server was stopped or the machine asleep (`latest` by default,
+  `all` up to 24, or `none`), `overlap` for a slot that comes due while the previous run is still going
+  (`skip` by default, or `queue`), and a static `payload`. `webhook: false` makes a scheduled hook
+  schedule-only: `POST /hooks/<name>` answers `404 schedule_only` and no secret is required. A slot is
+  identified by its wall-clock minute in the hook's zone and recorded in the delivery index, so a
+  restart, a second tick or the repeated hour of a fall-back night never runs it twice; a minute that
+  does not exist on a spring-forward night is skipped. A new schedule waits for its next slot.
+- Scheduled jobs carry `trigger: schedule`, `source.method: SCHEDULE`, `delivery_id: schedule:<slot>`
+  and the payload `{scheduled_for, schedule: {cron, timezone, slot, fired_at, caught_up, manual}, …}`;
+  the guardrails say the run was started by a schedule and has no external sender. State lives in
+  `jobs/.schedules.json`; the server logs `schedule registered`, `schedule fired` and
+  `schedule slots skipped`.
+- `skillhook schedules list | next <name> [--count N] | run <name> [--wait S]`, the MCP tool
+  `list_schedules`, `schedules` in `GET /health` (admin), `webhook` and `schedule` (with `next_run_at`)
+  in `GET /skills`, `skills show` and the `skills list` URL column (`(schedule <cron>)` for
+  schedule-only hooks). `doctor` gains a `schedules` check and, on macOS, a `sleep` check that warns
+  when a machine with schedules is allowed to sleep; `doctor` and `skills validate` no longer ask
+  schedule-only hooks for a secret.
+- `skillhook.yaml` and `SKILL.md` files that use `schedule` or `webhook` are rejected by older
+  servers (unknown keys have always been errors), so upgrade every linked machine before merging one.
+  Reference: `docs/schedules.md`.
+
 ## 0.2.0 (2026-09-17)
 
 - Version-controlled hooks: a repository can declare its webhooks in a `skillhook.yaml` at its root.

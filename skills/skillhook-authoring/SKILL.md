@@ -44,6 +44,8 @@ Start from an example when one is close — `skillhook skills examples`, then `s
 | `codex` | `sandbox` (`read-only` \| `workspace-write` \| `danger-full-access`), `network_access`, `profile`, `add_dirs`, `args` | `workspace-write`, network on |
 | `shell` | `{ command: "…" }` — a script instead of an agent; payload on stdin, `SKILLHOOK_*` variables set | — |
 | `enabled` | `false` takes the URL offline (404) without deleting the skill | `true` |
+| `schedule` | run on a cron schedule too: `"*/30 * * * *"` (UTC) or `{ cron, timezone, catch_up: latest\|all\|none, overlap: skip\|queue, payload }`; `false` cancels one inherited from a SKILL.md | none |
+| `webhook` | `false` = schedule-only: no URL (`404 schedule_only`), no secret needed | `true` |
 
 Unknown keys fail validation and the skill stops routing — `skillhook skills validate <name>` tells you.
 
@@ -96,11 +98,27 @@ Each hook is exactly one of `run` / `skill` / `prompt` plus any key of the table
 | `{{headers}}`, `{{headers.x-github-event}}` | redacted headers (no auth or signature headers) |
 | `{{query.foo}}` | a query-string parameter |
 | `{{job_id}}`, `{{job_dir}}`, `{{skill_name}}`, `{{skill_dir}}` | run identity and where to write artifacts |
-| `{{received_at}}`, `{{source_ip}}`, `{{delivery_id}}`, `{{trigger}}` | metadata; `trigger` is `webhook`, `cli`, `mcp` or `api` |
+| `{{received_at}}`, `{{source_ip}}`, `{{delivery_id}}`, `{{trigger}}` | metadata; `trigger` is `webhook`, `cli`, `mcp`, `api` or `schedule` |
 
 If the body never mentions `payload`, skillhook appends a `# Webhook event` section with metadata, `<webhook_headers>` and `<webhook_payload>`. As soon as you use `{{payload.x}}` it does not — quote what the agent needs yourself: `{{payload}}` in a fenced block for small payloads, or the key fields plus `{{payload_path}}` for large ones. References that render as multi-line JSON belong on their own line.
 
 The agent's environment also carries `SKILLHOOK_JOB_ID`, `SKILLHOOK_JOB_DIR`, `SKILLHOOK_PAYLOAD_PATH`, `SKILLHOOK_EVENT_PATH`, `SKILLHOOK_SKILL_DIR`, `SKILLHOOK_TRIGGER` and `SKILLHOOK_RUNNER`, and the skill and job directories are added with `--add-dir` when `cwd` is elsewhere.
+
+## Schedules
+
+Work with no trigger (a sweep of overdue items, a weekday digest, a weekly report) gets a `schedule:` instead of, or next to, its webhook:
+
+```yaml
+skillhook:
+  webhook: false                       # schedule-only: no URL, no secret
+  schedule:
+    cron: "5 9 * * 1-5"                # five fields or @hourly/@daily/@weekly/@monthly; read in `timezone`
+    timezone: America/New_York
+    catch_up: latest                   # slots missed while asleep: latest (default) | all (≤24) | none
+    overlap: skip                      # previous run still going: skip (default) | queue
+```
+
+The payload is skillhook's: `{ scheduled_for: <ISO instant>, schedule: { cron, timezone, slot: "2026-09-24T09:05", fired_at, caught_up, manual }, ...payload }`, so write the body around `{{payload.scheduled_for}}` or `{{payload.schedule.slot}}` and say what "now" means for the task. Each slot fires once (a restart or a repeated fall-back hour cannot double it); a newly added schedule waits for its next slot. Test with `skillhook schedules next <name>` (upcoming times) and `skillhook schedules run <name> --wait 60` (fires now with `manual: true`). Reference: docs/schedules.md.
 
 ## `when` filters and `dedupe`
 

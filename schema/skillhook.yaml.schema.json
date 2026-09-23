@@ -547,6 +547,59 @@
           "enabled": {
             "type": "boolean"
           },
+          "schedule": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "boolean",
+                "const": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "cron": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "timezone": {
+                    "type": "string"
+                  },
+                  "catch_up": {
+                    "type": "string",
+                    "enum": [
+                      "latest",
+                      "all",
+                      "none"
+                    ]
+                  },
+                  "overlap": {
+                    "type": "string",
+                    "enum": [
+                      "skip",
+                      "queue"
+                    ]
+                  },
+                  "payload": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "cron"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "webhook": {
+            "type": "boolean"
+          },
           "description": {
             "type": "string",
             "minLength": 1,

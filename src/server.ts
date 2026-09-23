@@ -11,6 +11,8 @@ import { deliveryFingerprint, parseBody, redactHeaders, type Trigger, type Webho
 import type { JobQueue } from "./queue.js";
 import { resolveRunSettings } from "./run.js";
 import type { SkillRegistry } from "./registry.js";
+import { nextRun } from "./schedule.js";
+import type { ScheduleStatus } from "./scheduler.js";
 import { describeAuth, SkillError, type Skill } from "./skills.js";
 import { errorMessage, getPath, isPlainObject, isValidSkillName, nowIso, writeJsonFile } from "./util.js";
 import { VERSION } from "./version.js";
@@ -25,6 +27,8 @@ export interface ServerDeps {
   registry: SkillRegistry;
   secrets: () => Secrets;
   logger: Logger;
+  /** Live schedule state for `/health` (admin); absent when the server runs without a scheduler. */
+  schedules?: () => ScheduleStatus[];
 }
 
 export interface ServerState {
@@ -157,6 +161,8 @@ export function skillSummary(skill: Skill, config: Config, secrets: Secrets): Re
     path: `/hooks/${skill.name}`,
     auth: { type: skill.auth.type, secret_env: secretEnv ?? null, configured: secretEnv ? Boolean(secrets[secretEnv]) : true, how: describeAuth(skill.auth) },
     when: skill.config.when?.map(describeCondition) ?? [],
+    webhook: skill.webhook,
+    schedule: skill.schedule ? { cron: skill.schedule.cron, timezone: skill.schedule.timezone, catch_up: skill.schedule.catch_up, overlap: skill.schedule.overlap, next_run_at: skill.enabled ? (nextRun(skill.schedule.spec, new Date(), skill.schedule.timezone)?.toISOString() ?? null) : null } : null,
     dir: skill.dir,
     file: skill.file,
     source: skill.source,
@@ -201,8 +207,15 @@ export function createServer(deps: ServerDeps): Server {
     return skill;
   }
 
+  /** A schedule-only skill exists but has no webhook: the sender learns nothing beyond a 404. */
+  function loadWebhookSkill(name: string): Skill {
+    const skill = loadSkill(name);
+    if (!skill.webhook) throw new HttpError(404, "schedule_only", "this hook runs on a schedule and has no webhook URL");
+    return skill;
+  }
+
   async function handleWebhook(req: IncomingMessage, res: ServerResponse, url: URL, skillName: string, headers: Record<string, string>, ip: string): Promise<void> {
-    const skill = loadSkill(skillName);
+    const skill = loadWebhookSkill(skillName);
     const rawBody = await readBody(req, config.max_body_bytes);
     const inbound: InboundRequest = { headers, rawBody, query: url.searchParams, ip };
     const verdict = verifyRequest(skill.auth, deps.secrets(), inbound);
@@ -343,13 +356,13 @@ export function createServer(deps: ServerDeps): Server {
     }
     if (segments[0] === "health" && segments.length === 1) {
       // Public callers learn only that the server is up; queue details need admin access.
-      return send(res, 200, isAdmin(headers, req, viaProxy) ? { ok: true, version: VERSION, uptime_seconds: Math.round((Date.now() - startedAt) / 1000), queue: queue.stats() } : { ok: true, version: VERSION });
+      return send(res, 200, isAdmin(headers, req, viaProxy) ? { ok: true, version: VERSION, uptime_seconds: Math.round((Date.now() - startedAt) / 1000), queue: queue.stats(), ...(deps.schedules ? { schedules: deps.schedules() } : {}) } : { ok: true, version: VERSION });
     }
     if (segments[0] === "hooks" && segments.length === 2) {
       const skillName = decodeURIComponent(segments[1] as string);
       if (method === "POST" || method === "PUT") return handleWebhook(req, res, url, skillName, headers, ip);
       if (method === "GET" || method === "HEAD") {
-        loadSkill(skillName);
+        loadWebhookSkill(skillName);
         return send(res, 200, `skillhook: POST your webhook to this URL.\n`);
       }
       throw new HttpError(405, "method_not_allowed", "use POST");

@@ -1,5 +1,6 @@
 import { ADMIN_TOKEN_ENV, type Secrets } from "./env.js";
 import type { Paths } from "./paths.js";
+import type { ScheduleStatus } from "./scheduler.js";
 import type { ServerState } from "./server.js";
 import { readJsonFileOr } from "./util.js";
 
@@ -18,6 +19,8 @@ export interface HealthResponse {
   uptime_seconds?: number;
   /** Only present for admin/local callers. */
   queue?: { running: number; queued: number; running_ids: string[] };
+  /** Only present for admin/local callers, and only when the server runs the scheduler. */
+  schedules?: ScheduleStatus[];
 }
 
 /** Returns the health payload when a server answers at `baseUrl`, otherwise undefined. */

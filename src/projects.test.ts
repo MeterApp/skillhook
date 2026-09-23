@@ -109,6 +109,26 @@ describe("skillhook.yaml", () => {
     expect(renderProjectTemplate().startsWith("# yaml-language-server: $schema=")).toBe(true);
   });
 
+  it("schedules hooks, and lets a hook cancel the schedule of its SKILL.md", () => {
+    const dir = project(`hooks:\n  sweep:\n    run: ./sweep.sh\n    webhook: false\n    schedule:\n      cron: "*/30 * * * *"\n      catch_up: none\n  weekly:\n    skill: skills/report\n  ad-hoc:\n    skill: skills/report\n    schedule: false\n    auth: { type: bearer }\n`, (d) => {
+      mkdirSync(path.join(d, "skills", "report"), { recursive: true });
+      writeFileSync(path.join(d, "skills", "report", "SKILL.md"), `---\nname: report\ndescription: Weekly report.\nskillhook:\n  schedule:\n    cron: "0 16 * * 5"\n    timezone: America/New_York\n---\nReport.\n`);
+    });
+    const loaded = loadProject(dir);
+    expect(loaded.errors).toEqual([]);
+    expect(loaded.hooks.find((h) => h.name === "sweep")).toMatchObject({ webhook: false, schedule: { cron: "*/30 * * * *", timezone: "UTC", catch_up: "none", overlap: "skip" } });
+    expect(loaded.hooks.find((h) => h.name === "weekly")).toMatchObject({ webhook: true, schedule: { cron: "0 16 * * 5", timezone: "America/New_York" } });
+    const adHoc = loaded.hooks.find((h) => h.name === "ad-hoc");
+    expect(adHoc?.schedule).toBeUndefined();
+    expect(adHoc?.webhook).toBe(true);
+    expect(() => parseProjectFile(`hooks:\n  x:\n    run: ls\n    schedule:\n      cron: "0 9 * * *"\n      overlap: maybe\n`, "/repo/skillhook.yaml")).toThrow(/Invalid/);
+    const noWay = loadProject(project(`hooks:\n  x:\n    run: ls\n    webhook: false\n  fine:\n    run: ls\n`));
+    expect(noWay.hooks.map((h) => h.name)).toEqual(["fine"]);
+    expect(noWay.errors[0]).toMatchObject({ name: "x" });
+    expect(noWay.errors[0]?.error).toContain("needs a `schedule`");
+    expect(loadProject(project(`hooks:\n  y:\n    run: ls\n    schedule: "99 * * * *"\n`)).errors[0]?.error).toContain("out of range");
+  });
+
   it("compileHook validates names", () => {
     const ref = { entry: "/repo", dir: "/repo", file: "/repo/skillhook.yaml" };
     expect(() => compileHook(ref, "Nope", { run: "ls" })).toThrow(/Invalid hook name/);

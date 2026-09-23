@@ -70,7 +70,7 @@ Exactly one of these says what runs:
 | `skill` | path | A directory containing a `SKILL.md` (or the path of the file), relative to the repository. The SKILL.md's frontmatter, body, `allowed-tools` and reference files are used exactly as for a skill in `~/.skillhook/skills`. |
 | `prompt` | string | The body of an agent run, with the same `{{placeholders}}` as a SKILL.md body (`{{payload.x}}`, `{{job_dir}}`, …). |
 
-Everything else is the [`skillhook:` block](skills.md#the-skillhook-block) of a SKILL.md, key for key: `description`, `runner`, `model`, `effort`, `cwd`, `timeout_seconds`, `auth`, `when`, `env`, `concurrency`, `dedupe`, `claude`, `codex`, `shell`, `enabled`. Two defaults differ from a skill directory:
+Everything else is the [`skillhook:` block](skills.md#the-skillhook-block) of a SKILL.md, key for key: `description`, `runner`, `model`, `effort`, `cwd`, `timeout_seconds`, `auth`, `when`, `env`, `concurrency`, `dedupe`, `claude`, `codex`, `shell`, `enabled`, `schedule`, `webhook`. Two defaults differ from a skill directory:
 
 - `cwd` defaults to the repository (the directory containing `skillhook.yaml`), not the skill directory. A relative `cwd` is resolved against the repository; `~` and absolute paths work as usual. `defaults.cwd` from `skillhook.json` does not apply to hooks.
 - The default secret variable is derived from the **hook** name: `SKILLHOOK_SECRET_<HOOK>`.
@@ -122,6 +122,24 @@ Keys set on the hook replace the same keys of the SKILL.md's `skillhook:` block 
 
 `prompt` is the whole body: skillhook prepends `# Skill: <name>`, appends the event block when the prompt does not reference the payload, and adds the unattended-run guardrails, exactly as for a SKILL.md. Use it for one-paragraph jobs; move anything longer into a `SKILL.md` and point `skill:` at it.
 
+### Scheduled hooks
+
+Any hook can also carry a `schedule:`; with `webhook: false` it has no URL at all and needs no secret. The server fires it on time, in the zone you name, and catches up slots missed while the machine slept. This is how a repository keeps its timers next to its webhooks:
+
+```yaml
+hooks:
+  overdue-sweep:
+    run: node tools/sweep.mjs
+    webhook: false
+    schedule: "*/30 * * * *"
+  weekly-review:
+    skill: .claude/skills/weekly-review
+    webhook: false
+    schedule: { cron: "0 16 * * 5", timezone: America/New_York, catch_up: latest }
+```
+
+A `skill:` hook inherits its SKILL.md's schedule; `schedule: false` on the hook cancels it. Fields, catch-up and overlap policies, the payload a scheduled run gets, and `skillhook schedules`: [schedules.md](schedules.md).
+
 ## Linking
 
 ```bash
@@ -152,6 +170,7 @@ Several machines can link the same repository; each has its own URL, secrets and
 | `skillhook skills show <hook>` | The effective settings, the source file, and for `skill` hooks the SKILL.md path. |
 | `GET /skills`, MCP `list_skills` / `list_projects` | The same as data: each skill carries `source: {type, dir, file, kind}`. |
 | `skillhook jobs list` | Runs by hook name; `jobs show <id>` prints the working directory and the exact command. |
+| `skillhook schedules list` | Every hook with a `schedule:`: cron, zone, next due, last run and its status. |
 
 ## Editor support
 

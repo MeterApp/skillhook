@@ -14,7 +14,7 @@ A scheduled task polls. It wakes up every N minutes, looks for work, usually fin
 | Cost | tokens on empty runs | one run per event; retries and identical deliveries are de-duplicated |
 | Where | wherever the scheduler runs | your machine: your logins, your checkouts, your MCP servers, your `CLAUDE.md` |
 
-Keep schedules for digests and clean-ups; give everything that has a trigger a webhook. Anything that can call a URL can start a skill: SaaS webhooks (Granola, Sentry, GitHub, Linear, Stripe, Slack, Standard Webhooks), Zapier and Make, iOS Shortcuts, `curl` from a cron job, another agent.
+Give everything that has a trigger a webhook. Anything that can call a URL can start a skill: SaaS webhooks (Granola, Sentry, GitHub, Linear, Stripe, Slack, Standard Webhooks), Zapier and Make, iOS Shortcuts, `curl`, another agent. The work that has no trigger (a sweep of whatever is overdue, a weekday digest, a weekly report, a nightly clean-up) gets a [`schedule:`](#scheduled-hooks) on the same skill or hook, version-controlled next to the webhooks: skillhook fires it on time in the zone you name, catches up slots missed while the machine slept, and never runs one twice.
 
 ## How it works
 
@@ -37,6 +37,7 @@ Keep schedules for digests and clean-ups; give everything that has a trigger a w
 
 - A skill is a directory `~/.skillhook/skills/<name>/SKILL.md`: standard Agent Skills frontmatter plus a `skillhook:` block that sets the runner, model, authentication, filters and working directory. Edits apply to the next delivery without a restart.
 - A repository can carry its own hooks in a version-controlled `skillhook.yaml` (webhook name → a shell command, a `SKILL.md` in the repository, or inline instructions); `skillhook link <dir>` serves them. See [Version-controlled hooks](#version-controlled-hooks-in-a-repository).
+- Any skill or hook can also carry a `schedule:` (a cron expression, a time zone, and what to do about missed slots); the server fires it without a webhook. See [Scheduled hooks](#scheduled-hooks).
 - The runner is the real `claude` or `codex` CLI on the machine, so subscriptions, MCP servers, `CLAUDE.md`/`AGENTS.md` files and tool permissions apply as usual.
 - Responses are immediate (`202` with a job id) or synchronous with `?wait=N` (or `Prefer: wait=N`); the agent's final message becomes the job result.
 - Developed against Claude Code 2.1.270, Codex CLI 0.153.4 and Tailscale 1.102.3. skillhook drives the CLIs through their headless flags (`claude -p --output-format stream-json …`, `codex exec --json …`); `skillhook run <skill> --dry-run` shows the exact command line.
@@ -185,6 +186,40 @@ skillhook projects               # which hook runs what, from which repository, 
 
 `skillhook skills list` shows repository hooks next to local skills with their source, `skillhook unlink <dir>` stops serving them, and a `git pull` that changes the file is enough to deploy the change. Names in `~/.skillhook/skills` win over repositories, and a name defined twice is reported instead of guessed. Details: [docs/projects.md](docs/projects.md).
 
+## Scheduled hooks
+
+Not everything has a trigger. The sweep that applies defaults to overdue items, the weekday digest, the Friday report and the nightly clean-up run on time instead, from the same file:
+
+```yaml
+hooks:
+  overdue-sweep:
+    run: node tools/sweep.mjs
+    schedule: "*/30 * * * *"                   # cron, read in UTC
+    webhook: false                             # schedule-only: no URL, no secret
+
+  weekly-review:
+    skill: .claude/skills/weekly-review
+    model: opus
+    webhook: false
+    schedule:
+      cron: "0 16 * * 5"
+      timezone: America/New_York
+      catch_up: latest                         # slots missed while asleep: latest (default) | all | none
+      overlap: skip                            # previous run still going at the next slot: skip (default) | queue
+```
+
+A slot is identified by its wall-clock minute in the hook's zone, so a restart, a second check or the repeated hour of a fall-back night never fires it twice; a slot the machine slept through is caught up at wake according to `catch_up`. The job is an ordinary job with `trigger: schedule` and a payload that says which slot fired (`{{payload.scheduled_for}}`). The same key works in a `SKILL.md`'s `skillhook:` block.
+
+```bash
+skillhook schedules list         # cron, zone, next due, last run and its status, for every schedule
+```
+
+```bash
+skillhook schedules run weekly-review --wait 60   # fire one now, with a scheduled payload
+```
+
+`skillhook doctor` lists the schedules and warns when a scheduled Mac is allowed to sleep. Details: [docs/schedules.md](docs/schedules.md).
+
 ## Choosing runner and model
 
 | | `claude` | `codex` | `shell` |
@@ -296,6 +331,7 @@ Agents reading this repository should start with [`AGENTS.md`](AGENTS.md) (layou
 | `skillhook config show\|get <key>\|set <key> <value>\|unset <key>\|path` | Read and edit `skillhook.json`. |
 | `skillhook link [dir] [--no-secret]` / `skillhook unlink <dir>` | Serve the hooks a repository declares in its `skillhook.yaml` (default `.`); stop serving them. |
 | `skillhook projects [list]` / `skillhook projects init [dir] [--force]` | List linked repositories and their hooks; write a starter `skillhook.yaml` and link it. |
+| `skillhook schedules [list]` · `schedules next <name> [--count N]` · `schedules run <name> [--wait S]` | Every skill or hook with a `schedule:`, its next and last runs; preview occurrences; fire one now. |
 | `skillhook update [--install]` | Check npm for a newer skillhook; `--install` upgrades with the package manager that installed it and restarts the background service when it is idle. |
 
 Global options: `--dir <path>` (default `$SKILLHOOK_HOME` or `~/.skillhook`), `--json` (machine-readable output for every command), `--help`, `--version`. Exit codes: 0 success, 1 failure, 2 usage error. Environment: `SKILLHOOK_HOME`, `SKILLHOOK_NO_UPDATE_CHECK=1` (or `CI`) to silence the daily update check, `SKILLHOOK_NPM_REGISTRY` for a mirror, `SKILLHOOK_DEBUG=1` for stack traces. HTTP API: [docs/api.md](docs/api.md). Service, logs, jobs, config and troubleshooting: [docs/operations.md](docs/operations.md).
@@ -309,7 +345,8 @@ Global options: `--dir <path>` (default `$SKILLHOOK_HOME` or `~/.skillhook`), `-
 ├── server.json               pid/host/port while `serve` runs; removed on shutdown
 ├── skills/<name>/SKILL.md    one directory per skill (plus any files the skill needs)
 ├── jobs/<id>/                job.json, payload.json, event.json, prompt.md, stdout.log, stderr.log, result.md
-├── jobs/.deliveries.json     replay-protection index
+├── jobs/.deliveries.json     replay-protection index (also the slots the scheduler has fired)
+├── jobs/.schedules.json      per schedule: last slot handled, last job and its status
 ├── update-check.json         what npm said at the last daily update check
 └── logs/service.log          server output when run by launchd / systemd
 ```
@@ -327,6 +364,8 @@ Override the location with `SKILLHOOK_HOME=<path>` or `--dir <path>`.
 **How do I stop everything?** `skillhook service uninstall` removes the service and `skillhook expose off` removes the Funnel mapping. Delete `~/.skillhook` if you also want to drop the configuration, secrets and job history.
 
 **Can I run a plain script instead of an agent?** Yes. In a repository's `skillhook.yaml`, `run: ./scripts/deploy.sh` (or any command) runs it in the repository with the payload on stdin and the `SKILLHOOK_*` variables set; in a `SKILL.md`, `runner: shell` with `shell.command` does the same. Exit code 0 is success, stdout is the result. See [docs/projects.md](docs/projects.md) and [docs/runners.md](docs/runners.md#shell-runner).
+
+**Can a skill run on a schedule instead of a webhook?** Yes. Add `schedule: "*/30 * * * *"` (or `{ cron, timezone, catch_up, overlap }`) to a skill's `skillhook:` block or a hook in `skillhook.yaml`, and `webhook: false` when it should have no URL at all. The running server fires it on time, catches up slots missed while the machine slept (`catch_up`), and never fires one slot twice. `skillhook schedules list` shows what will run when. See [docs/schedules.md](docs/schedules.md).
 
 **Can several skills run at once?** Two jobs globally by default (`concurrency` in `skillhook.json`) and one per skill (`skillhook.concurrency` in `SKILL.md`); the rest wait in a FIFO queue that survives restarts. The same webhook firing twice with the same payload while the first run is still queued or running does not start a second job; the sender gets the first job's id (`duplicate: true, in_flight: true`).
 

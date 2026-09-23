@@ -16,9 +16,9 @@ Related: [security.md](security.md) (authentication), [skills.md](skills.md) (fi
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/` | none | Banner: `skillhook <version>` plus a hint. |
-| `GET` | `/health` | none; admin for details | Liveness. Public callers get `{ok, version}`; admin callers also get `uptime_seconds` and `queue`. |
-| `GET`, `HEAD` | `/hooks/<skill>` | none | `200` text when the skill exists and is enabled, `404` otherwise. Lets providers "test" the URL. |
-| `POST`, `PUT` | `/hooks/<skill>` | the skill's `auth` | Deliver a webhook. |
+| `GET` | `/health` | none; admin for details | Liveness. Public callers get `{ok, version}`; admin callers also get `uptime_seconds`, `queue` and `schedules`. |
+| `GET`, `HEAD` | `/hooks/<skill>` | none | `200` text when the skill exists, is enabled and has a webhook, `404` otherwise (`schedule_only` for a `webhook: false` skill). Lets providers "test" the URL. |
+| `POST`, `PUT` | `/hooks/<skill>` | the skill's `auth` | Deliver a webhook. `404 schedule_only` for a skill with `webhook: false`. |
 | `GET` | `/skills` | admin | Every skill with its effective settings. |
 | `POST` | `/skills/<skill>/run` | admin | Run a skill with an arbitrary payload, bypassing webhook auth. |
 | `GET` | `/jobs` | admin | Recent jobs. |
@@ -32,7 +32,7 @@ Anything else is `404 not_found`; another method on `/hooks/<skill>` is `405 met
 Processing order:
 
 1. Rate limit per client IP.
-2. Skill lookup: unknown, disabled or malformed name -> `404 unknown_skill`; a `SKILL.md` that fails to parse -> `500 invalid_skill` (details in the server log).
+2. Skill lookup: unknown, disabled or malformed name -> `404 unknown_skill`; a schedule-only skill (`webhook: false`) -> `404 schedule_only`; a `SKILL.md` that fails to parse -> `500 invalid_skill` (details in the server log).
 3. Body read: a `Content-Length` or streamed size above `max_body_bytes` (1 MiB) -> `413 payload_too_large`.
 4. Authentication per the skill's `auth`: `403 ip_not_allowed`, `401 <code>`, or `503 skill_not_configured` when the secret env var is missing. After `rate_limit.auth_failures_per_minute` (10) failures from one IP within a minute the answer becomes `429 too_many_failures`.
 5. Body parsing by content type (JSON, form, text, binary; see [skills.md](skills.md#what-the-agent-receives)).
@@ -153,7 +153,13 @@ Admin routes accept `Authorization: Bearer <SKILLHOOK_ADMIN_TOKEN>`. Without a t
 
 ## `GET /health`
 
-Public: `{"ok": true, "version": "0.1.0"}`. Admin or direct local: adds `"uptime_seconds"` and `"queue": {"running": 0, "queued": 0, "running_ids": []}`. The CLI and MCP server use this route to detect a running server.
+Public: `{"ok": true, "version": "0.1.0"}`. Admin or direct local: adds `"uptime_seconds"`, `"queue": {"running": 0, "queued": 0, "running_ids": []}` and `"schedules"`, one entry per skill or hook with a `schedule:`:
+
+```json
+{ "skill": "weekly-review", "cron": "0 16 * * 5", "timezone": "America/New_York", "catch_up": "latest", "overlap": "skip", "enabled": true, "webhook": false, "next_due": "2026-09-25T20:00:00.000Z", "last_slot": "2026-09-18T20:00:00.000Z", "last_fired_at": "2026-09-18T20:00:09.120Z", "last_job": "20260918T200009Z-k3x9q2", "last_status": "succeeded", "skipped": 0 }
+```
+
+The CLI and MCP server use this route to detect a running server, and `skillhook schedules list` prefers its live `schedules` over the state file.
 
 ## `GET /skills`
 
@@ -177,6 +183,8 @@ Public: `{"ok": true, "version": "0.1.0"}`. Admin or direct local: adds `"uptime
         "how": "Authorization: Bearer <$SKILLHOOK_SECRET_HELLO>"
       },
       "when": ["payload.action equals \"created\""],
+      "webhook": true,
+      "schedule": null,
       "dir": "/Users/me/.skillhook/skills/hello",
       "file": "/Users/me/.skillhook/skills/hello/SKILL.md",
       "source": { "type": "home" }
@@ -193,6 +201,8 @@ Public: `{"ok": true, "version": "0.1.0"}`. Admin or direct local: adds `"uptime
       "path": "/hooks/pull-after-merge",
       "auth": { "type": "hmac", "secret_env": "GITHUB_WEBHOOK_SECRET", "configured": true, "how": "github HMAC-SHA256 of the body in x-hub-signature-256 (prefix sha256=), secret $GITHUB_WEBHOOK_SECRET" },
       "when": ["header x-github-event equals \"pull_request\"", "payload.action equals \"closed\"", "payload.pull_request.merged equals true"],
+      "webhook": true,
+      "schedule": null,
       "dir": "/Users/me/dev/api",
       "file": "/Users/me/dev/api/skillhook.yaml",
       "source": { "type": "project", "dir": "/Users/me/dev/api", "file": "/Users/me/dev/api/skillhook.yaml", "kind": "run" }
@@ -204,7 +214,7 @@ Public: `{"ok": true, "version": "0.1.0"}`. Admin or direct local: adds `"uptime
 }
 ```
 
-`runner`, `model`, `effort`, `cwd` and `timeout_seconds` are effective values after `defaults`. `auth.type` is the normalized type: `github`, `sentry` and `linear` appear as `hmac`, `granola` and `svix` as `standard-webhooks`; `auth.how` spells out the preset. `auth.configured` says whether the secret is present. `source` says where the skill is defined: `{"type": "home"}` for `<home>/skills/<name>`, or `{"type": "project", "dir", "file", "kind"}` for a hook of a linked repository's `skillhook.yaml` (`kind` is `run`, `skill` or `prompt`; see [projects.md](projects.md)). This call rescans the skills directory and every linked repository, so new directories and hooks appear immediately.
+`runner`, `model`, `effort`, `cwd` and `timeout_seconds` are effective values after `defaults`. `auth.type` is the normalized type: `github`, `sentry` and `linear` appear as `hmac`, `granola` and `svix` as `standard-webhooks`; `auth.how` spells out the preset. `auth.configured` says whether the secret is present. `webhook` is false for a schedule-only skill; `schedule` is `null` or `{"cron", "timezone", "catch_up", "overlap", "next_run_at"}` ([schedules.md](schedules.md)). `source` says where the skill is defined: `{"type": "home"}` for `<home>/skills/<name>`, or `{"type": "project", "dir", "file", "kind"}` for a hook of a linked repository's `skillhook.yaml` (`kind` is `run`, `skill` or `prompt`; see [projects.md](projects.md)). This call rescans the skills directory and every linked repository, so new directories and hooks appear immediately.
 
 ## `POST /skills/<skill>/run`
 
@@ -268,7 +278,7 @@ Ids that do not exist (or do not look like `YYYYMMDDTHHMMSSZ-xxxxxx`) are `404 u
 | `id` | string | `YYYYMMDDTHHMMSSZ-<6 chars>`, UTC, sortable; also the directory name under `jobs/`. |
 | `skill` | string | |
 | `status` | string | `queued`, `running`, `succeeded`, `failed`, `timed_out`, `cancelled`, `interrupted`. |
-| `trigger` | string | `webhook`, `api`, `cli`, `mcp`. |
+| `trigger` | string | `webhook`, `api`, `cli`, `mcp`, `schedule` (fired by a `schedule:`). |
 | `runner` | string | `claude`, `codex`, `shell`. |
 | `model`, `effort` | string, optional | Resolved values when set. |
 | `created_at`, `started_at`, `finished_at` | ISO-8601 | |
@@ -280,9 +290,9 @@ Ids that do not exist (or do not look like `YYYYMMDDTHHMMSSZ-xxxxxx`) are `404 u
 | `cost_usd`, `usage`, `num_turns` | optional | As reported by the runner (Claude reports all three, Codex `usage` only). |
 | `result` | string, optional | Final agent message, truncated to 20 000 characters here; complete in `result.md`. |
 | `error` | string, optional | Failure reason. |
-| `delivery_id` | string, optional | Provider delivery id when known. |
+| `delivery_id` | string, optional | Provider delivery id when known; `schedule:<wall-clock slot>` for scheduled runs. |
 | `fingerprint` | string, optional | SHA-256 of the payload and query string of a webhook delivery; what the in-flight duplicate check compares. |
-| `source` | object | `ip`, `method` (`POST`, `PUT`, or `LOCAL` for CLI/MCP runs), `path`, `content_type`, `user_agent`. |
+| `source` | object | `ip`, `method` (`POST`, `PUT`, `LOCAL` for CLI/MCP runs, `SCHEDULE` for scheduled runs), `path`, `content_type`, `user_agent`. |
 
 `job.json` on disk also contains `command` (the exact argv); API responses omit it.
 
@@ -297,6 +307,7 @@ Ids that do not exist (or do not look like `YYYYMMDDTHHMMSSZ-xxxxxx`) are `404 u
 | 401 | `unauthorized` | Admin route without a valid token. |
 | 403 | `ip_not_allowed` | Client IP not in the skill's `allow_ips`. |
 | 404 | `unknown_skill`, `unknown_job`, `not_found` | |
+| 404 | `schedule_only` | The skill has `webhook: false`; it runs only on its `schedule:`. |
 | 405 | `method_not_allowed` | |
 | 409 | — (`ok: false`) | Cancel on a finished job. |
 | 413 | `payload_too_large` | Body over `max_body_bytes`. |
