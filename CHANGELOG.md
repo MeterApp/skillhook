@@ -4,6 +4,8 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.4.0 (2026-09-28)
+
 - An event bus inside `skillhook serve` (`src/events.ts`): the queue publishes `job.queued`,
   `job.started`, `job.updated`, `job.cancelled` and `job.finished`, the scheduler
   `schedule.registered`, `schedule.fired` and `schedule.skipped`, the registry `skill.changed` (a
