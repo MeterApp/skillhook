@@ -150,6 +150,10 @@ export const SkillhookBlockSchema = z
       .strict()
       .optional(),
     shell: z.object({ command: CommandSpecSchema }).strict().optional(),
+    /** How the running agent reaches the job API (progress, asking a person, the outcome): `mcp` (default for claude and codex) injects a per-run MCP server with `job_*` tools, `cli` relies on `skillhook job …` (always available; the default for shell), `none` mentions neither. */
+    agent_api: z.enum(["mcp", "cli", "none"]).optional(),
+    /** How long `job_ask_human` / `skillhook job ask` waits for a live answer by default (seconds; the job's timeout is paused meanwhile). Default 300. */
+    human_wait_seconds: z.number().int().min(1).max(86_400).optional(),
     /** How the job's task outcome is read. `text` (default): the agent may write `response.json` in the job directory; `file`: it is asked to; `structured`: the runner must answer with JSON matching `schema` (`claude --json-schema` / `codex --output-schema`). See docs/skills.md#reporting-the-outcome. */
     response: z
       .object({

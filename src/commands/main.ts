@@ -9,6 +9,7 @@ import { skillsCommand } from "./skills.js";
 import { secretCommand } from "./secret.js";
 import { runCommand } from "./run.js";
 import { sendCommand } from "./send.js";
+import { jobCommand } from "./job.js";
 import { jobsCommand } from "./jobs.js";
 import { deliveriesCommand } from "./deliveries.js";
 import { exposeCommand, urlCommand } from "./expose.js";
@@ -49,13 +50,17 @@ Running
   run --file SKILL.md | --stdin [same options]             Run a SKILL.md that is not installed (kept with the job)
   send <skill> [--payload …] [--wait S] [--url BASE|--public|--local] [--header "K: v"]...   POST a signed test webhook
   schedules list | next <name> [--count N] | run <name> [--wait S]   Skills with a schedule: next and last runs; fire one now
-  jobs list [--skill S] [--status ST] [--trigger T] [--since ISO] [--after ID] [--limit N] | show <id> [--result|--prompt|--stdout|--stderr] | logs <id> [-f]
+  jobs list [--skill S] [--status ST] [--outcome O] [--trigger T] [--waiting] [--since ISO] [--after ID] [--limit N] | show <id> [--result|--prompt|--stdout|--stderr] | logs <id> [-f]
+  jobs answer <id> "<answer>" [--option X] [--by NAME] [--no-resume] [--wait S]   Answer a job that asked (live) or ended needs_human (resumes the session)
   jobs cancel <id> | replay <id> [--skip-filters] [--wait S] | resume <id> [--exec] | path <id> | prune [--keep N]
   deliveries list [--skill S] [--outcome O] [--since ISO] [--after ID] [--limit N] | show <id> [--body]   Every webhook received, whatever became of it
   deliveries replay <id> [--force] [--skip-filters] [--runner R] [--model M] [--wait S]   Run a recorded delivery again (no signature check)
 
 Agents
   mcp [--print-config]                                     MCP server over stdio (tools for Claude Code, Codex, Cursor, …)
+  mcp --job                                                The per-run job API as an MCP server (the runners start it; needs $SKILLHOOK_JOB_ID/$SKILLHOOK_JOB_DIR)
+  job progress "<msg>" [--state working|blocked] [--percent N] | ask "<question>" [--option A]... [--wait S] | outcome <o> [--summary S] | note "<text>" | context
+                                                           Inside a run: report progress, ask a person (waits for the answer), report the outcome
   config show | get <key> | set <key> <value> | unset <key> | path
 
 Global options: --dir <path> (default $SKILLHOOK_HOME or ~/.skillhook), --json, --help, --version
@@ -74,7 +79,7 @@ const COMMANDS: Record<string, Command> = {
   run: runCommand,
   send: sendCommand,
   jobs: jobsCommand,
-  job: jobsCommand,
+  job: jobCommand,
   deliveries: deliveriesCommand,
   delivery: deliveriesCommand,
   expose: exposeCommand,

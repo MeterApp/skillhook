@@ -6,12 +6,13 @@ import type { Secrets } from "./env.js";
 import { Events } from "./events.js";
 import { isTerminal, type JobRecord, type JobStore } from "./jobs.js";
 import type { Logger } from "./logger.js";
+import { answerQuestion, readTimeline, type JobAnswer, type JobQuestion, type ProgressEntry } from "./progress.js";
 import { deriveOutcome, resolveJobResponse } from "./response.js";
 import { prepareRun } from "./run.js";
 import type { RunnerOutcome, StreamState } from "./runners/index.js";
 import type { SkillRegistry } from "./registry.js";
 import { loadAdhocSkill, type Skill } from "./skills.js";
-import { errorMessage, nowIso, tail, writeJsonFile } from "./util.js";
+import { errorMessage, nowIso, tail, truncate, writeJsonFile } from "./util.js";
 
 export interface QueueDeps {
   store: JobStore;
@@ -23,6 +24,10 @@ export interface QueueDeps {
   logger: Logger;
   /** Where `job.*` events are published; the server's bus in `serve`, a private one otherwise. */
   events?: Events;
+  /** The environment runs are built from (default `process.env`); tests pass their own. */
+  processEnv?: NodeJS.ProcessEnv;
+  /** How often the progress files of running jobs are read (default 1000 ms). */
+  progressPollMs?: number;
 }
 
 interface Running {
@@ -30,10 +35,18 @@ interface Running {
   child?: ChildProcess;
   cancelled: boolean;
   timedOut: boolean;
+  /** Bytes of `progress.jsonl` already turned into record updates and events. */
+  progressOffset: number;
+  /** The timeout clock, once the process runs: paused while the agent waits for a person. */
+  clock?: { pause(waitUntil?: string): void; resume(): void };
 }
 
 const STDOUT_KEEP = 32 * 1024 * 1024;
 const KILL_GRACE_MS = 10_000;
+/** How often the progress files of running jobs are read. */
+const PROGRESS_POLL_MS = 1000;
+/** Slack after a question's `wait_until` before the timeout clock restarts by itself (the agent should have given up by then). */
+const WAIT_GRACE_MS = 30_000;
 
 /**
  * In-memory FIFO with a global concurrency cap and one-at-a-time per skill by default. Jobs are
@@ -43,6 +56,7 @@ export class JobQueue extends EventEmitter {
   private queued: JobRecord[] = [];
   private running = new Map<string, Running>();
   private stopping = false;
+  private watcher?: NodeJS.Timeout;
   /** Typed `job.*` events (`job.queued`, `job.started`, `job.updated`, `job.cancelled`, `job.finished`). */
   readonly events: Events;
 
@@ -120,9 +134,26 @@ export class JobQueue extends EventEmitter {
     });
   }
 
+  /**
+   * A person answers the question a running job is waiting on: the files are written (the agent's `ask` call picks them
+   * up), the record and the timeout clock are updated and `job.answered` is emitted. Undefined when this queue does not
+   * run the job; `NoQuestionError` when it is not waiting for anyone.
+   */
+  answer(id: string, input: { text: string; option?: string; by?: string }): JobAnswer | undefined {
+    const running = this.running.get(id);
+    if (!running) return undefined;
+    this.readProgress(running); // catch up first, so a question the watcher has not seen yet is answered, not overwritten
+    const answer = answerQuestion(this.deps.store.pathsFor(id).dir, { ...input, requireQuestion: true });
+    this.recordAnswer(running, answer);
+    this.events.emit("job.answered", { job: running.job, answer, delivered: "live" });
+    return answer;
+  }
+
   /** Stops starting new jobs and terminates running ones (they are marked interrupted). */
   async shutdown(): Promise<void> {
     this.stopping = true;
+    if (this.watcher) clearInterval(this.watcher);
+    this.watcher = undefined;
     for (const running of this.running.values()) {
       running.cancelled = true;
       killTree(running.child, "SIGTERM");
@@ -153,6 +184,80 @@ export class JobQueue extends EventEmitter {
     }
   }
 
+  private ensureWatcher(): void {
+    if (this.watcher) return;
+    this.watcher = setInterval(() => {
+      for (const running of this.running.values()) this.readProgress(running);
+      if (this.running.size === 0 && this.watcher) {
+        clearInterval(this.watcher);
+        this.watcher = undefined;
+      }
+    }, this.deps.progressPollMs ?? PROGRESS_POLL_MS);
+    this.watcher.unref();
+  }
+
+  /** Turns the new lines of a running job's `progress.jsonl` into record updates and `job.*` events. */
+  private readProgress(running: Running): void {
+    if (running.job.status !== "running") return;
+    const dir = this.deps.store.pathsFor(running.job.id).dir;
+    let read: ReturnType<typeof readTimeline>;
+    try {
+      read = readTimeline(dir, running.progressOffset);
+    } catch {
+      return;
+    }
+    running.progressOffset = read.offset;
+    for (const entry of read.entries) {
+      try {
+        this.applyProgress(running, entry);
+      } catch (error) {
+        this.deps.logger.warn("could not record progress", { job: running.job.id, type: entry.type, error: errorMessage(error) });
+      }
+    }
+  }
+
+  private applyProgress(running: Running, entry: ProgressEntry): void {
+    const { store, logger } = this.deps;
+    const id = running.job.id;
+    switch (entry.type) {
+      case "progress":
+        running.job = store.update(id, { progress: { state: entry.state, message: entry.message, ...(entry.percent !== undefined ? { percent: entry.percent } : {}), ...(entry.step ? { step: entry.step } : {}), updated_at: entry.at } });
+        this.events.emit("job.progress", { job: running.job, entry });
+        break;
+      case "note":
+        this.events.emit("job.progress", { job: running.job, entry });
+        break;
+      case "outcome":
+        running.job = store.update(id, { progress: { state: "done", message: entry.summary, updated_at: entry.at } });
+        this.events.emit("job.progress", { job: running.job, entry });
+        break;
+      case "question": {
+        const question: JobQuestion = { id: entry.id, text: entry.text, ...(entry.options ? { options: entry.options } : {}), ...(entry.context ? { context: entry.context } : {}), asked_at: entry.at, ...(entry.wait_until ? { wait_until: entry.wait_until } : {}) };
+        running.job = store.update(id, { question, answer: undefined, progress: { state: "waiting_human", message: entry.text, updated_at: entry.at } });
+        running.clock?.pause(entry.wait_until);
+        logger.info("job waiting for a person", { job: id, skill: running.job.skill, question: truncate(entry.text, 200) });
+        this.events.emit("job.waiting_human", { job: running.job, question });
+        break;
+      }
+      case "answer": {
+        const known = running.job.answer;
+        if (known && known.at === entry.at && known.question_id === entry.question_id) break; // recorded by answer() already
+        const answer: JobAnswer = { ...(entry.question_id ? { question_id: entry.question_id } : {}), text: entry.text, ...(entry.option ? { option: entry.option } : {}), ...(entry.by ? { by: entry.by } : {}), at: entry.at };
+        this.recordAnswer(running, answer);
+        this.events.emit("job.answered", { job: running.job, answer, delivered: "live" });
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  private recordAnswer(running: Running, answer: JobAnswer): void {
+    const question = running.job.question && running.job.question.id === answer.question_id ? { ...running.job.question, answered_at: answer.at } : running.job.question;
+    running.job = this.deps.store.update(running.job.id, { answer, question, progress: { state: "working", message: `answered: ${truncate(answer.text, 200)}`, updated_at: answer.at } });
+    running.clock?.resume();
+  }
+
   private finish(job: JobRecord, patch: Partial<JobRecord>): void {
     this.running.delete(job.id);
     const finished_at = nowIso();
@@ -167,8 +272,9 @@ export class JobQueue extends EventEmitter {
 
   private async execute(job: JobRecord): Promise<void> {
     const { store, config, registry, logger } = this.deps;
-    const running: Running = { job, cancelled: false, timedOut: false };
+    const running: Running = { job, cancelled: false, timedOut: false, progressOffset: 0 };
     this.running.set(job.id, running);
+    this.ensureWatcher();
 
     let skill: Skill | undefined;
     try {
@@ -182,7 +288,7 @@ export class JobQueue extends EventEmitter {
 
     let prepared: ReturnType<typeof prepareRun>;
     try {
-      prepared = prepareRun({ skill, config, secrets: this.deps.secrets(), fileSecrets: this.deps.fileSecrets?.(), store, job, event: store.readEvent(job.id), cwd: job.cwd });
+      prepared = prepareRun({ skill, config, secrets: this.deps.secrets(), fileSecrets: this.deps.fileSecrets?.(), store, job, event: store.readEvent(job.id), cwd: job.cwd, processEnv: this.deps.processEnv });
     } catch (error) {
       this.finish(job, { status: "failed", started_at: nowIso(), error: errorMessage(error) });
       return;
@@ -247,12 +353,46 @@ export class JobQueue extends EventEmitter {
       stderr = tail(stderr + chunk.toString("utf8"), 1024 * 1024);
     });
 
-    const timer = setTimeout(() => {
+    // The timeout clock: it stops while the agent waits for a person (a question in progress.jsonl) and restarts with
+    // the remaining time on the answer, or by itself once the question's wait_until (plus a little slack) has passed.
+    let remainingMs = ctx.timeoutSeconds * 1000;
+    let armedAt = 0;
+    let timer: NodeJS.Timeout | undefined;
+    let waitGuard: NodeJS.Timeout | undefined;
+    const fire = () => {
+      timer = undefined;
       running.timedOut = true;
       logger.warn("job timed out; terminating", { job: job.id, timeout_s: ctx.timeoutSeconds });
       killTree(child, "SIGTERM");
       setTimeout(() => killTree(child, "SIGKILL"), KILL_GRACE_MS).unref();
-    }, ctx.timeoutSeconds * 1000);
+    };
+    const arm = () => {
+      if (timer || running.timedOut) return;
+      if (remainingMs <= 0) return fire();
+      armedAt = Date.now();
+      timer = setTimeout(fire, remainingMs);
+    };
+    const disarm = () => {
+      if (!timer) return;
+      clearTimeout(timer);
+      timer = undefined;
+      remainingMs = Math.max(0, remainingMs - (Date.now() - armedAt));
+    };
+    running.clock = {
+      pause(waitUntil) {
+        disarm();
+        if (waitGuard) clearTimeout(waitGuard);
+        const until = waitUntil ? Date.parse(waitUntil) : Number.NaN;
+        waitGuard = setTimeout(arm, (Number.isFinite(until) ? Math.max(0, until - Date.now()) : 0) + WAIT_GRACE_MS);
+        waitGuard.unref();
+      },
+      resume() {
+        if (waitGuard) clearTimeout(waitGuard);
+        waitGuard = undefined;
+        arm();
+      },
+    };
+    arm();
 
     const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }>((resolve) => {
       child.once("error", (error) => resolve({ code: null, signal: null, error }));
@@ -268,9 +408,12 @@ export class JobQueue extends EventEmitter {
       });
       child.once("close", (code, signal) => resolve({ code, signal }));
     });
-    clearTimeout(timer);
+    disarm();
+    if (waitGuard) clearTimeout(waitGuard);
+    running.clock = undefined;
     if (lineBuffer) feedLine(lineBuffer);
     await Promise.all([new Promise((r) => outFile.end(r)), new Promise((r) => errFile.end(r))]);
+    this.readProgress(running); // the last progress lines, before the record is final
 
     if (exit.error) {
       this.finish(running.job, { status: "failed", error: `failed to start ${invocation.command}: ${exit.error.message}` });
@@ -296,7 +439,11 @@ export class JobQueue extends EventEmitter {
       }
     }
     const response = resolveJobResponse({ jobDir: paths.dir, structured: outcome.structuredOutput, ok: outcome.ok, result: outcome.result });
+    // A run that ends with its question unanswered and nothing reported is waiting for that answer: a person can give it later.
+    const questionPending = running.job.question !== undefined && !running.job.question.answered_at && !running.job.answer;
+    const outcomeOverride = status === "succeeded" && !response && questionPending ? ("needs_human" as const) : undefined;
     this.finish(running.job, {
+      ...(outcomeOverride ? { outcome: outcomeOverride } : {}),
       status,
       exit_code: exit.code,
       signal: exit.signal,

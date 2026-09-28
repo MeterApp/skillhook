@@ -51,6 +51,26 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
   the running server when there is one, in the CLI process otherwise. The guardrails tell the agent it
   is replaying. `src/manual.ts` (manual runs) and `src/replay.ts` (the planner) are new leaf modules,
   re-exported from `src/ops.ts`.
+- A job API for the running agent, and a human in the loop. Every Claude and Codex run now gets a
+  per-run MCP server (`skillhook mcp --job`, injected with `claude --mcp-config` /
+  `codex -c mcp_servers.skillhook_job.*`, nothing to configure) with `job_progress`, `job_ask_human`,
+  `job_set_outcome`, `job_note` and `job_context`; the same is available as
+  `skillhook job progress|ask|outcome|note|context` (`$SKILLHOOK_BIN`) for shell skills and agents
+  that prefer a CLI. The guardrails explain both. Everything is files in the job directory
+  (`progress.jsonl`, `progress.json`, `question.json`, `answer.json`), which the queue watches: they
+  become the `progress`, `question` and `answer` fields of the job, the events `job.progress`,
+  `job.waiting_human` and `job.answered`, `GET /jobs/<id>/progress` and the timeline in
+  `skillhook jobs show`. `job_ask_human` waits for a person (`human_wait_seconds`, default 300; the
+  job's timeout clock is paused meanwhile). A person answers with `skillhook jobs answer <id> "…"`,
+  `POST /jobs/<id>/answer` or the MCP tool `answer_job`: live when the agent is still waiting,
+  otherwise as a new job with `trigger: resume` that continues the session
+  (`claude -p --resume <session>`, `codex exec resume <thread>`) with the answer in a
+  `<human_answer>` block; the two jobs are linked by `resume_of` / `resolved_by`, and a run without a
+  session runs the skill afresh (`runner_reason`). `skillhook jobs list --waiting`,
+  `GET /jobs?waiting=1` and `list_jobs {waiting: true}` show what waits for a person (an open
+  question, or outcome `needs_human`); a run that ends with its question unanswered counts as
+  `needs_human`. New block fields `agent_api` (`mcp` | `cli` | `none`) and `human_wait_seconds`; new
+  job variables `SKILLHOOK_BIN`, `SKILLHOOK_HOME`, `SKILLHOOK_HUMAN_WAIT_SECONDS`.
 - Ad-hoc runs. `skillhook run --file SKILL.md` (or `--stdin`), `POST /skills/test` and the MCP tool
   `test_skill` run a SKILL.md that is not installed: the document is validated, kept at
   `jobs/<id>/skill/<name>/SKILL.md` and run from there, as a job with `trigger: test`, `adhoc: true`,

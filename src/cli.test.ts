@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { createServer } from "node:http";
 import { main, nodeVersionProblem } from "./commands/main.js";
 import type { CliIO } from "./commands/shared.js";
-import { FAKE_CLAUDE, tempHome } from "./test-support/helpers.js";
+import { FAKE_CLAUDE, tempHome, writeSkill } from "./test-support/helpers.js";
 
 function io(env: NodeJS.ProcessEnv = {}) {
   const out: string[] = [];
@@ -231,6 +231,88 @@ describe("cli", () => {
     writeFileSync(file, "no frontmatter");
     const invalid = io();
     expect(await main(["run", "--file", file, ...dir, "--json"], invalid.cli)).toBe(1);
+  });
+
+  it("gives a running skill the job API and lets a person answer from the terminal", async () => {
+    // A finished job stands in for a running one: the files are the same.
+    const run = io();
+    expect(await main(["run", "hello", ...dir, "--payload", '{"name":"loop"}', "--json"], run.cli)).toBe(0);
+    const job = run.json().job as { id: string };
+    const jobDir = String(run.json().job_dir);
+    const inside = { SKILLHOOK_JOB_ID: job.id, SKILLHOOK_JOB_DIR: jobDir };
+    const outside = io();
+    expect(await main(["job", "progress", "nope", ...dir, "--json"], outside.cli)).toBe(2);
+    const progress = io(inside);
+    expect(await main(["job", "progress", "reading the payload", "--percent", "10", "--step", "read", "--json"], progress.cli)).toBe(0);
+    expect(progress.json()).toMatchObject({ ok: true, job_id: job.id, progress: { state: "working", message: "reading the payload", percent: 10, step: "read" } });
+    const blocked = io(inside);
+    expect(await main(["job", "progress", "waiting on a lock", "--state", "blocked"], blocked.cli)).toBe(0);
+    expect(blocked.out()).toContain("blocked: waiting on a lock");
+    const badState = io(inside);
+    expect(await main(["job", "progress", "x", "--state", "done"], badState.cli)).toBe(2);
+    const note = io(inside);
+    expect(await main(["job", "note", "two candidates", "--json"], note.cli)).toBe(0);
+    expect(note.json()).toMatchObject({ ok: true, entry: { type: "note", message: "two candidates" } });
+    // Asking with nobody around: JSON on stdout and exit code 3.
+    const ask = io(inside);
+    expect(await main(["job", "ask", "A or B?", "--option", "A", "--option", "B", "--wait", "0"], ask.cli)).toBe(3);
+    expect(ask.json()).toMatchObject({ answered: false, waited_seconds: 0 });
+    const questionId = String(ask.json().question_id);
+    // An operator answers while the agent waits (the job is finished, so the answer is only recorded here).
+    const asking = main(["job", "ask", "Still A or B?", "--option", "A", "--option", "B", "--wait", "5"], io(inside).cli);
+    await new Promise((r) => setTimeout(r, 300));
+    const answer = io();
+    expect(await main(["jobs", "answer", job.id, "Go with B", "--option", "B", "--by", "ada", "--no-resume", ...dir, "--json"], answer.cli)).toBe(0);
+    expect(answer.json()).toMatchObject({ ok: true, job_id: job.id, delivered: "recorded", via: "local", answer: { text: "Go with B", option: "B", by: "ada" } });
+    expect(await asking).toBe(0);
+    expect(String(answer.json().resume_job_id ?? "")).toBe("");
+    const show = io();
+    expect(await main(["jobs", "show", job.id, ...dir, "--json"], show.cli)).toBe(0);
+    const shown = show.json() as { job: { answer: { text: string }; question: { id: string; answered_at?: string } }; progress: { timeline: { type: string }[] } };
+    expect(shown.job.answer.text).toBe("Go with B");
+    expect(shown.job.question.id).not.toBe(questionId); // the second question replaced the first
+    expect(shown.job.question.answered_at).toBeDefined();
+    expect(shown.progress.timeline.map((e) => e.type)).toEqual(["progress", "progress", "note", "question", "question", "answer"]);
+    const human = io();
+    expect(await main(["jobs", "show", job.id, ...dir], human.cli)).toBe(0);
+    expect(human.out()).toContain("timeline:");
+    expect(human.out()).toContain("answered by ada: B: Go with B");
+    const outcome = io(inside);
+    expect(await main(["job", "outcome", "partial", "--summary", "Did half", "--link", "https://example.com/1", "--data", '{"n":1}', "--json"], outcome.cli)).toBe(0);
+    expect(JSON.parse(readFileSync(path.join(jobDir, "response.json"), "utf8"))).toEqual({ outcome: "partial", summary: "Did half", links: ["https://example.com/1"], data: { n: 1 } });
+    const badOutcome = io(inside);
+    expect(await main(["job", "outcome", "unknown"], badOutcome.cli)).toBe(2);
+    const context = io(inside);
+    expect(await main(["job", "context", "--json"], context.cli)).toBe(0);
+    expect(context.json()).toMatchObject({ job_id: job.id, job_dir: jobDir, skill: "hello", progress: { state: "done", message: "Did half" }, answer: { text: "Go with B" } });
+    const notWaiting = io();
+    expect(await main(["jobs", "answer", job.id, "again", ...dir, "--json"], notWaiting.cli)).toBe(1);
+    expect(String(notWaiting.json().error)).toContain("not waiting");
+    const noText = io();
+    expect(await main(["jobs", "answer", job.id, ...dir, "--json"], noText.cli)).toBe(2);
+  });
+
+  it("resumes a job that ended needs_human with the person's answer, in this process", async () => {
+    writeSkill(paths, "needy", "description: n\nskillhook:\n  response:\n    mode: structured\n  env: [FAKE_CLAUDE_OUTCOME]");
+    const env = { FAKE_CLAUDE_OUTCOME: "needs_human" };
+    const run = io(env);
+    expect(await main(["run", "needy", ...dir, "--payload", '{"k":1}', "--json"], run.cli)).toBe(0);
+    const job = run.json().job as { id: string; outcome: string; session_id: string };
+    expect(job.outcome).toBe("needs_human");
+    const waiting = io();
+    expect(await main(["jobs", "list", "--waiting", ...dir, "--json"], waiting.cli)).toBe(0);
+    expect((waiting.json().jobs as { id: string }[]).map((j) => j.id)).toContain(job.id);
+    const answer = io(env);
+    expect(await main(["jobs", "answer", job.id, "do B", "--by", "grace", ...dir, "--json"], answer.cli)).toBe(0);
+    const result = answer.json() as { delivered: string; resume_job_id: string; resume_job: { trigger: string; status: string; resume_of: string; resume: { session_id: string }; result: string; answer: { by: string } }; job: { resolved_by: string } };
+    expect(result.delivered).toBe("resumed");
+    expect(result.resume_job).toMatchObject({ trigger: "resume", status: "succeeded", resume_of: job.id, resume: { session_id: job.session_id }, answer: { by: "grace" } });
+    expect(result.resume_job.result).toContain(`resumed=${job.session_id}`);
+    expect(result.job.resolved_by).toBe(result.resume_job_id);
+    expect(readFileSync(path.join(paths.jobsDir, result.resume_job_id, "prompt.md"), "utf8")).toContain("<human_answer>\ndo B\n(answered by grace)\n</human_answer>");
+    const gone = io();
+    expect(await main(["jobs", "list", "--waiting", ...dir, "--json"], gone.cli)).toBe(0);
+    expect((gone.json().jobs as { id: string }[]).map((j) => j.id)).not.toContain(job.id);
   });
 
   it("links a repository's skillhook.yaml, lists and runs its hooks, and unlinks it", async () => {

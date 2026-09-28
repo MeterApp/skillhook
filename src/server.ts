@@ -7,12 +7,14 @@ import { ADMIN_TOKEN_ENV, type Secrets } from "./env.js";
 import { EVENT_TYPES, type Events } from "./events.js";
 import { describeCondition, evaluateConditions } from "./filters.js";
 import { newJobId } from "./ids.js";
-import { isTerminal, JOB_ARTIFACTS, JOB_STATUSES, type JobArtifact, type JobRecord, type JobStatus, type JobStore } from "./jobs.js";
+import { AnswerError, answerJob, type AnswerJobResult } from "./answer.js";
+import { isTerminal, isWaitingForHuman, JOB_ARTIFACTS, JOB_STATUSES, type JobArtifact, type JobRecord, type JobStatus, type JobStore } from "./jobs.js";
 import type { Logger } from "./logger.js";
 import { createAdhocJob, createManualJob } from "./manual.js";
 import { deliveryFingerprint, parseBody, redactHeaders, TRIGGERS, type BodyKind, type Trigger, type WebhookEvent } from "./payload.js";
+import { readProgress } from "./progress.js";
 import { planReplay, ReplayError, replayOfFor, type ReplayPlan } from "./replay.js";
-import { JOB_OUTCOMES, type JobOutcome } from "./response.js";
+import { JOB_OUTCOMES, jobOutcome, type JobOutcome } from "./response.js";
 import type { JobQueue } from "./queue.js";
 import { resolveRunSettings } from "./run.js";
 import { RunnerNameSchema } from "./config.js";
@@ -737,7 +739,9 @@ export function createServer(deps: ServerDeps): Server {
         if (outcome && !(JOB_OUTCOMES as string[]).includes(outcome)) throw new HttpError(400, "bad_request", `unknown outcome "${outcome}" (${JOB_OUTCOMES.join(", ")})`);
         const since = url.searchParams.get("since") ?? undefined;
         if (since && Number.isNaN(Date.parse(since))) throw new HttpError(400, "bad_request", "since must be an ISO-8601 instant");
-        const page = store.listPage({ skill: url.searchParams.get("skill") ?? undefined, status: status as JobStatus | undefined, trigger: trigger as Trigger | undefined, outcome: outcome as JobOutcome | undefined, since, after: url.searchParams.get("after") ?? undefined, limit: pageLimit(url) });
+        const waitingParam = url.searchParams.get("waiting");
+        const waiting = waitingParam === "1" || waitingParam === "true" ? true : undefined;
+        const page = store.listPage({ skill: url.searchParams.get("skill") ?? undefined, status: status as JobStatus | undefined, trigger: trigger as Trigger | undefined, outcome: outcome as JobOutcome | undefined, waiting, since, after: url.searchParams.get("after") ?? undefined, limit: pageLimit(url) });
         return send(res, 200, { jobs: page.jobs.map(publicJob), queue: queue.stats(), next_after: page.next_after });
       }
       const id = segments[1] as string;
@@ -751,6 +755,29 @@ export function createServer(deps: ServerDeps): Server {
       }
       if (segments.length === 3 && segments[2] === "events" && method === "GET") return streamJob(req, res, url, job);
       if (segments.length === 3 && segments[2] === "replay" && method === "POST") return replay(req, res, url, headers, "job", id);
+      if (segments.length === 3 && segments[2] === "progress" && method === "GET") {
+        const limit = Number(url.searchParams.get("limit") ?? 200);
+        return send(res, 200, { job_id: id, status: job.status, outcome: jobOutcome(job) ?? null, waiting: isWaitingForHuman(job), ...readProgress(store.pathsFor(id).dir, { timelineLimit: Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 2000) : 200 }) });
+      }
+      if (segments.length === 3 && segments[2] === "answer" && method === "POST") {
+        const rawBody = await readBody(req, config.max_body_bytes);
+        const body = rawBody.length ? (parseBody(headers["content-type"], rawBody).payload as Record<string, unknown>) : {};
+        if (!isPlainObject(body)) throw new HttpError(400, "bad_request", "expected a JSON object body");
+        const text = typeof body.answer === "string" ? body.answer : typeof body.text === "string" ? body.text : "";
+        if (!text.trim()) throw new HttpError(400, "bad_request", "answer is required");
+        if (body.resume !== undefined && body.resume !== "auto" && body.resume !== "never") throw new HttpError(400, "bad_request", "resume must be auto or never");
+        let result: AnswerJobResult;
+        try {
+          result = answerJob({ config, store, registry }, { jobId: id, text, option: typeof body.option === "string" ? body.option : undefined, by: typeof body.by === "string" ? body.by : undefined, resume: body.resume as "auto" | "never" | undefined }, { queue, events: deps.events });
+        } catch (error) {
+          if (error instanceof AnswerError) throw new HttpError(error.status, error.code, error.message);
+          throw error;
+        }
+        logger.info("job answered", { job: id, delivered: result.delivered, resume_job: result.resumeJob?.id, by: result.answer.by });
+        const wait = Math.min(Number(body.wait ?? 0) || parseWait(url, headers, config.max_wait_seconds), config.max_wait_seconds);
+        const resumeJob = result.resumeJob && wait > 0 ? ((await queue.waitFor(result.resumeJob.id, wait * 1000)) ?? result.resumeJob) : result.resumeJob;
+        return send(res, 200, { ok: true, job_id: id, delivered: result.delivered, answer: result.answer, resume_job_id: resumeJob?.id ?? null, ...(resumeJob ? { resume_job: publicJob(resumeJob) } : {}), job: publicJob(result.job) });
+      }
       if (segments.length === 4 && segments[2] === "artifacts" && method === "GET") return sendArtifact(res, url, job, segments[3] as string);
       if (segments.length === 3 && segments[2] === "cancel" && method === "POST") {
         const cancelled = queue.cancel(id);

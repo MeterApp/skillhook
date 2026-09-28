@@ -36,12 +36,16 @@ claude -p --output-format stream-json --verbose \
   [--disallowedTools <claude.disallowed_tools>] \
   [--max-budget-usd <claude.max_budget_usd>] \
   [--json-schema <response schema>]                # response.mode: structured
+  [--mcp-config '{"mcpServers":{"skillhook-job":{"command":"<node>","args":["<cli.js>","mcp","--job","--dir","<home>"],"env":{…}}}}']   # agent_api: mcp
+  [--resume <session id>]                          # trigger: resume
   --append-system-prompt "<guardrails>\n\n<claude.append_system_prompt>" \
   <runners.claude.args…> <claude.args…>
 ```
 
 - The prompt (`# Skill: <name>` + rendered body [+ event block]) is written to the process's stdin, so payload size is not limited by argv.
 - `response: { mode: structured }` adds `--json-schema` with the skill's schema (default `{outcome, summary, links, data}`); the result event's `structured_output` becomes `job.response` and `response.json` ([skills.md](skills.md#reporting-the-outcome)).
+- `agent_api: mcp` (the default) adds `--mcp-config` with the per-run job API server (`skillhook mcp --job`, started as `<node> <cli.js>` of this installation, or `SKILLHOOK_BIN` from the server's environment) and `mcp__skillhook-job` to `--allowedTools`, so `job_progress`, `job_ask_human`, `job_set_outcome`, `job_note` and `job_context` work under every permission mode ([skills.md](skills.md#reporting-progress-and-asking-a-person)). The user's own MCP servers stay available.
+- A job with `trigger: resume` (a person answered an earlier job) adds `--resume <session id>` and sends only the `<human_answer>` block as the prompt; the session files under `~/.claude/projects` must still exist, so runs never use `--no-session-persistence`.
 - `--add-dir` is skipped for a directory that is already the cwd.
 - Default permission mode is `bypassPermissions` so unattended runs never stall. `--permission-prompts none` is always set; with `acceptEdits`, `dontAsk` or `plan` a tool that would have prompted is denied instead, which is how `allowed_tools` becomes an allow-list.
 - Model: aliases (`opus`, `sonnet`, `haiku`) or full ids. Effort: passed verbatim to `--effort`.
@@ -85,13 +89,26 @@ codex exec --json --skip-git-repo-check \
   [-p <codex.profile>] \
   --add-dir <skill dir> --add-dir <job dir> [--add-dir <codex.add_dirs…>] \
   [--output-schema <job dir>/response.schema.json]   # response.mode: structured
+  [-c mcp_servers.skillhook_job.command="<node>" -c 'mcp_servers.skillhook_job.args=["<cli.js>", "mcp", "--job", "--dir", "<home>"]' -c 'mcp_servers.skillhook_job.env={ SKILLHOOK_JOB_ID = "…", … }']   # agent_api: mcp
   <runners.codex.args…> <codex.args…> -
 ```
+
+A job with `trigger: resume` continues the thread instead:
+
+```text
+codex exec resume <thread id> --json --skip-git-repo-check \
+  -c sandbox_mode="<sandbox>" -c approval_policy="<runners.codex.approval_policy>" -o <job dir>/last-message.md \
+  [-c sandbox_workspace_write.network_access=true] [-m <model>] [-c model_reasoning_effort="<effort>"] [-p <profile>] \
+  [--output-schema …] [-c mcp_servers.skillhook_job.…] <runners.codex.args…> <codex.args…> -
+```
+
+`codex exec resume` takes neither `-C`, `-s` nor `--add-dir`: the sandbox travels as `-c sandbox_mode`, the working directory is the one the process is started in (the original job's), and the extra directories are those the thread already had.
 
 - The trailing `-` makes Codex read the prompt from stdin. Codex has no system-prompt flag, so the guardrails are prepended to the prompt, separated by a blank line.
 - `response: { mode: structured }` writes the skill's schema to `response.schema.json` in the job directory and passes `--output-schema`; the final agent message is then parsed as JSON into `job.response` (its `summary` becomes `job.result`) and written to `response.json` ([skills.md](skills.md#reporting-the-outcome)).
 - Defaults: sandbox `workspace-write`, `network_access: true` (webhook automations usually need to call APIs; Codex's own default is no network in that sandbox), `approval_policy: never`.
 - `-o <file>` makes Codex write its final message to `last-message.md`; skillhook reads it when the JSON stream did not contain an `agent_message`.
+- `agent_api: mcp` (the default) configures the per-run job API server through `-c mcp_servers.skillhook_job.*` for this run only; nothing is written to `~/.codex/config.toml`.
 
 Output handling: `thread.started` provides the `thread_id` (stored as `session_id`), `item.completed` with `type: agent_message` provides the result, `turn.completed` provides `usage`, and `turn.failed` / `error` mark the job `failed`. Codex does not report cost, so `cost_usd` is absent for Codex jobs.
 
@@ -144,7 +161,7 @@ Every runner gets a freshly built environment:
 | `PATH` | The server's `PATH` followed by `~/.local/bin`, `~/.npm-global/bin`, `~/.bun/bin`, `~/.cargo/bin`, `/opt/homebrew/bin`, `/opt/homebrew/sbin`, `/usr/local/bin`, `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`, so launchd's minimal PATH still finds `claude`, `codex`, `gh`, `node`. |
 | Runner credentials | Every variable whose name starts with `ANTHROPIC_`, `CLAUDE_`, `OPENAI_` or `CODEX_`, plus `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `https_proxy`, `http_proxy`, `no_proxy`. Values come from `.env` merged with the server environment. |
 | Explicit | Names listed in `env_passthrough` (config) and the skill's `env:`. |
-| Job | `SKILLHOOK_JOB_ID`, `SKILLHOOK_JOB_DIR`, `SKILLHOOK_SKILL`, `SKILLHOOK_SKILL_DIR`, `SKILLHOOK_PAYLOAD_PATH`, `SKILLHOOK_EVENT_PATH`, `SKILLHOOK_PROMPT_PATH`, `SKILLHOOK_RESPONSE_PATH` (where the agent reports the outcome), `SKILLHOOK_TRIGGER` (`webhook`/`cli`/`mcp`/`api`/`schedule`/`replay`/`test`), `SKILLHOOK_RUNNER`. |
+| Job | `SKILLHOOK_JOB_ID`, `SKILLHOOK_JOB_DIR`, `SKILLHOOK_SKILL`, `SKILLHOOK_SKILL_DIR`, `SKILLHOOK_PAYLOAD_PATH`, `SKILLHOOK_EVENT_PATH`, `SKILLHOOK_PROMPT_PATH`, `SKILLHOOK_RESPONSE_PATH` (where the agent reports the outcome), `SKILLHOOK_TRIGGER` (`webhook`/`cli`/`mcp`/`api`/`schedule`/`replay`/`test`/`resume`), `SKILLHOOK_RUNNER`, `SKILLHOOK_HOME`, `SKILLHOOK_HUMAN_WAIT_SECONDS`, and `SKILLHOOK_BIN` (the command line that runs this very skillhook, for `$SKILLHOOK_BIN job …`; absent when running from an unbuilt source checkout without `SKILLHOOK_BIN` in the server's environment). |
 | Never implicit | `SKILLHOOK_ADMIN_TOKEN`, `SKILLHOOK_SECRET_*` (only if a skill lists them in `env:`). |
 
 A `skillhook serve` started from inside an interactive Claude Code session does not leak that session's `CLAUDE_CODE_*` variables to child runs: prefix passthrough applies to `.env` only, and only the credential names listed above are copied from the server's environment.
@@ -161,7 +178,8 @@ A `skillhook serve` started from inside an interactive Claude Code session does 
 - Processes are spawned detached in their own process group. On timeout (`timeout_seconds`), cancel (`POST /jobs/<id>/cancel`, `skillhook jobs cancel`, MCP `cancel_job`) or server shutdown, the whole group gets `SIGTERM`, then `SIGKILL` 10 seconds later.
 - Resulting statuses: `timed_out` (error `timed out after Ns`), `cancelled`, `interrupted` (server shut down or restarted while running; a queued job survives a restart and is re-queued).
 - The queue is FIFO with a global cap of `concurrency` (default 2) running jobs and one job per skill at a time unless the skill sets `concurrency`. A job whose skill is at its limit is skipped in favour of the next eligible job.
-- The `session_id`/`resume_command` are stored as soon as they appear, so an interrupted Claude or Codex run can be picked up with `skillhook jobs resume <id>`.
+- The `session_id`/`resume_command` are stored as soon as they appear, so an interrupted Claude or Codex run can be picked up with `skillhook jobs resume <id>`, and a person's answer can continue it as a new job (`skillhook jobs answer`).
+- The timeout clock stops while the agent waits for a person (`job_ask_human` / `skillhook job ask`) and restarts with the remaining time on the answer, or by itself thirty seconds after the question's `wait_until` when no answer came. A waiting job keeps its concurrency slot.
 
 ## Cost and usage
 

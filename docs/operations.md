@@ -109,6 +109,8 @@ Lifecycle: `queued` → `running` → one of `succeeded`, `failed`, `timed_out`,
 | `last-message.md` | Codex only, written by `codex exec -o`. |
 | `body.bin` | The raw request body when it was binary. |
 | `skill/<name>/SKILL.md` | Ad-hoc runs only (`skillhook run --file`, `POST /skills/test`, MCP `test_skill`): the document that was run, kept with the job. |
+| `progress.jsonl`, `progress.json` | What the agent reported through the job API: the timeline (progress, notes, questions, answers, outcome) and the current state. See [skills.md](skills.md#reporting-progress-and-asking-a-person). |
+| `question.json`, `answer.json` | The question the agent asked a person, and the answer (`skillhook jobs answer`, `POST /jobs/<id>/answer`, MCP `answer_job`). |
 
 All files are mode 600. Job ids are `YYYYMMDDTHHMMSSZ-<6 random chars>` (UTC), so `ls jobs/` sorts chronologically.
 
@@ -124,6 +126,10 @@ skillhook jobs show <id> [--result] [--prompt] [--stdout] [--stderr]
 
 ```bash
 skillhook jobs logs <id> [--follow] [--stderr]
+```
+
+```bash
+skillhook jobs answer <id> "<answer>" [--option X] [--by NAME] [--no-resume] [--wait S]   # answer a job that asked, or ended needs_human
 ```
 
 ```bash
@@ -148,7 +154,9 @@ skillhook jobs prune [--keep N]
 
 `jobs cancel` needs the server that owns the job; a job started by `skillhook run` belongs to that CLI process (stop it with Ctrl-C).
 
-`jobs list` also takes `--outcome completed|partial|needs_human|nothing_to_do|failed|unknown` (whether the task was done, as the agent reported; `needs_human` lists the jobs waiting for a person), `--trigger webhook|api|cli|mcp|schedule`, `--since <ISO-8601>` and `--after <id>` (the `next_after` printed under a full page). `jobs show <id> --response` prints the reported `response.json`.
+`jobs list` also takes `--outcome completed|partial|needs_human|nothing_to_do|failed|unknown` (whether the task was done, as the agent reported), `--waiting` (only jobs waiting for a person: an open question, or outcome `needs_human` not yet answered or resumed), `--trigger webhook|api|cli|mcp|schedule|replay|test|resume`, `--since <ISO-8601>` and `--after <id>` (the `next_after` printed under a full page). `jobs show <id>` prints the agent's progress timeline, its pending question and the answer; `--response` prints the reported `response.json`.
+
+`jobs answer` goes through the running server when there is one (a live answer reaches the waiting agent; otherwise a new job with `trigger: resume` continues the session there) and otherwise runs the resume job in the CLI process, like `skillhook run`.
 
 ### Delivery log
 
@@ -338,6 +346,10 @@ The agent exceeded `timeout_seconds` (skill, else `defaults.timeout_seconds`, de
 ### Public URL does not answer
 
 Right after `expose`, Tailscale may still be issuing the certificate: wait a minute and run `skillhook expose status` or `skillhook doctor` (the `public url` check). Otherwise confirm the server is running and the mapping targets the right port.
+
+### A job says `WAITING FOR A PERSON`
+
+The agent asked a question (`skillhook jobs show <id>` prints it) or finished with outcome `needs_human`. `skillhook jobs answer <id> "<answer>"` delivers the answer: to the running agent when it is still waiting, otherwise as a new job that continues the session. `skillhook jobs list --waiting` lists everything waiting.
 
 ### A schedule did not fire
 

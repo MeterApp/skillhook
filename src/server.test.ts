@@ -71,7 +71,14 @@ beforeAll(async () => {
     FAKE_CLAUDE_OUTCOME: "needs_human",
     FAKE_CLAUDE_WRITE_RESPONSE: '{"outcome":"nothing_to_do","summary":"Nothing to do here","links":["https://example.com/x"]}',
     FAKE_CODEX_OUTCOME: "partial",
+    SKILLHOOK_SECRET_ASKER: "ask",
+    SKILLHOOK_SECRET_ASKALONE: "alone",
+    FAKE_CLAUDE_ASK: "Deploy A or B?",
+    FAKE_CLAUDE_ASK_WAIT_MS: "4000",
   });
+  // `asker` would time out after 2 s but waits up to 4 s for a person: the clock has to pause while it waits.
+  writeSkill(paths, "asker", "description: ask\nskillhook:\n  timeout_seconds: 2\n  human_wait_seconds: 20\n  env: [FAKE_CLAUDE_ASK, FAKE_CLAUDE_ASK_WAIT_MS]");
+  writeSkill(paths, "askalone", "description: alone\nskillhook:\n  timeout_seconds: 30\n  env: [FAKE_CLAUDE_ASK, FAKE_CLAUDE_ASK_WAIT_MS]");
   writeSkill(paths, "structured", "description: st\nskillhook:\n  response:\n    mode: structured\n  env: [FAKE_CLAUDE_OUTCOME]");
   writeSkill(paths, "filer", "description: fi\nskillhook:\n  env: [FAKE_CLAUDE_WRITE_RESPONSE]");
   writeSkill(paths, "codexst", "description: cs\nskillhook:\n  runner: codex\n  response:\n    mode: structured\n  env: [FAKE_CODEX_OUTCOME]");
@@ -99,7 +106,7 @@ beforeAll(async () => {
   const secrets = () => loadSecrets(paths, {});
   events = new Events(silentLogger);
   const deliveryLog = new DeliveryLog(paths.jobsDir, () => config.deliveries);
-  queue = new JobQueue({ store, config, registry, secrets, fileSecrets: secrets, logger: silentLogger, events });
+  queue = new JobQueue({ store, config, registry, secrets, fileSecrets: secrets, logger: silentLogger, events, processEnv: { ...process.env, SKILLHOOK_BIN: "skillhook-test-bin" }, progressPollMs: 100 });
   const scheduler = new Scheduler({ registry, store, queue, config, logger: silentLogger, now: () => new Date("2026-09-23T10:00:00Z"), events });
   server = createServer({ config, paths, store, queue, registry, secrets, logger: silentLogger, events, deliveryLog, schedules: () => scheduler.status() });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
@@ -600,6 +607,95 @@ describe("HTTP surface", () => {
     expect((await fetch(`${base}/skills/test`, { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.1" }, body: "{}" })).status).toBe(401);
     const tests = (await json(await fetch(`${base}/jobs?trigger=test`, { headers: auth }))) as unknown as { jobs: { id: string }[] };
     expect(tests.jobs.map((j) => j.id)).toContain(job.id);
+  });
+
+  it("delivers a person's answer to a running job, pauses its timeout meanwhile and streams the exchange", async () => {
+    const auth = { authorization: `Bearer ${ADMIN}` };
+    const waiting = await fetch(`${base}/events?types=job.progress,job.waiting_human`, { headers: auth });
+    const posted = await json(await fetch(`${base}/hooks/asker`, { method: "POST", body: '{"env":"prod"}', headers: { authorization: "Bearer ask", "content-type": "application/json" } }));
+    const id = String(posted.job_id);
+    const got = await readSse(waiting, (event) => event.event === "job.waiting_human" && (JSON.parse(event.data) as { data: { job: { id: string } } }).data.job.id === id, 10_000);
+    const askedAt = Date.now();
+    expect(got.some((event) => event.event === "job.progress" && (JSON.parse(event.data) as { data: { entry: { message: string } } }).data.entry.message === "looking at the payload")).toBe(true);
+    const asked = JSON.parse(got.at(-1)!.data) as { data: { job: { id: string; status: string; progress: { state: string }; question: { id: string; text: string; options: string[] } }; question: { text: string } } };
+    expect(asked.data.job).toMatchObject({ id, status: "running", progress: { state: "waiting_human" }, question: { id: "fakeq", text: "Deploy A or B?", options: ["A", "B"] } });
+    // Meanwhile the job shows up as waiting, with its progress and question.
+    const list = (await json(await fetch(`${base}/jobs?waiting=1`, { headers: auth }))) as unknown as { jobs: { id: string }[] };
+    expect(list.jobs.map((j) => j.id)).toContain(id);
+    const progress = await json(await fetch(`${base}/jobs/${id}/progress`, { headers: auth }));
+    expect(progress).toMatchObject({ job_id: id, status: "running", waiting: true, question: { text: "Deploy A or B?" } });
+    expect((progress.timeline as { type: string }[]).map((e) => e.type)).toEqual(["progress", "question"]);
+    // The agent runs with the job API injected and SKILLHOOK_BIN set.
+    const command = store.get(id)!.command!.join(" ");
+    expect(command).toContain("--mcp-config");
+    expect(JSON.parse(store.get(id)!.command![store.get(id)!.command!.indexOf("--mcp-config") + 1]!) as unknown).toMatchObject({ mcpServers: { "skillhook-job": { command: "skillhook-test-bin", args: ["mcp", "--job", "--dir", paths.home], env: { SKILLHOOK_JOB_ID: id, SKILLHOOK_JOB_DIR: store.pathsFor(id).dir } } } });
+    expect(command).toContain("mcp__skillhook-job");
+    // Answer only once the 2 s timeout would have fired without the pause.
+    await sleep(Math.max(0, 2300 - (Date.now() - askedAt)));
+    expect(store.get(id)?.status).toBe("running");
+    const answered = await fetch(`${base}/events?types=job.answered,job.finished`, { headers: auth });
+    expect((await fetch(`${base}/jobs/${id}/answer`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: "{}" })).status).toBe(400);
+    const reply = await json(await fetch(`${base}/jobs/${id}/answer`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ answer: "Go with A", option: "A", by: "ada" }) }));
+    expect(reply).toMatchObject({ ok: true, job_id: id, delivered: "live", resume_job_id: null, answer: { question_id: "fakeq", text: "Go with A", option: "A", by: "ada" } });
+    const rest = await readSse(answered, (event) => event.event === "job.finished" && (JSON.parse(event.data) as { data: { job: { id: string } } }).data.job.id === id, 10_000);
+    expect(rest.map((event) => event.event)).toEqual(["job.answered", "job.finished"]);
+    expect((JSON.parse(rest[0]!.data) as { data: { delivered: string } }).data.delivered).toBe("live");
+    const finished = store.get(id)!;
+    expect(finished).toMatchObject({ status: "succeeded", question: { id: "fakeq", answered_at: expect.any(String) }, answer: { text: "Go with A", option: "A", by: "ada" } });
+    expect(finished.result).toContain("answer=Go with A");
+    expect(finished.error).toBeUndefined();
+    const after = (await json(await fetch(`${base}/jobs?waiting=1`, { headers: auth }))) as unknown as { jobs: { id: string }[] };
+    expect(after.jobs.map((j) => j.id)).not.toContain(id);
+    // Nothing left to answer.
+    const again = await fetch(`${base}/jobs/${id}/answer`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ answer: "more" }) });
+    expect(again.status).toBe(409);
+    expect((await json(again)).error).toBe("not_waiting");
+    expect((await fetch(`${base}/jobs/${id}/answer`, { method: "POST", headers: { "x-forwarded-for": "203.0.113.1", "content-type": "application/json" }, body: JSON.stringify({ answer: "x" }) })).status).toBe(401);
+  });
+
+  it("resumes the agent's session when a person answers a job that ended waiting", async () => {
+    const auth = { authorization: `Bearer ${ADMIN}` };
+    // Nobody answers: the run ends with its question open, which counts as needs_human.
+    const alone = await json(await fetch(`${base}/hooks/askalone?wait=20`, { method: "POST", body: '{"env":"stage"}', headers: { authorization: "Bearer alone", "content-type": "application/json" } }));
+    expect(alone).toMatchObject({ status: "succeeded", outcome: "needs_human", response: null });
+    expect(String(alone.result)).toContain("answer=none");
+    const aloneId = String(alone.job_id);
+    expect(store.get(aloneId)).toMatchObject({ question: { text: "Deploy A or B?" }, outcome: "needs_human" });
+    // A job that reported needs_human itself, without asking, waits too.
+    const st = await json(await fetch(`${base}/hooks/structured?wait=20`, { method: "POST", body: '{"k":"resume"}', headers: { authorization: "Bearer st", "content-type": "application/json" } }));
+    const stId = String(st.job_id);
+    const waiting = (await json(await fetch(`${base}/jobs?waiting=1`, { headers: auth }))) as unknown as { jobs: { id: string }[] };
+    expect(waiting.jobs.map((j) => j.id)).toEqual(expect.arrayContaining([aloneId, stId]));
+    // The answer starts a new job that continues the session, linked both ways.
+    const reply = await json(await fetch(`${base}/jobs/${aloneId}/answer`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ answer: "Go with B", option: "B", by: "grace", wait: 20 }) }));
+    expect(reply).toMatchObject({ ok: true, job_id: aloneId, delivered: "resumed", answer: { question_id: "fakeq", text: "Go with B", option: "B", by: "grace" } });
+    const resumeId = String(reply.resume_job_id);
+    const original = store.get(aloneId)!;
+    expect(original).toMatchObject({ resolved_by: resumeId, answer: { text: "Go with B" }, question: { answered_at: expect.any(String) } });
+    const resumed = store.get(resumeId)!;
+    expect(resumed).toMatchObject({ trigger: "resume", status: "succeeded", skill: "askalone", runner: "claude", resume_of: aloneId, resume: { session_id: original.session_id, runner: "claude" }, question: { id: "fakeq" }, answer: { text: "Go with B", by: "grace" }, source: { method: "RESUME" }, cwd: original.cwd });
+    expect(resumed.command!.join(" ")).toContain(`--resume ${original.session_id}`);
+    expect(resumed.result).toContain(`resumed=${original.session_id}`);
+    expect(reply.resume_job).toMatchObject({ id: resumeId, status: "succeeded" });
+    const prompt = readFileSync(store.pathsFor(resumeId).prompt, "utf8");
+    expect(prompt).toContain("# Skill: askalone (resumed)");
+    expect(prompt).toContain("<human_question>\nDeploy A or B?\nOptions: A | B\n</human_question>");
+    expect(prompt).toContain("<human_answer>\nB: Go with B\n(answered by grace)\n</human_answer>");
+    expect(store.readEvent(resumeId)).toMatchObject({ trigger: "resume", payload: { env: "stage" }, headers: { "x-skillhook-resume-of": aloneId } });
+    const after = (await json(await fetch(`${base}/jobs?waiting=1`, { headers: auth }))) as unknown as { jobs: { id: string }[] };
+    expect(after.jobs.map((j) => j.id)).not.toContain(aloneId);
+    expect(after.jobs.map((j) => j.id)).not.toContain(resumeId);
+    expect((await json(await fetch(`${base}/jobs?trigger=resume`, { headers: auth })) as unknown as { jobs: { id: string }[] }).jobs.map((j) => j.id)).toContain(resumeId);
+    // `resume: never` only records the answer; the job then no longer waits.
+    const recorded = await json(await fetch(`${base}/jobs/${stId}/answer`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ answer: "Handled by hand", resume: "never" }) }));
+    expect(recorded).toMatchObject({ delivered: "recorded", resume_job_id: null, answer: { text: "Handled by hand" } });
+    expect((recorded.answer as { question_id?: string }).question_id).toBeUndefined();
+    expect(store.get(stId)).toMatchObject({ answer: { text: "Handled by hand" } });
+    expect(store.get(stId)?.resolved_by).toBeUndefined();
+    const last = (await json(await fetch(`${base}/jobs?waiting=1`, { headers: auth }))) as unknown as { jobs: { id: string }[] };
+    expect(last.jobs.map((j) => j.id)).not.toContain(stId);
+    expect((await fetch(`${base}/jobs/${stId}/answer`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ answer: "x", resume: "maybe" }) })).status).toBe(400);
+    expect((await fetch(`${base}/jobs/20200101T000000Z-zzzzzz/answer`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ answer: "x" }) })).status).toBe(404);
   });
 
   it("pages and filters jobs", async () => {

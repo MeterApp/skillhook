@@ -86,6 +86,17 @@ describe("response options", () => {
   });
 });
 
+describe("agent API options", () => {
+  it("accepts agent_api and human_wait_seconds within bounds", () => {
+    const doc = (block: string) => `---\nname: a\ndescription: a\nskillhook:\n${block}\n---\nBody\n`;
+    expect(parseSkillDocument(doc("  agent_api: cli\n  human_wait_seconds: 900"), "/tmp/a").config).toMatchObject({ agent_api: "cli", human_wait_seconds: 900 });
+    expect(parseSkillDocument(doc("  agent_api: none"), "/tmp/a").config.agent_api).toBe("none");
+    expect(() => parseSkillDocument(doc("  agent_api: http"), "/tmp/a")).toThrow(/agent_api/);
+    expect(() => parseSkillDocument(doc("  human_wait_seconds: 0"), "/tmp/a")).toThrow(/human_wait_seconds/);
+    expect(() => parseSkillDocument(doc("  human_wait_seconds: 100000"), "/tmp/a")).toThrow(/human_wait_seconds/);
+  });
+});
+
 describe("loadSkills / SkillRegistry", () => {
   it("loads valid skills and reports broken ones", () => {
     const paths = tempHome();

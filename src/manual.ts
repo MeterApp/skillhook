@@ -7,6 +7,7 @@ import { parseFrontmatter } from "./frontmatter.js";
 import { newJobId } from "./ids.js";
 import type { JobRecord, JobStore } from "./jobs.js";
 import { redactHeaders, type BodyKind, type Trigger, type WebhookEvent } from "./payload.js";
+import type { JobAnswer, JobQuestion } from "./progress.js";
 import { resolveRunSettings } from "./run.js";
 import { parseSkillDocument, SkillError, type Skill } from "./skills.js";
 import { errorMessage, isValidSkillName } from "./util.js";
@@ -32,6 +33,8 @@ export interface ManualRunInput {
   jobId?: string;
   /** The SKILL.md came with the request and lives in the job directory. */
   adhoc?: true;
+  /** For `trigger: resume`: the job a person answered, the session to continue (when it has one), what was asked and answered, and why it cannot be resumed when it cannot. */
+  resume?: { of: string; session?: { session_id: string; runner: RunnerName }; question?: JobQuestion; answer: JobAnswer; runnerReason?: string };
 }
 
 export function buildManualEvent(input: ManualRunInput, id = newJobId()): WebhookEvent {
@@ -74,6 +77,11 @@ export function createManualJob(ops: { config: Config; store: JobStore }, input:
     replay_of: input.replayOf,
     adhoc: input.adhoc,
     skill_file: input.skill.file,
+    resume_of: input.resume?.of,
+    resume: input.resume?.session,
+    question: input.resume?.question,
+    answer: input.resume?.answer,
+    runner_reason: input.resume?.runnerReason,
     event,
     rawBody: input.body?.raw,
   });

@@ -86,6 +86,7 @@ The first time, Tailscale answers with a `https://login.tailscale.com/f/funnel?�
 skillhook send hello --wait 60            # signs like a real sender, POSTs to the local server, waits for the result
 skillhook send hello --public --wait 60   # the same through the public URL — what the sender will experience
 skillhook jobs list                       # every run; skillhook jobs show <id> --stdout prints the agent transcript
+skillhook jobs list --waiting             # jobs waiting for a person; skillhook jobs answer <id> "<answer>" replies (live, or by resuming the session)
 ```
 
 `200` with `"status": "succeeded"` and a `result` proves auth, queue, runner and login in one go. `202` means it was still running after the wait — fine; poll the `status_url` or `skillhook jobs show <id>`.

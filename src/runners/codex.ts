@@ -6,6 +6,16 @@ function tomlString(value: string): string {
   return JSON.stringify(value);
 }
 
+function tomlStringArray(values: string[]): string {
+  return `[${values.map(tomlString).join(", ")}]`;
+}
+
+function tomlInlineTable(values: Record<string, string>): string {
+  return `{ ${Object.entries(values)
+    .map(([key, value]) => `${key} = ${tomlString(value)}`)
+    .join(", ")} }`;
+}
+
 /**
  * Codex runner: `codex exec --json` with the prompt on stdin (`-`). Codex has no system-prompt
  * flag, so the guardrails are prepended to the prompt. The last agent message is also written
@@ -19,16 +29,26 @@ export const codexRunner: Runner = {
     const { command, lead } = commandParts(runnerConfig.command);
     const sandbox = skillConfig.sandbox ?? runnerConfig.sandbox;
     const network = skillConfig.network_access ?? runnerConfig.network_access;
-    const args = [...lead, "exec", "--json", "--skip-git-repo-check", "-C", ctx.cwd, "-s", sandbox, "-c", `approval_policy=${tomlString(runnerConfig.approval_policy)}`, "-o", ctx.paths.lastMessagePath];
+    // `codex exec resume` continues a session; it takes no -C, -s or --add-dir, so the sandbox goes through -c.
+    const args = ctx.resume
+      ? [...lead, "exec", "resume", ctx.resume.sessionId, "--json", "--skip-git-repo-check", "-c", `sandbox_mode=${tomlString(sandbox)}`, "-c", `approval_policy=${tomlString(runnerConfig.approval_policy)}`, "-o", ctx.paths.lastMessagePath]
+      : [...lead, "exec", "--json", "--skip-git-repo-check", "-C", ctx.cwd, "-s", sandbox, "-c", `approval_policy=${tomlString(runnerConfig.approval_policy)}`, "-o", ctx.paths.lastMessagePath];
     if (sandbox === "workspace-write" && network) args.push("-c", "sandbox_workspace_write.network_access=true");
     if (ctx.model) args.push("-m", ctx.model);
     if (ctx.effort) args.push("-c", `model_reasoning_effort=${tomlString(ctx.effort)}`);
     if (skillConfig.profile) args.push("-p", skillConfig.profile);
-    for (const dir of uniqueDirs([ctx.skill.dir, ctx.jobDir, ...(skillConfig.add_dirs ?? []).map(expandTilde)])) {
-      if (dir !== ctx.cwd) args.push("--add-dir", dir);
+    if (!ctx.resume) {
+      for (const dir of uniqueDirs([ctx.skill.dir, ctx.jobDir, ...(skillConfig.add_dirs ?? []).map(expandTilde)])) {
+        if (dir !== ctx.cwd) args.push("--add-dir", dir);
+      }
     }
     // The final message must be JSON matching the schema file prepareRun wrote next to the job.
     if (ctx.skill.config.response?.mode === "structured") args.push("--output-schema", ctx.paths.responseSchemaPath);
+    // The job API (progress, asking a person, the outcome) as an MCP server, configured for this run only.
+    if (ctx.agentApi) {
+      const key = ctx.agentApi.name.replaceAll("-", "_");
+      args.push("-c", `mcp_servers.${key}.command=${tomlString(ctx.agentApi.command)}`, "-c", `mcp_servers.${key}.args=${tomlStringArray(ctx.agentApi.args)}`, "-c", `mcp_servers.${key}.env=${tomlInlineTable(ctx.agentApi.env)}`);
+    }
     args.push(...runnerConfig.args, ...(skillConfig.args ?? []), "-");
     return { command, args, cwd: ctx.cwd, env: ctx.env, stdin: `${ctx.guardrails}\n\n${ctx.prompt}` };
   },

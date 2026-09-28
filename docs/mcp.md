@@ -88,8 +88,9 @@ Every tool returns a text block (a one-line summary followed by JSON) and the sa
 | `run_skill` | `name`; optional `payload`, `headers`, `runner`, `model`, `effort`, `wait_seconds` (default 120, max 1800) | Run a skill exactly as a webhook would, without HTTP auth. When a server is running the job goes through its admin API (`via: "server"`, trigger `api`, visible in its queue); otherwise it runs in-process (`via: "local"`, trigger `mcp`). Returns the job record; when the wait elapses first, poll `get_job`. |
 | `test_skill` | `skill_md` (the whole SKILL.md text); optional `payload`, `headers`, `runner`, `model`, `effort`, `cwd`, `wait_seconds` (default 120) | Run a SKILL.md that is not installed, exactly like `run_skill`: the document is validated, kept in the job directory (`jobs/<id>/skill/<name>/SKILL.md`) and run from there with trigger `test`. Try a draft before `create_skill`, or a change before writing it. |
 | `send_test_webhook` | `name`; optional `payload`, `public`, `base_url`, `wait_seconds` (max 600) | Prove the HTTP path: signs the payload the way the skill's `auth` expects (bearer, HMAC, Standard Webhooks, Stripe, Slack, …) and POSTs it to `/hooks/<name>` on the local server by default, the public URL with `public: true`, or any `base_url`. Returns the HTTP status, the names of the signed headers and the response body. |
-| `list_jobs` | optional `skill`, `status`, `outcome` (`completed`, `partial`, `needs_human`, `nothing_to_do`, `failed`, `unknown`), `trigger`, `since` (ISO-8601), `after` (the previous call's `next_after`), `limit` (default 20, max 200) | Recent jobs, newest first, with `next_after` for the next page. `status` is how the process ended, `outcome` whether the task was done; `outcome: needs_human` lists the jobs waiting for a person. |
-| `get_job` | `id`; optional `include` (any of `result`, `response`, `prompt`, `stdout`, `stderr`, `payload`, `event`; default `["result"]`) | One job (with `outcome` and `response`) plus its directory path and the requested artifacts (each capped at the last 64 KiB). |
+| `list_jobs` | optional `skill`, `status`, `outcome` (`completed`, `partial`, `needs_human`, `nothing_to_do`, `failed`, `unknown`), `trigger`, `waiting` (boolean), `since` (ISO-8601), `after` (the previous call's `next_after`), `limit` (default 20, max 200) | Recent jobs, newest first, with `next_after` for the next page. `status` is how the process ended, `outcome` whether the task was done; `waiting: true` lists only the jobs waiting for a person (an open question, or outcome `needs_human` nobody answered yet). |
+| `get_job` | `id`; optional `include` (any of `result`, `response`, `prompt`, `stdout`, `stderr`, `payload`, `event`; default `["result"]`) | One job (with `outcome`, `response` and, when the agent reported any, `progress`: current state, pending question, answer, timeline) plus its directory path and the requested artifacts (each capped at the last 64 KiB). |
+| `answer_job` | `id`, `answer`; optional `option`, `by`, `resume` (`auto` \| `never`), `wait_seconds` (default 120) | A person's answer to a waiting job. Delivered live when the job is still running and waiting (`delivered: live`); otherwise recorded and, unless `resume: never`, a new job with trigger `resume` continues the agent's session with it (`delivered: resumed`, `resume_job`). Through the running server when there is one, otherwise the resume job runs in-process. |
 | `cancel_job` | `id` | Cancel a queued or running job through the running server's admin API. Fails when no server is running (jobs started by `skillhook run` must be stopped by killing that process). |
 | `list_deliveries` | optional `skill`, `outcome` (`accepted`, `duplicate`, `in_flight`, `skipped`, `rejected`, `challenge`, `error`), `since`, `after`, `limit` (default 20, max 200) | Every webhook the server received, newest first, with what became of it: the answer to "why did that webhook not run". |
 | `get_delivery` | `id`; optional `include_body` | One delivery record, plus the body the log kept for a refused delivery (or the payload of the job an accepted one created). |
@@ -113,6 +114,20 @@ Every tool returns a text block (a one-line summary followed by JSON) and the sa
 | `service` | `action`: `install`, `uninstall`, `status`, `restart`, `logs`; optional `lines` | Manage the launchd / systemd service that keeps the server running at login. |
 | `doctor` | none | The same checks as `skillhook doctor` (Node, config, secrets, skills, Claude/Codex login, Tailscale, public URL, server, service), as structured checks plus the formatted report. |
 
+## The job API: `skillhook mcp --job`
+
+A second, much smaller MCP server exists for the agent *inside* a run. The Claude and Codex runners start it for every job (`claude --mcp-config …`, `codex -c mcp_servers.skillhook_job.…`) with `SKILLHOOK_JOB_ID` and `SKILLHOOK_JOB_DIR` in its environment, so the agent sees these tools without any setup (`agent_api: none` in the skill turns it off; `agent_api: cli` keeps only `skillhook job …`):
+
+| Tool | Input | Effect |
+|---|---|---|
+| `job_progress` | `message`; optional `state` (`working`, `blocked`), `percent`, `step` | Records what the agent is doing (`job.progress`, `skillhook jobs show`). |
+| `job_ask_human` | `question`; optional `options`, `context`, `wait_seconds` | Asks a person and waits for the answer (`human_wait_seconds`); returns `{answered, answer, option, by}`. The job's timeout is paused meanwhile. |
+| `job_set_outcome` | `outcome`, `summary`; optional `links`, `data` | Writes `response.json` (the task outcome). |
+| `job_note` | `text` | A timeline entry. |
+| `job_context` | — | The job, its files, what was reported so far, earlier questions and answers. |
+
+Everything is files in the job directory ([skills.md](skills.md#reporting-progress-and-asking-a-person)); the operator-side `answer_job` (above), `skillhook jobs answer` and `POST /jobs/<id>/answer` are the other end.
+
 ## Typical session
 
 1. `skillhook_status`: no server, no public URL, one skill (`hello`).
@@ -128,4 +143,5 @@ Every tool returns a text block (a one-line summary followed by JSON) and the sa
 - Secrets appear in a tool result exactly once (`create_skill`, `add_example`, `generate_secret`); if a value is lost, rotate with `generate_secret` and `force: true` and update the sender.
 - `run_skill` and `POST /skills/<name>/run` bypass webhook authentication, `when` filters and dedupe; use `send_test_webhook` to test those.
 - `run_skill` waits at most `wait_seconds`; long agent runs should be polled with `get_job` rather than waited on.
+- A job that `list_jobs {waiting: true}` shows needs a person: read its `question` (or `response.summary`), then `answer_job`; the agent continues in the same session.
 - All paths in results are absolute paths on the machine running the MCP server.

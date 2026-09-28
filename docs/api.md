@@ -23,9 +23,11 @@ Related: [security.md](security.md) (authentication), [skills.md](skills.md) (fi
 | `GET` | `/skills` | admin | Every skill with its effective settings. |
 | `POST` | `/skills/<skill>/run` | admin | Run a skill with an arbitrary payload, bypassing webhook auth. |
 | `POST` | `/skills/test` | admin | Run a SKILL.md that is not installed (the document travels in the body). |
-| `GET` | `/jobs` | admin | Recent jobs. |
+| `GET` | `/jobs` | admin | Recent jobs (`?waiting=1`: only those waiting for a person). |
 | `GET` | `/jobs/<id>` | admin | One job, optionally with artifacts. |
 | `POST` | `/jobs/<id>/cancel` | admin | Cancel a queued or running job. |
+| `GET` | `/jobs/<id>/progress` | admin | What the agent reported: current state, pending question, answer, timeline. |
+| `POST` | `/jobs/<id>/answer` | admin | A person's answer: delivered live to a waiting job, or a new job continues the session. |
 | `GET` | `/jobs/<id>/artifacts/<name>` | admin | One artifact file as it is on disk (`?tail=<bytes>` for its end). |
 | `GET` | `/jobs/<id>/events` | admin | Server-sent events for one job: `status` snapshots, `stdout`/`stderr` as they are written, `end`. |
 | `GET` | `/events` | admin | Server-sent events for the whole server: `delivery.received`, `job.*`, `schedule.*`, `skill.changed`, `server.*` (`?types=` to filter). |
@@ -266,7 +268,7 @@ curl -sS -X POST -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" -H "Content-T
 
 ## `GET /jobs`
 
-Query: `skill=<name>`, `status=<queued|running|succeeded|failed|timed_out|cancelled|interrupted>`, `outcome=<completed|partial|needs_human|nothing_to_do|failed|unknown>` (derived for jobs recorded before outcomes existed; queued and running jobs never match), `trigger=<webhook|api|cli|mcp|schedule>`, `since=<ISO-8601>` (created at or after; whole seconds), `after=<job id>` (only older jobs: the `next_after` of the previous page), `limit=<n>` (default 50, at most 500). Newest first. An unknown `status`, `outcome`, `trigger` or `since` value is `400 bad_request`.
+Query: `skill=<name>`, `status=<queued|running|succeeded|failed|timed_out|cancelled|interrupted>`, `outcome=<completed|partial|needs_human|nothing_to_do|failed|unknown>` (derived for jobs recorded before outcomes existed; queued and running jobs never match), `trigger=<webhook|api|cli|mcp|schedule|replay|test|resume>`, `waiting=1` (only jobs waiting for a person: an unanswered question, or a finished job with outcome `needs_human` that nobody answered or resumed yet), `since=<ISO-8601>` (created at or after; whole seconds), `after=<job id>` (only older jobs: the `next_after` of the previous page), `limit=<n>` (default 50, at most 500). Newest first. An unknown `status`, `outcome`, `trigger` or `since` value is `400 bad_request`.
 
 ```json
 {
@@ -302,6 +304,30 @@ Ids that do not exist (or do not look like `YYYYMMDDTHHMMSSZ-xxxxxx`) are `404 u
 
 `200 {"ok": true, "job_id": "…", "status": "…"}` when the job was queued (it becomes `cancelled` at once) or running (SIGTERM now, SIGKILL after 10 s, then `cancelled`). `409 {"ok": false, "job_id": "…", "status": "succeeded"}` when it had already finished.
 
+## `GET /jobs/<id>/progress`
+
+What the running (or finished) agent reported through the job API ([skills.md](skills.md#reporting-progress-and-asking-a-person)): `{job_id, status, outcome, waiting, progress?, question?, answer?, timeline}`. `progress` is the current state (`{state: working|blocked|waiting_human|done, message, percent?, step?, updated_at}`), `question` the pending or last question (`{id, text, options?, context?, asked_at, wait_until?, answered_at?}`), `answer` the person's answer (`{question_id?, text, option?, by?, at}`) and `timeline` the entries of `progress.jsonl`, oldest first (`?limit=` keeps the last N, default 200). All of it is also on the job record.
+
+## `POST /jobs/<id>/answer`
+
+A person answers a job. Body:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `answer` | string | The answer (required). |
+| `option` | string | One of the question's options, when it had any. |
+| `by` | string | Who answered, for the record and the agent. |
+| `resume` | `auto` \| `never` | For a job that already ended: `auto` (default) starts a new job that continues the session, `never` only records the answer. |
+| `wait` | number | Seconds to wait for the resume job (also `?wait=`); clamped to `max_wait_seconds`. |
+
+Response: `{ok, job_id, delivered, answer, resume_job_id, resume_job?, job}` with `delivered` one of `live` (the job is running and waiting; the agent's `ask` call returns the answer), `resumed` (`resume_job` is the new job with `trigger: "resume"` and `resume_of`; the original gets `resolved_by`) or `recorded`. `409 not_waiting` when the job is not waiting for a person (nothing asked, already answered, already resumed, still queued); `404 unknown_job`; `400 bad_request` without `answer` or with another `resume` value.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" -H "content-type: application/json" \
+  -d '{"answer":"Go with the smaller change","option":"A","by":"ada","wait":120}' \
+  http://127.0.0.1:8787/jobs/20260916T025442Z-r1wn6g/answer
+```
+
 ## `GET /jobs/<id>/artifacts/<name>`
 
 `<name>` is one of `stdout`, `stderr`, `prompt`, `result`, `payload`, `event`, `response`. The body is the file as written, with no JSON envelope: `application/json` for `event` and for a `payload` that was parsed as JSON, `text/plain` otherwise. `x-artifact-bytes` carries the file's full size. `?tail=<bytes>` returns only the last `<bytes>` bytes and adds `x-artifact-truncated: true`. A name outside the list, or a file the job has not written yet, is `404 unknown_artifact`.
@@ -330,6 +356,9 @@ A `text/event-stream` of the server's event bus. Each message carries `id` (the 
 | `job.queued`, `job.started`, `job.finished` | `{job}` |
 | `job.updated` | `{job, fields}`: `pid`, `session_id`, `resume_command` captured while running |
 | `job.cancelled` | `{job, state}` with `state` `queued` or `running`; `job.finished` follows |
+| `job.progress` | `{job, entry}`: the agent reported progress, a note or its outcome (`entry` is the `progress.jsonl` line) |
+| `job.waiting_human` | `{job, question}`: the agent asked a person and waits |
+| `job.answered` | `{job, answer, delivered, resume_job_id?}` with `delivered` `live`, `resumed` or `recorded` |
 | `schedule.registered` | `{skill, cron, timezone, next_due}` |
 | `schedule.fired` | `{skill, slot, job, caught_up}` |
 | `schedule.skipped` | `{skill, slot, reason}`: `in_flight`, `caught_up`, `too_old` or `duplicate` |
@@ -408,7 +437,7 @@ The same for an earlier job, whatever its trigger: its `event.json` (payload, re
 | `id` | string | `YYYYMMDDTHHMMSSZ-<6 chars>`, UTC, sortable; also the directory name under `jobs/`. |
 | `skill` | string | |
 | `status` | string | `queued`, `running`, `succeeded`, `failed`, `timed_out`, `cancelled`, `interrupted`. |
-| `trigger` | string | `webhook`, `api`, `cli`, `mcp`, `schedule` (fired by a `schedule:`), `replay` (an operator replayed a delivery or job), `test` (a SKILL.md supplied with the request). |
+| `trigger` | string | `webhook`, `api`, `cli`, `mcp`, `schedule` (fired by a `schedule:`), `replay` (an operator replayed a delivery or job), `test` (a SKILL.md supplied with the request), `resume` (a person answered an earlier job; this run continues it). |
 | `runner` | string | `claude`, `codex`, `shell`. |
 | `model`, `effort` | string, optional | Resolved values when set. |
 | `created_at`, `started_at`, `finished_at` | ISO-8601 | |
@@ -423,11 +452,17 @@ The same for an earlier job, whatever its trigger: its `event.json` (payload, re
 | `outcome` | string, optional | Whether the task was done, set when the job ends: `completed`, `partial`, `needs_human`, `nothing_to_do`, `failed` (also every status other than `succeeded`) or `unknown` (the agent reported nothing). See [skills.md](skills.md#reporting-the-outcome). |
 | `response` | object, optional | What the agent reported: `{"outcome", "summary", "links"?, "data"?}` (`data` is capped at 64 KiB here; complete in `response.json`). |
 | `replay_of` | object, optional | For `trigger: replay`: `{"delivery"?: "<delivery-log id>", "job"?: "<original job id>"}`. |
+| `progress` | object, optional | What the agent last reported: `{"state": "working"\|"blocked"\|"waiting_human"\|"done", "message", "percent"?, "step"?, "updated_at"}`. |
+| `question` | object, optional | The question the agent asked a person: `{"id", "text", "options"?, "context"?, "asked_at", "wait_until"?, "answered_at"?}`; pending until `answered_at` is set. |
+| `answer` | object, optional | The person's answer: `{"question_id"?, "text", "option"?, "by"?, "at"}`. |
+| `resume_of`, `resume` | optional | For `trigger: resume`: the job whose answer this run carries, and `{"session_id", "runner"}` when that job's session is continued (absent when the skill had to run afresh; `runner_reason` then says why). |
+| `resolved_by` | string, optional | The resume job an answer to this job started. |
+| `runner_reason` | string, optional | Why the run differs from what was asked (for now: a resume without a session). |
 | `adhoc` | `true`, optional | The SKILL.md came with the request (`POST /skills/test`, `skillhook run --file`) and lives in `jobs/<id>/skill/<name>/`. |
 | `skill_file` | string, optional | The `SKILL.md` (or `skillhook.yaml`) the job ran from. |
 | `delivery_id` | string, optional | Provider delivery id when known; `schedule:<wall-clock slot>` for scheduled runs. |
 | `fingerprint` | string, optional | SHA-256 of the payload and query string of a webhook delivery; what the in-flight duplicate check compares. |
-| `source` | object | `ip`, `method` (`POST`, `PUT`, `LOCAL` for CLI/MCP runs, `SCHEDULE` for scheduled runs, `REPLAY` for replays, whose `ip` is the original sender's, `TEST` for ad-hoc runs), `path`, `content_type`, `user_agent`. |
+| `source` | object | `ip`, `method` (`POST`, `PUT`, `LOCAL` for CLI/MCP runs, `SCHEDULE` for scheduled runs, `REPLAY` for replays, whose `ip` is the original sender's, `TEST` for ad-hoc runs, `RESUME` for resumed runs), `path`, `content_type`, `user_agent`. |
 
 `job.json` on disk also contains `command` (the exact argv); API responses omit it.
 
@@ -437,7 +472,7 @@ The same for an earlier job, whatever its trigger: its `event.json` (payload, re
 |---|---|---|
 | 200 | — | Result available, duplicate, skipped, Slack challenge, admin reads, successful cancel. |
 | 202 | — | Job queued (or still running after `wait`). |
-| 400 | `bad_request` | `/skills/<skill>/run` body is not a JSON object; unknown `?types=` (`/events`), `?streams=` (`/jobs/<id>/events`), `?status=`/`?trigger=` (`/jobs`), `?outcome=` (`/deliveries`) or malformed `?since=` value; `/skills/test` without `skill_md`. |
+| 400 | `bad_request` | `/skills/<skill>/run` body is not a JSON object; unknown `?types=` (`/events`), `?streams=` (`/jobs/<id>/events`), `?status=`/`?trigger=` (`/jobs`), `?outcome=` (`/deliveries`) or malformed `?since=` value; `/skills/test` without `skill_md`; `/jobs/<id>/answer` without `answer` or with a `resume` other than `auto`/`never`. |
 | 400 | `invalid_skill_document` | `/skills/test`: the SKILL.md does not validate (the message says why). |
 | 401 | `missing_token`, `invalid_token`, `missing_credentials`, `invalid_credentials`, `missing_signature`, `invalid_signature`, `missing_timestamp`, `invalid_timestamp`, `stale_timestamp` | Webhook authentication failed. |
 | 401 | `unauthorized` | Admin route without a valid token. |
@@ -447,6 +482,7 @@ The same for an earlier job, whatever its trigger: its `event.json` (payload, re
 | 405 | `method_not_allowed` | |
 | 409 | — (`ok: false`) | Cancel on a finished job. |
 | 409 | `replay_needs_force`, `no_body` | Replaying a rejected delivery without `force`; a delivery whose body was not kept. |
+| 409 | `not_waiting`, `unknown_skill` | Answering a job that is not waiting for a person; the skill of the job to resume no longer exists. |
 | 413 | `payload_too_large` | Body over `max_body_bytes`. |
 | 429 | `rate_limited`, `too_many_failures` | Per-IP limits. |
 | 500 | `invalid_skill`, `internal_error` | `SKILL.md` failed to parse; unexpected error (see the server log). |

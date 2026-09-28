@@ -24,7 +24,8 @@ if (process.env.FAKE_CODEX_FAIL) {
   process.exit(1);
 }
 // With --output-schema the real CLI's final message is the JSON object the schema asks for.
-const text = args.includes("--output-schema") ? JSON.stringify({ outcome: process.env.FAKE_CODEX_OUTCOME ?? "completed", summary: `structured codex model=${model ?? "default"}` }) : `FAKE CODEX OK model=${model ?? "default"} prompt_chars=${prompt.length}`;
+const resumed = args[0] === "exec" && args[1] === "resume" ? args[2] : undefined;
+const text = args.includes("--output-schema") ? JSON.stringify({ outcome: process.env.FAKE_CODEX_OUTCOME ?? "completed", summary: `structured codex model=${model ?? "default"}` }) : `FAKE CODEX OK model=${model ?? "default"} prompt_chars=${prompt.length}${resumed ? ` resumed=${resumed}` : ""}`;
 out({ type: "item.completed", item: { id: "item_0", type: "agent_message", text } });
 out({ type: "turn.completed", usage: { input_tokens: 12, cached_input_tokens: 0, output_tokens: 6 } });
 if (outFile) writeFileSync(outFile, text);

@@ -4,6 +4,7 @@
 import type { DeliveryRecord } from "./delivery-log.js";
 import type { JobRecord } from "./jobs.js";
 import type { Logger } from "./logger.js";
+import type { JobAnswer, JobQuestion, ProgressEntry } from "./progress.js";
 import type { SkipReason } from "./scheduler.js";
 import type { ServerState } from "./server.js";
 import type { SkillSource } from "./skills.js";
@@ -21,6 +22,12 @@ export interface EventMap {
   /** A cancel request was accepted; `job.finished` follows once the process is gone. */
   "job.cancelled": { job: JobRecord; state: "queued" | "running" };
   "job.finished": { job: JobRecord };
+  /** The agent reported progress or a note (`progress.jsonl` grew). */
+  "job.progress": { job: JobRecord; entry: ProgressEntry };
+  /** The agent asked a person something and is waiting (or finished saying a person must act). */
+  "job.waiting_human": { job: JobRecord; question: JobQuestion };
+  /** A person answered: `live` reached the waiting agent, `resumed` started a new job continuing the session, `recorded` was only stored. */
+  "job.answered": { job: JobRecord; answer: JobAnswer; delivered: "live" | "resumed" | "recorded"; resume_job_id?: string };
   "schedule.registered": { skill: string; cron: string; timezone: string; next_due: string | null };
   "schedule.fired": { skill: string; slot: string; job: JobRecord; caught_up: boolean };
   "schedule.skipped": { skill: string; slot: string; reason: SkipReason };
@@ -30,7 +37,7 @@ export interface EventMap {
 
 export type EventType = keyof EventMap;
 
-export const EVENT_TYPES: EventType[] = ["server.started", "server.stopping", "delivery.received", "job.queued", "job.started", "job.updated", "job.cancelled", "job.finished", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed"];
+export const EVENT_TYPES: EventType[] = ["server.started", "server.stopping", "delivery.received", "job.queued", "job.started", "job.updated", "job.cancelled", "job.finished", "job.progress", "job.waiting_human", "job.answered", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed"];
 
 export interface SkillhookEvent<K extends EventType = EventType> {
   /** Increases by one per event in this process; `GET /events` sends it as the SSE id. */

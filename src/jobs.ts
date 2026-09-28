@@ -4,6 +4,7 @@ import type { RunnerName } from "./config.js";
 import { idToDate, isJobId, newJobId } from "./ids.js";
 import type { Trigger, WebhookEvent } from "./payload.js";
 import { payloadJson } from "./prompt.js";
+import type { JobAnswer, JobProgress, JobQuestion } from "./progress.js";
 import { jobOutcome, type JobOutcome, type JobResponse } from "./response.js";
 import { ensureDir, nowIso, readJsonFileOr, truncate, writeJsonFile } from "./util.js";
 
@@ -55,6 +56,20 @@ export interface JobRecord {
   adhoc?: true;
   /** The `SKILL.md` (or `skillhook.yaml`) the job ran from. */
   skill_file?: string;
+  /** What the agent last reported while running (`skillhook job progress`, the `job_progress` tool). */
+  progress?: JobProgress;
+  /** The question the agent asked a person, pending until `answered_at` is set. */
+  question?: JobQuestion;
+  /** The answer a person gave. */
+  answer?: JobAnswer;
+  /** For `trigger: resume`: the job whose question was answered and whose session this run continues. */
+  resume_of?: string;
+  /** For `trigger: resume`: the session this run continues (absent when the original had none: the skill then ran afresh with the answer). */
+  resume?: { session_id: string; runner: RunnerName };
+  /** Set on the original job when its answer started a resume job. */
+  resolved_by?: string;
+  /** Why the runner or the way of running differs from what was asked (a resume without a session, a fallback). */
+  runner_reason?: string;
   delivery_id?: string;
   /** Hash of payload + query for in-flight de-duplication of webhook deliveries (see `deliveryFingerprint`). */
   fingerprint?: string;
@@ -76,6 +91,11 @@ export interface JobPaths {
   responseSchema: string;
   /** `skill/`: where an ad-hoc SKILL.md is kept (`skill/<name>/SKILL.md`). */
   skillDir: string;
+  /** The agent's progress timeline and current state (see progress.ts). */
+  progressLog: string;
+  progress: string;
+  question: string;
+  answer: string;
 }
 
 export interface CreateJobInput {
@@ -92,8 +112,37 @@ export interface CreateJobInput {
   replay_of?: { delivery?: string; job?: string };
   adhoc?: true;
   skill_file?: string;
+  resume_of?: string;
+  resume?: { session_id: string; runner: RunnerName };
+  question?: JobQuestion;
+  answer?: JobAnswer;
+  runner_reason?: string;
   event: WebhookEvent;
   rawBody?: Buffer;
+}
+
+/** The files of one job directory (also what `JobStore.pathsFor` returns; usable without a store). */
+export function jobPathsFor(jobsDir: string, id: string): JobPaths {
+  const dir = path.join(jobsDir, id);
+  return {
+    dir,
+    job: path.join(dir, "job.json"),
+    payload: path.join(dir, "payload.json"),
+    event: path.join(dir, "event.json"),
+    prompt: path.join(dir, "prompt.md"),
+    stdout: path.join(dir, "stdout.log"),
+    stderr: path.join(dir, "stderr.log"),
+    result: path.join(dir, "result.md"),
+    lastMessage: path.join(dir, "last-message.md"),
+    body: path.join(dir, "body.bin"),
+    response: path.join(dir, "response.json"),
+    responseSchema: path.join(dir, "response.schema.json"),
+    skillDir: path.join(dir, "skill"),
+    progressLog: path.join(dir, "progress.jsonl"),
+    progress: path.join(dir, "progress.json"),
+    question: path.join(dir, "question.json"),
+    answer: path.join(dir, "answer.json"),
+  };
 }
 
 export interface JobFilter {
@@ -102,6 +151,8 @@ export interface JobFilter {
   trigger?: Trigger | Trigger[];
   /** Task outcome (derived for records written before outcomes existed); queued and running jobs never match. */
   outcome?: JobOutcome | JobOutcome[];
+  /** Only jobs waiting for a person: a pending question, or a finished job with outcome `needs_human` that no resume answered yet. */
+  waiting?: boolean;
   /** Only jobs created at or after this instant (ISO-8601); the store stops reading once it is past it. */
   since?: string;
   /** Only jobs created at or before this instant. */
@@ -140,22 +191,7 @@ export class JobStore {
   }
 
   pathsFor(id: string): JobPaths {
-    const dir = path.join(this.jobsDir, id);
-    return {
-      dir,
-      job: path.join(dir, "job.json"),
-      payload: path.join(dir, "payload.json"),
-      event: path.join(dir, "event.json"),
-      prompt: path.join(dir, "prompt.md"),
-      stdout: path.join(dir, "stdout.log"),
-      stderr: path.join(dir, "stderr.log"),
-      result: path.join(dir, "result.md"),
-      lastMessage: path.join(dir, "last-message.md"),
-      body: path.join(dir, "body.bin"),
-      response: path.join(dir, "response.json"),
-      responseSchema: path.join(dir, "response.schema.json"),
-      skillDir: path.join(dir, "skill"),
-    };
+    return jobPathsFor(this.jobsDir, id);
   }
 
   create(input: CreateJobInput): JobRecord {
@@ -177,6 +213,11 @@ export class JobStore {
       replay_of: input.replay_of,
       adhoc: input.adhoc,
       skill_file: input.skill_file,
+      resume_of: input.resume_of,
+      resume: input.resume,
+      question: input.question,
+      answer: input.answer,
+      runner_reason: input.runner_reason,
       source: input.source,
     };
     for (const key of Object.keys(record) as (keyof JobRecord)[]) if (record[key] === undefined) delete record[key];
@@ -263,6 +304,7 @@ export class JobStore {
         const outcome = jobOutcome(job);
         if (!outcome || !outcomes.includes(outcome)) continue;
       }
+      if (filter.waiting && !isWaitingForHuman(job)) continue;
       out.push(job);
       if (out.length >= limit) break;
     }
@@ -332,6 +374,13 @@ export class JobStore {
 
 export function isTerminal(status: JobStatus): boolean {
   return TERMINAL_STATUSES.includes(status);
+}
+
+/** A person's turn: the agent asked something nobody answered yet, or it finished saying a person must act and nobody answered or resumed it since. */
+export function isWaitingForHuman(job: Pick<JobRecord, "status" | "runner" | "outcome" | "response" | "question" | "answer" | "resolved_by">): boolean {
+  if (job.answer) return false;
+  if (job.question && !job.question.answered_at) return true;
+  return isTerminal(job.status) && jobOutcome(job) === "needs_human" && !job.resolved_by;
 }
 
 function wholeSecond(iso: string | undefined): number | undefined {

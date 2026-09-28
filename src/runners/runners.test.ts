@@ -42,6 +42,19 @@ describe("claude runner", () => {
     expect(inv.cwd).toBe("/work");
   });
 
+  it("injects the job API as an MCP server and resumes a session when asked", () => {
+    const agentApi = { name: "skillhook-job", command: "/usr/bin/node", args: ["/opt/skillhook/dist/cli.js", "mcp", "--job", "--dir", "/home/me/.skillhook"], env: { SKILLHOOK_JOB_ID: "j1", SKILLHOOK_JOB_DIR: "/jobs/j1" } };
+    const inv = claudeRunner.build(ctx("allowed-tools: Read", { agentApi }));
+    const config = JSON.parse(inv.args[inv.args.indexOf("--mcp-config") + 1] as string) as { mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }> };
+    expect(config.mcpServers["skillhook-job"]).toEqual({ command: "/usr/bin/node", args: ["/opt/skillhook/dist/cli.js", "mcp", "--job", "--dir", "/home/me/.skillhook"], env: { SKILLHOOK_JOB_ID: "j1", SKILLHOOK_JOB_DIR: "/jobs/j1" } });
+    expect(inv.args[inv.args.indexOf("--allowedTools") + 1]).toBe("Read,mcp__skillhook-job");
+    expect(inv.args).not.toContain("--resume");
+    const resumed = claudeRunner.build(ctx("", { resume: { sessionId: "sess-123" } }));
+    expect(resumed.args[resumed.args.indexOf("--resume") + 1]).toBe("sess-123");
+    expect(resumed.args).not.toContain("--mcp-config");
+    expect(resumed.args).not.toContain("--allowedTools");
+  });
+
   it("supports array commands and skips --add-dir for the cwd", () => {
     const c = ctx();
     c.config.runners.claude.command = ["/usr/bin/env", "claude"];
@@ -119,6 +132,26 @@ describe("codex runner", () => {
     expect(joined).toContain("--add-dir /skills/demo --add-dir /jobs/j1 --add-dir /extra");
     expect(inv.args[inv.args.length - 1]).toBe("-");
     expect(inv.stdin).toBe("GUARD\n\nPROMPT");
+  });
+
+  it("configures the job API through -c and continues a thread with exec resume", () => {
+    const agentApi = { name: "skillhook-job", command: "/usr/bin/node", args: ["/opt/cli.js", "mcp", "--job"], env: { SKILLHOOK_JOB_ID: "j1", SKILLHOOK_JOB_DIR: "/jobs/j1" } };
+    const inv = codexRunner.build(ctx("", { agentApi }));
+    const joined = inv.args.join(" ");
+    expect(joined).toContain('-c mcp_servers.skillhook_job.command="/usr/bin/node"');
+    expect(joined).toContain('-c mcp_servers.skillhook_job.args=["/opt/cli.js", "mcp", "--job"]');
+    expect(joined).toContain('-c mcp_servers.skillhook_job.env={ SKILLHOOK_JOB_ID = "j1", SKILLHOOK_JOB_DIR = "/jobs/j1" }');
+    // `codex exec resume` takes neither -C, -s nor --add-dir: the sandbox travels as -c sandbox_mode, cwd is the spawn cwd.
+    const resumed = codexRunner.build(ctx("skillhook:\n  codex:\n    sandbox: workspace-write\n    add_dirs: [/extra]", { resume: { sessionId: "thread-9" } }));
+    expect(resumed.args.slice(0, 5)).toEqual(["exec", "resume", "thread-9", "--json", "--skip-git-repo-check"]);
+    const joinedResume = resumed.args.join(" ");
+    expect(joinedResume).toContain('-c sandbox_mode="workspace-write"');
+    expect(joinedResume).toContain("-c sandbox_workspace_write.network_access=true");
+    expect(joinedResume).not.toContain("-C ");
+    expect(joinedResume).not.toContain("-s ");
+    expect(joinedResume).not.toContain("--add-dir");
+    expect(resumed.args[resumed.args.length - 1]).toBe("-");
+    expect(resumed.cwd).toBe("/work");
   });
 
   it("omits network override outside workspace-write", () => {

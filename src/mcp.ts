@@ -9,7 +9,9 @@ import { listExamples } from "./examples.js";
 import { JOB_ARTIFACTS, JOB_STATUSES, type JobArtifact, type JobStatus } from "./jobs.js";
 import { TRIGGERS, type Trigger } from "./payload.js";
 import { JOB_OUTCOMES, type JobOutcome } from "./response.js";
-import { addExampleSkill, createOps, createSkill, generateSecretFor, initProject, linkProject, listProjects, planReplay, postToServer, publicJob, resolveBaseUrl, runAdhocLocally, runSkillLocally, sendSignedWebhook, setSecret, triggerViaServer, unlinkProject, webhookUrl, type LinkResult, type Ops } from "./ops.js";
+import { addExampleSkill, AnswerError, answerJob, createOps, createSkill, generateSecretFor, initProject, linkProject, listProjects, planReplay, postToServer, publicJob, resolveBaseUrl, runAdhocLocally, runJobLocally, runSkillLocally, sendSignedWebhook, setSecret, triggerViaServer, unlinkProject, webhookUrl, type LinkResult, type Ops } from "./ops.js";
+import { readProgress } from "./progress.js";
+import { resolveRunSettings } from "./run.js";
 import type { Paths } from "./paths.js";
 import { listSchedules, scheduleStatus } from "./scheduler.js";
 import { skillSummary } from "./server.js";
@@ -27,7 +29,8 @@ Skills live in <home>/skills/<name>/SKILL.md; the \`skillhook:\` frontmatter blo
 A repository can declare its own hooks in a version-controlled skillhook.yaml (webhook name → run: shell command | skill: SKILL.md directory | prompt: inline instructions); link_project registers it so the hooks are served, list_projects shows what runs from which webhook.
 A \`schedule:\` key (cron expression, optional timezone/catch_up/overlap) on any skill or hook makes the running server fire it on time without a webhook; \`webhook: false\` makes it schedule-only. list_schedules shows the next and last runs.
 Jobs are directories under <home>/jobs/<id> with payload.json, prompt.md, stdout.log, result.md and, when the agent reported one, response.json. A job's \`status\` says how the process ended; its \`outcome\` (completed, partial, needs_human, nothing_to_do, failed, unknown) says whether the task was done, as reported by the agent through response.json or a structured answer (\`response: { mode: structured }\` in the skill).
-Every webhook the server received, including rejected, filtered and duplicate ones, is in the delivery log: list_deliveries and get_delivery show what arrived and why it did not run; replay_delivery (or replay_job) runs it again through the skill as it is now.`;
+Every webhook the server received, including rejected, filtered and duplicate ones, is in the delivery log: list_deliveries and get_delivery show what arrived and why it did not run; replay_delivery (or replay_job) runs it again through the skill as it is now.
+While it runs, an agent reports progress and can ask a person a question through the job API (the job_* tools of \`skillhook mcp --job\`, or \`skillhook job …\`); such jobs show \`progress\`, \`question\` and \`answer\`. list_jobs with waiting: true lists what waits for a person (an open question, or a finished job with outcome needs_human); answer_job delivers the answer to the waiting agent, or starts a new job (trigger \`resume\`) that continues the agent's session with it.`;
 
 type ToolResult = { content: { type: "text"; text: string }[]; structuredContent?: Record<string, unknown>; isError?: boolean };
 
@@ -249,10 +252,10 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
 
   server.registerTool(
     "list_jobs",
-    { title: "List jobs", description: "Recent jobs, newest first. `status` is how the process ended, `outcome` whether the task was done (needs_human lists the jobs waiting for a person). `after` (the `next_after` of the previous call) pages further back; `since` is an ISO-8601 instant.", inputSchema: z.object({ skill: z.string().optional(), status: z.enum(JOB_STATUSES as [JobStatus, ...JobStatus[]]).optional(), outcome: z.enum(JOB_OUTCOMES as [JobOutcome, ...JobOutcome[]]).optional(), trigger: z.enum(TRIGGERS as [Trigger, ...Trigger[]]).optional(), since: z.string().optional(), after: z.string().optional(), limit: z.number().int().min(1).max(200).optional() }) },
-    wrap(async ({ skill, status, outcome, trigger, since, after, limit }) => {
+    { title: "List jobs", description: "Recent jobs, newest first. `status` is how the process ended, `outcome` whether the task was done. `waiting: true` lists only the jobs waiting for a person (an unanswered question, or outcome needs_human not yet resumed): answer them with answer_job. `after` (the `next_after` of the previous call) pages further back; `since` is an ISO-8601 instant.", inputSchema: z.object({ skill: z.string().optional(), status: z.enum(JOB_STATUSES as [JobStatus, ...JobStatus[]]).optional(), outcome: z.enum(JOB_OUTCOMES as [JobOutcome, ...JobOutcome[]]).optional(), trigger: z.enum(TRIGGERS as [Trigger, ...Trigger[]]).optional(), waiting: z.boolean().optional(), since: z.string().optional(), after: z.string().optional(), limit: z.number().int().min(1).max(200).optional() }) },
+    wrap(async ({ skill, status, outcome, trigger, waiting, since, after, limit }) => {
       const o = ops();
-      const page = o.store.listPage({ skill, status, outcome, trigger, since, after, limit: limit ?? 20 });
+      const page = o.store.listPage({ skill, status, outcome, trigger, waiting: waiting || undefined, since, after, limit: limit ?? 20 });
       return ok({ jobs: page.jobs.map(publicJob), next_after: page.next_after });
     }),
   );
@@ -309,14 +312,43 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
 
   server.registerTool(
     "get_job",
-    { title: "Get job", description: "Job record plus optional artifacts (result, prompt, stdout, stderr, payload, event).", inputSchema: z.object({ id: z.string(), include: z.array(z.enum(JOB_ARTIFACTS as [JobArtifact, ...JobArtifact[]])).optional() }) },
+    { title: "Get job", description: "Job record plus optional artifacts (result, response, prompt, stdout, stderr, payload, event) and, when the agent reported any, its progress timeline, pending question and answer.", inputSchema: z.object({ id: z.string(), include: z.array(z.enum(JOB_ARTIFACTS as [JobArtifact, ...JobArtifact[]])).optional() }) },
     wrap(async ({ id, include }) => {
       const o = ops();
       const job = o.store.get(id);
       if (!job) throw new Error(`Unknown job ${id}`);
       const artifacts: Record<string, string | undefined> = {};
       for (const a of include ?? ["result"]) artifacts[a] = o.store.readArtifact(id, a, 64 * 1024);
-      return ok({ job: publicJob(job), dir: o.store.pathsFor(id).dir, artifacts });
+      const progress = readProgress(o.store.pathsFor(id).dir, { timelineLimit: 100 });
+      return ok({ job: publicJob(job), dir: o.store.pathsFor(id).dir, artifacts, ...(progress.timeline.length || progress.question ? { progress } : {}) });
+    }),
+  );
+
+  server.registerTool(
+    "answer_job",
+    { title: "Answer a job", description: "A person's answer to a job that is waiting: delivered live to the agent's pending job_ask_human call when the job is still running (`delivered: live`); otherwise recorded and, unless resume is `never`, a new job with trigger `resume` continues the agent's session with it (`claude --resume` / `codex exec resume`; `delivered: resumed`, `resume_job_id`). Use list_jobs with waiting: true to find such jobs; pass `option` when the question had options, `by` to say who answered.", inputSchema: z.object({ id: z.string(), answer: z.string().min(1), option: z.string().optional(), by: z.string().optional(), resume: z.enum(["auto", "never"]).optional(), wait_seconds: z.number().int().min(0).max(1800).optional().describe("how long to wait for the resume job (default 120; 0 returns at once)") }) },
+    wrap(async ({ id, answer, option, by, resume, wait_seconds }) => {
+      const o = ops();
+      const wait = wait_seconds ?? 120;
+      const viaServer = await postToServer(o, `/jobs/${id}/answer`, { answer, option, by, resume, wait });
+      if (viaServer) {
+        const body = viaServer.body as Record<string, unknown>;
+        if (viaServer.status >= 400) throw new Error(`${String(body.error)}: ${String(body.message)}`);
+        const resumeJob = body.resume_job as { id: string; status: string; outcome?: string } | undefined;
+        return ok({ via: "server", base_url: viaServer.baseUrl, ...body }, body.delivered === "live" ? `Delivered to the running job ${id}` : resumeJob ? `Job ${resumeJob.id} continues ${id}: ${resumeJob.status}${resumeJob.outcome ? ` (${resumeJob.outcome})` : ""}` : `Recorded on job ${id}`);
+      }
+      let result: ReturnType<typeof answerJob>;
+      try {
+        result = answerJob(o, { jobId: id, text: answer, option, by, resume });
+      } catch (error) {
+        if (error instanceof AnswerError) throw new Error(error.message);
+        throw error;
+      }
+      if (result.delivered === "resumed" && result.resumeJob && result.skill) {
+        const finished = await runJobLocally(o, result.resumeJob, { waitMs: wait * 1000, timeoutSeconds: resolveRunSettings(result.skill, o.config).timeoutSeconds });
+        return ok({ via: "local", ok: finished.status === "succeeded", job_id: id, delivered: "resumed", answer: result.answer, resume_job_id: finished.id, resume_job: publicJob(finished), job: publicJob(result.job) }, `Job ${finished.id} continues ${id}: ${finished.status}${finished.outcome ? ` (${finished.outcome})` : ""}${finished.error ? ` (${finished.error})` : ""}`);
+      }
+      return ok({ via: "local", ok: true, job_id: id, delivered: result.delivered, answer: result.answer, resume_job_id: null, job: publicJob(result.job) }, result.delivered === "live" ? `Delivered to the running job ${id}` : `Recorded on job ${id}`);
     }),
   );
 

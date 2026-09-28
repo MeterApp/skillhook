@@ -1,11 +1,22 @@
 import { existsSync } from "node:fs";
+import { jobFromEnv, serveJobMcp } from "../mcp-job.js";
 import { serveMcp } from "../mcp.js";
 import { cliEntrypoint, stableNodePath } from "../service.js";
 import { which } from "../tailscale.js";
 import { PACKAGE } from "../version.js";
-import { bool, type Ctx } from "./shared.js";
+import { bool, CommandError, str, type Ctx } from "./shared.js";
 
 export async function mcpCommand(ctx: Ctx): Promise<number> {
+  if (ctx.flags.job !== undefined) {
+    // The runners start this for every run (`--mcp-config` / `mcp_servers.skillhook_job`) with the job in the environment.
+    const target = jobFromEnv(ctx.io.env, ctx.paths.jobsDir, str(ctx.flags, "job", "job-id"));
+    if (!target) throw new CommandError("skillhook mcp --job serves one run's job API: it needs SKILLHOOK_JOB_ID and SKILLHOOK_JOB_DIR in the environment (the runner sets them), or --job <id> under this home");
+    await serveJobMcp(target);
+    await new Promise(() => {
+      /* serve until stdin closes */
+    });
+    return 0;
+  }
   if (bool(ctx.flags, "print-config")) {
     const onPath = which("skillhook");
     const cli = cliEntrypoint();

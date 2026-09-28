@@ -56,6 +56,44 @@ describe("buildPrompt", () => {
     expect(renderTemplate("{{response_path}}", { response_path: "/r.json" }, {}).text).toBe("/r.json");
   });
 
+  it("tells the agent how to report progress and ask a person, per agent_api", () => {
+    const base = input("Go.", {});
+    const mcp = buildPrompt(base).guardrails;
+    expect(mcp).toContain("job_progress tool");
+    expect(mcp).toContain("job_ask_human");
+    expect(mcp).toContain("waits up to 5 min");
+    expect(mcp).toContain("<human_answer>");
+    expect(mcp).toContain("a person can only be reached through the job API");
+    const cli = buildPrompt({ ...base, agentApi: "cli", bin: "/usr/bin/node /opt/cli.js", humanWaitSeconds: 1800 }).guardrails;
+    expect(cli).toContain('`/usr/bin/node /opt/cli.js job progress "<what you are doing>"`');
+    expect(cli).toContain("job ask");
+    expect(cli).toContain("waits up to 30 min");
+    expect(cli).not.toContain("job_progress");
+    const none = buildPrompt({ ...base, agentApi: "none" }).guardrails;
+    expect(none).toContain("nobody can answer questions");
+    expect(none).not.toContain("job_progress");
+    expect(none).not.toContain("job ask");
+  });
+
+  it("builds the prompt of a resumed run: the answer alone for a session, the whole skill plus the answer otherwise", () => {
+    const base = input("Handle {{payload.a}}.", { a: 1 });
+    const answer = { question_id: "q1", text: "Go with B", option: "B", by: "ada", at: "2026-09-28T12:00:00.000Z" };
+    const question = { id: "q1", text: "A or B?", options: ["A", "B"], asked_at: "2026-09-28T11:59:00.000Z" };
+    const resumed = buildPrompt({ ...base, event: { ...base.event, trigger: "resume" }, resume: { originalJob: "j0", question, answer, fresh: false } });
+    expect(resumed.prompt).toContain("# Skill: demo (resumed)");
+    expect(resumed.prompt).not.toContain("Handle 1.");
+    expect(resumed.prompt).toContain("<human_question>\nA or B?\nOptions: A | B\n</human_question>");
+    expect(resumed.prompt).toContain("<human_answer>\nB: Go with B\n(answered by ada)\n</human_answer>");
+    expect(resumed.appendedEvent).toBe(false);
+    expect(resumed.guardrails).toContain("continuing an earlier run because a person answered");
+    expect(resumed.guardrails).toContain("do not redo work that is already done");
+    const fresh = buildPrompt({ ...base, event: { ...base.event, trigger: "resume" }, resume: { originalJob: "j0", answer: { text: "do B", at: "2026-09-28T12:00:00.000Z" }, fresh: true } });
+    expect(fresh.prompt).toContain("Handle 1.");
+    expect(fresh.prompt).toContain("<human_answer>\ndo B\n</human_answer>");
+    expect(fresh.prompt).not.toContain("<human_question>");
+    expect(fresh.guardrails).toContain("that session could not be resumed");
+  });
+
   it("describes a replay as such in the guardrails", () => {
     const base = input("Go.", {});
     const built = buildPrompt({ ...base, event: { ...base.event, trigger: "replay" } });

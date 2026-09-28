@@ -544,6 +544,19 @@
             ],
             "additionalProperties": false
           },
+          "agent_api": {
+            "type": "string",
+            "enum": [
+              "mcp",
+              "cli",
+              "none"
+            ]
+          },
+          "human_wait_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 86400
+          },
           "response": {
             "type": "object",
             "properties": {

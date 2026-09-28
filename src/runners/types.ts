@@ -12,6 +12,15 @@ export interface RunPaths {
   responseSchemaPath: string;
 }
 
+/** The per-run MCP server the agent talks to (`skillhook mcp --job`), when the skill's `agent_api` is `mcp`. */
+export interface AgentApiServer {
+  /** Server name as the agent sees it (`skillhook-job`). */
+  name: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+}
+
 export interface RunContext {
   skill: Skill;
   config: Config;
@@ -25,6 +34,9 @@ export interface RunContext {
   effort?: string;
   timeoutSeconds: number;
   paths: RunPaths;
+  agentApi?: AgentApiServer;
+  /** Continue an earlier session (a person answered the agent's question) instead of starting a new one. */
+  resume?: { sessionId: string };
 }
 
 export interface RunnerInvocation {
