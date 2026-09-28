@@ -30,6 +30,8 @@ Related: [security.md](security.md) (authentication), [skills.md](skills.md) (fi
 | `GET` | `/events` | admin | Server-sent events for the whole server: `delivery.received`, `job.*`, `schedule.*`, `skill.changed`, `server.*` (`?types=` to filter). |
 | `GET` | `/deliveries` | admin | Every webhook received, newest first, whatever became of it. |
 | `GET` | `/deliveries/<id>` | admin | One delivery, optionally with its body. |
+| `POST` | `/deliveries/<id>/replay` | admin | Run a recorded delivery again, as a new job. |
+| `POST` | `/jobs/<id>/replay` | admin | Run the request an earlier job received again, as a new job. |
 
 Anything else is `404 not_found`; another method on `/hooks/<skill>` is `405 method_not_allowed`.
 
@@ -339,6 +341,30 @@ The log lives in `jobs/.delivery-log/` and keeps the newest `deliveries.max` (20
 
 `{"delivery": {…}}`; `?include=body` adds `"body": {"encoding": "utf8" | "base64", "text": "…", "truncated": false, "source": "log" | "job"}`: the body the log kept for a refused delivery (`skipped`, `rejected`, `error`; at most `deliveries.body_max_bytes`, 64 KiB, and only while `deliveries.store_bodies` is on), or the payload of the job an accepted delivery created; `null` when neither exists. An unknown id is `404 unknown_delivery`.
 
+## `POST /deliveries/<id>/replay`
+
+Runs a recorded delivery again through the skill as it is now: the original payload, headers (redacted, plus `x-skillhook-replay-of: <delivery id>`), query string and sender IP, as a new job with `trigger: "replay"`, `source.method: "REPLAY"` and `replay_of: {"delivery": "<id>", "job": "<original job id>"}` (the job is present when the delivery had been accepted; its `event.json` and `body.bin` are then what is replayed). The signature is not checked again, `when` filters apply unless skipped, and nothing is de-duplicated: a replay never counts as a duplicate and is never folded into a job still in flight, and it carries no `delivery_id` itself.
+
+Body: a JSON object, all fields optional.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `force` | boolean | Replay a delivery that was `rejected` or `error`, whose body was therefore never verified. Without it the answer is `409 replay_needs_force`. |
+| `skip_filters` | boolean | Run even when the skill's `when` conditions do not match; otherwise a non-match answers `200 {"ok": true, "skipped": true, "reason", "replay_of"}`. |
+| `runner`, `model`, `effort` | string | Overrides for this run, as in `POST /skills/<skill>/run`. |
+| `wait` | number | Seconds to wait for the result (also `?wait=`); clamped to `max_wait_seconds`. |
+
+Responses are the webhook shapes (`202` queued, `200` finished when waiting) plus `replay_of`. Errors: `404 unknown_delivery`, `404 unknown_skill` (the skill is gone or disabled), `409 replay_needs_force`, `409 no_body` (the body was not kept: `deliveries.store_bodies` was off, it was cut at `deliveries.body_max_bytes`, or the record was compacted away), `400 bad_request` (not a JSON object, or an unknown `runner`).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"skip_filters": true, "wait": 60}' "http://127.0.0.1:8787/deliveries/20260928T100002Z-q7m2ka/replay"
+```
+
+## `POST /jobs/<id>/replay`
+
+The same for an earlier job, whatever its trigger: its `event.json` (payload, redacted headers, query) is run again as a new job with `trigger: "replay"` and `replay_of: {"job": "<id>"}`. The body takes `skip_filters`, `runner`, `model`, `effort` and `wait` as above (`force` is not needed: a job's request was accepted). `404 unknown_job` / `404 unknown_skill`.
+
 ## Delivery record
 
 | Field | Type | Notes |
@@ -364,7 +390,7 @@ The log lives in `jobs/.delivery-log/` and keeps the newest `deliveries.max` (20
 | `id` | string | `YYYYMMDDTHHMMSSZ-<6 chars>`, UTC, sortable; also the directory name under `jobs/`. |
 | `skill` | string | |
 | `status` | string | `queued`, `running`, `succeeded`, `failed`, `timed_out`, `cancelled`, `interrupted`. |
-| `trigger` | string | `webhook`, `api`, `cli`, `mcp`, `schedule` (fired by a `schedule:`). |
+| `trigger` | string | `webhook`, `api`, `cli`, `mcp`, `schedule` (fired by a `schedule:`), `replay` (an operator replayed a delivery or job). |
 | `runner` | string | `claude`, `codex`, `shell`. |
 | `model`, `effort` | string, optional | Resolved values when set. |
 | `created_at`, `started_at`, `finished_at` | ISO-8601 | |
@@ -378,9 +404,10 @@ The log lives in `jobs/.delivery-log/` and keeps the newest `deliveries.max` (20
 | `error` | string, optional | Failure reason. |
 | `outcome` | string, optional | Whether the task was done, set when the job ends: `completed`, `partial`, `needs_human`, `nothing_to_do`, `failed` (also every status other than `succeeded`) or `unknown` (the agent reported nothing). See [skills.md](skills.md#reporting-the-outcome). |
 | `response` | object, optional | What the agent reported: `{"outcome", "summary", "links"?, "data"?}` (`data` is capped at 64 KiB here; complete in `response.json`). |
+| `replay_of` | object, optional | For `trigger: replay`: `{"delivery"?: "<delivery-log id>", "job"?: "<original job id>"}`. |
 | `delivery_id` | string, optional | Provider delivery id when known; `schedule:<wall-clock slot>` for scheduled runs. |
 | `fingerprint` | string, optional | SHA-256 of the payload and query string of a webhook delivery; what the in-flight duplicate check compares. |
-| `source` | object | `ip`, `method` (`POST`, `PUT`, `LOCAL` for CLI/MCP runs, `SCHEDULE` for scheduled runs), `path`, `content_type`, `user_agent`. |
+| `source` | object | `ip`, `method` (`POST`, `PUT`, `LOCAL` for CLI/MCP runs, `SCHEDULE` for scheduled runs, `REPLAY` for replays, whose `ip` is the original sender's), `path`, `content_type`, `user_agent`. |
 
 `job.json` on disk also contains `command` (the exact argv); API responses omit it.
 
@@ -398,6 +425,7 @@ The log lives in `jobs/.delivery-log/` and keeps the newest `deliveries.max` (20
 | 404 | `schedule_only` | The skill has `webhook: false`; it runs only on its `schedule:`. |
 | 405 | `method_not_allowed` | |
 | 409 | — (`ok: false`) | Cancel on a finished job. |
+| 409 | `replay_needs_force`, `no_body` | Replaying a rejected delivery without `force`; a delivery whose body was not kept. |
 | 413 | `payload_too_large` | Body over `max_body_bytes`. |
 | 429 | `rate_limited`, `too_many_failures` | Per-IP limits. |
 | 500 | `invalid_skill`, `internal_error` | `SKILL.md` failed to parse; unexpected error (see the server log). |

@@ -7,12 +7,12 @@ import { DeliveryLog } from "./delivery-log.js";
 import { ADMIN_TOKEN_ENV, defaultSecretEnvFor, loadSecrets, readEnvFile, upsertEnvVar, type Secrets } from "./env.js";
 import { findExample } from "./examples.js";
 import { parseFrontmatter, stringifyFrontmatter } from "./frontmatter.js";
-import { generateSecret, newJobId } from "./ids.js";
+import { generateSecret } from "./ids.js";
 import { JobStore, type JobRecord } from "./jobs.js";
 import { silentLogger, type Logger } from "./logger.js";
 import type { Paths } from "./paths.js";
-import { redactHeaders, type Trigger, type WebhookEvent } from "./payload.js";
 import { JobQueue } from "./queue.js";
+import { createManualJob, type ManualRunInput } from "./manual.js";
 import { resolveRunSettings } from "./run.js";
 import { publicJob } from "./server.js";
 import { loadProject, PROJECT_FILE_NAMES, renderProjectTemplate, resolveProject, type LoadedProject } from "./projects.js";
@@ -281,58 +281,6 @@ export function describeProject(project: LoadedProject): string {
 // Running skills
 // ---------------------------------------------------------------------------
 
-export interface ManualRunInput {
-  skill: Skill;
-  payload: unknown;
-  headers?: Record<string, string>;
-  query?: Record<string, string>;
-  trigger: Trigger;
-  overrides?: { runner?: RunnerName; model?: string; effort?: string; cwd?: string };
-  /** Recorded on the job and the event; the caller is responsible for `rememberDelivery`. The scheduler uses `schedule:<slot>`. */
-  deliveryId?: string;
-  /** `source.method` on the job (default `LOCAL`; the scheduler writes `SCHEDULE`). */
-  sourceMethod?: string;
-}
-
-export function buildManualEvent(input: ManualRunInput, id = newJobId()): WebhookEvent {
-  const headers = { "content-type": typeof input.payload === "string" ? "text/plain" : "application/json", "user-agent": `skillhook-${input.trigger}`, ...(input.headers ?? {}) };
-  const body = typeof input.payload === "string" ? input.payload : JSON.stringify(input.payload ?? null);
-  return {
-    id,
-    skill: input.skill.name,
-    trigger: input.trigger,
-    received_at: new Date().toISOString(),
-    method: "POST",
-    path: `/hooks/${input.skill.name}`,
-    query: input.query ?? {},
-    headers: redactHeaders(headers),
-    source_ip: "127.0.0.1",
-    content_type: headers["content-type"],
-    content_length: Buffer.byteLength(body),
-    body_kind: typeof input.payload === "string" ? "text" : "json",
-    delivery_id: input.deliveryId,
-    payload: input.payload,
-  };
-}
-
-/** Creates (but does not enqueue) a job for a run that did not arrive over HTTP. Needs only the config and the job store, so the scheduler can call it with the server's own instances. */
-export function createManualJob(ops: Pick<Ops, "config" | "store">, input: ManualRunInput, store = ops.store): JobRecord {
-  const settings = resolveRunSettings(input.skill, ops.config, input.overrides);
-  const id = newJobId();
-  const event = buildManualEvent(input, id);
-  return store.create({
-    id,
-    skill: input.skill.name,
-    trigger: input.trigger,
-    runner: settings.runner,
-    model: settings.model,
-    effort: settings.effort,
-    source: { ip: "127.0.0.1", method: input.sourceMethod ?? "LOCAL", path: event.path, content_type: event.content_type, user_agent: event.headers["user-agent"] },
-    delivery_id: input.deliveryId,
-    event,
-  });
-}
-
 /** Runs one job in this process (a private queue) and resolves when it finishes or `waitMs` elapses. */
 export async function runSkillLocally(ops: Ops, input: ManualRunInput & { waitMs?: number; onStart?: (job: JobRecord) => void }): Promise<JobRecord> {
   const config = { ...ops.config, concurrency: 1 };
@@ -352,15 +300,17 @@ export interface ServerRunResult {
   body: unknown;
 }
 
-/** Triggers a skill through the running server's admin API; undefined when no server is running. */
-export async function triggerViaServer(ops: Ops, input: { skill: Skill; payload: unknown; headers?: Record<string, string>; overrides?: { runner?: RunnerName; model?: string; effort?: string }; waitSeconds?: number }): Promise<ServerRunResult | undefined> {
+/** POSTs a JSON body to the running server's admin API; undefined when no server is running. */
+export async function postToServer(ops: Ops, path: string, body: unknown): Promise<ServerRunResult | undefined> {
   const running = await findRunningServer(ops.paths);
   if (!running) return undefined;
-  const response = await adminRequest(running.baseUrl, ops.secrets(), `/skills/${input.skill.name}/run`, {
-    method: "POST",
-    body: { payload: input.payload, headers: input.headers, runner: input.overrides?.runner, model: input.overrides?.model, effort: input.overrides?.effort, wait: input.waitSeconds ?? 0 },
-  });
+  const response = await adminRequest(running.baseUrl, ops.secrets(), path, { method: "POST", body });
   return { baseUrl: running.baseUrl, status: response.status, body: response.body };
+}
+
+/** Triggers a skill through the running server's admin API; undefined when no server is running. */
+export async function triggerViaServer(ops: Ops, input: { skill: Skill; payload: unknown; headers?: Record<string, string>; overrides?: { runner?: RunnerName; model?: string; effort?: string }; waitSeconds?: number }): Promise<ServerRunResult | undefined> {
+  return postToServer(ops, `/skills/${input.skill.name}/run`, { payload: input.payload, headers: input.headers, runner: input.overrides?.runner, model: input.overrides?.model, effort: input.overrides?.effort, wait: input.waitSeconds ?? 0 });
 }
 
 // ---------------------------------------------------------------------------
@@ -435,3 +385,5 @@ export async function sendSignedWebhook(ops: Ops, input: { skill: Skill; payload
 }
 
 export { publicJob };
+export * from "./manual.js";
+export * from "./replay.js";

@@ -518,6 +518,60 @@ describe("HTTP surface", () => {
     expect((await fetch(`${base}/jobs?outcome=nope`, { headers: auth })).status).toBe(400);
   });
 
+  it("replays deliveries and jobs as new jobs with trigger replay", async () => {
+    const auth = { authorization: `Bearer ${ADMIN}`, "content-type": "application/json" };
+    // A filtered delivery is skipped again on replay unless the filters are skipped.
+    await fetch(`${base}/hooks/filtered`, { method: "POST", body: '{"action":"deleted","marker":"rp-skip"}', headers: { authorization: "Bearer f", "content-type": "application/json" } });
+    const skippedList = (await json(await fetch(`${base}/deliveries?skill=filtered&outcome=skipped&limit=1`, { headers: auth }))) as unknown as { deliveries: { id: string }[] };
+    const skippedId = skippedList.deliveries[0]!.id;
+    const again = await fetch(`${base}/deliveries/${skippedId}/replay`, { method: "POST", headers: auth, body: "{}" });
+    expect(again.status).toBe(200);
+    expect(await json(again)).toMatchObject({ ok: true, skipped: true, replay_of: { delivery: skippedId } });
+    const forced = await json(await fetch(`${base}/deliveries/${skippedId}/replay`, { method: "POST", headers: auth, body: JSON.stringify({ skip_filters: true, wait: 20 }) }));
+    expect(forced).toMatchObject({ ok: true, status: "succeeded", replay_of: { delivery: skippedId } });
+    const replayJob = store.get(String(forced.job_id))!;
+    expect(replayJob).toMatchObject({ trigger: "replay", replay_of: { delivery: skippedId }, source: { method: "REPLAY", ip: "127.0.0.1" } });
+    expect(replayJob.delivery_id).toBeUndefined();
+    expect(replayJob.fingerprint).toBeUndefined();
+    const event = store.readEvent(replayJob.id);
+    expect(event).toMatchObject({ trigger: "replay", body_kind: "json", payload: { action: "deleted", marker: "rp-skip" } });
+    expect(event.headers["x-skillhook-replay-of"]).toBe(skippedId);
+    expect(readFileSync(store.pathsFor(replayJob.id).prompt, "utf8")).toContain("replay");
+    // A rejected delivery needs force; overrides apply.
+    await fetch(`${base}/hooks/hello`, { method: "POST", body: '{"name":"rp-401"}', headers: { "content-type": "application/json" } });
+    const rejectedList = (await json(await fetch(`${base}/deliveries?skill=hello&outcome=rejected&limit=1`, { headers: auth }))) as unknown as { deliveries: { id: string }[] };
+    const rejectedId = rejectedList.deliveries[0]!.id;
+    const needsForce = await fetch(`${base}/deliveries/${rejectedId}/replay`, { method: "POST", headers: auth, body: "{}" });
+    expect(needsForce.status).toBe(409);
+    expect((await json(needsForce)).error).toBe("replay_needs_force");
+    const forcedRejected = await json(await fetch(`${base}/deliveries/${rejectedId}/replay`, { method: "POST", headers: auth, body: JSON.stringify({ force: true, wait: 20, model: "sonnet" }) }));
+    expect(forcedRejected).toMatchObject({ status: "succeeded", replay_of: { delivery: rejectedId } });
+    expect(String(forcedRejected.result)).toContain("model=sonnet");
+    // An accepted delivery replays through its job, a job replays directly, and neither is folded into an in-flight twin.
+    const original = await json(await fetch(`${base}/hooks/hello?wait=20`, { method: "POST", body: '{"name":"rp-job"}', headers: { authorization: "Bearer hello-secret", "content-type": "application/json" } }));
+    const viaJob = await json(await fetch(`${base}/jobs/${original.job_id}/replay`, { method: "POST", headers: auth, body: JSON.stringify({ wait: 20 }) }));
+    expect(viaJob).toMatchObject({ status: "succeeded", replay_of: { job: original.job_id } });
+    expect(viaJob.job_id).not.toBe(original.job_id);
+    const acceptedList = (await json(await fetch(`${base}/deliveries?skill=hello&outcome=accepted&limit=10`, { headers: auth }))) as unknown as { deliveries: { id: string; job_id: string }[] };
+    const acceptedDelivery = acceptedList.deliveries.find((d) => d.job_id === original.job_id)!;
+    const viaDelivery = await json(await fetch(`${base}/deliveries/${acceptedDelivery.id}/replay`, { method: "POST", headers: auth, body: "{}" }));
+    expect(viaDelivery).toMatchObject({ status: "queued", replay_of: { delivery: acceptedDelivery.id, job: original.job_id } });
+    await waitForJob(String(viaDelivery.job_id));
+    const twin = await json(await fetch(`${base}/hooks/twin`, { method: "POST", body: '{"replay":"twin"}', headers: { authorization: "Bearer tw", "content-type": "application/json" } }));
+    const twinReplay = await json(await fetch(`${base}/jobs/${twin.job_id}/replay`, { method: "POST", headers: auth, body: "{}" }));
+    expect(twinReplay.status).toBe("queued");
+    expect(twinReplay.job_id).not.toBe(twin.job_id);
+    await waitForJob(String(twin.job_id), 25_000);
+    await waitForJob(String(twinReplay.job_id), 25_000);
+    expect((await fetch(`${base}/jobs/20200101T000000Z-aaaaaa/replay`, { method: "POST", headers: auth, body: "{}" })).status).toBe(404);
+    expect((await fetch(`${base}/deliveries/20200101T000000Z-aaaaaa/replay`, { method: "POST", headers: auth, body: "{}" })).status).toBe(404);
+    expect((await fetch(`${base}/jobs/${original.job_id}/replay`, { method: "POST", headers: auth, body: JSON.stringify({ runner: "gemini" }) })).status).toBe(400);
+    expect((await fetch(`${base}/jobs/${original.job_id}/replay`, { method: "POST", headers: { "x-forwarded-for": "203.0.113.1", "content-type": "application/json" }, body: "{}" })).status).toBe(401);
+    const replays = (await json(await fetch(`${base}/jobs?trigger=replay&limit=20`, { headers: auth }))) as unknown as { jobs: { trigger: string }[] };
+    expect(replays.jobs.length).toBeGreaterThanOrEqual(5);
+    expect(replays.jobs.every((j) => j.trigger === "replay")).toBe(true);
+  });
+
   it("pages and filters jobs", async () => {
     const auth = { authorization: `Bearer ${ADMIN}` };
     const first = (await json(await fetch(`${base}/jobs?limit=2`, { headers: auth }))) as unknown as { jobs: { id: string }[]; next_after: string | null };

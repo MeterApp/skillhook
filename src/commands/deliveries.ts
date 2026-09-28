@@ -1,12 +1,15 @@
 import { DELIVERY_OUTCOMES, readDeliveryBody, type DeliveryOutcome } from "../delivery-log.js";
+import { replayCommand } from "./replay.js";
 import { bool, CommandError, num, relativeTime, str, table, UsageError, type Ctx } from "./shared.js";
 
 const USAGE = `Usage:
   skillhook deliveries list [--skill NAME] [--outcome ${DELIVERY_OUTCOMES.join("|")}] [--since ISO] [--after ID] [--limit N]
   skillhook deliveries show <id> [--body]
+  skillhook deliveries replay <id> [--force] [--skip-filters] [--runner R] [--model M] [--effort E] [--wait S]
 
 Every request to /hooks/<skill> the server received, with what became of it: accepted (a job was created), duplicate,
-in_flight, skipped (a when filter), rejected (401, 404, 413, 429, 503, …), challenge (Slack URL verification), error.`;
+in_flight, skipped (a when filter), rejected (401, 404, 413, 429, 503, …), challenge (Slack URL verification), error.
+replay runs the original request again through the skill as it is now (no signature check; --force for a rejected one).`;
 
 export async function deliveriesCommand(ctx: Ctx): Promise<number> {
   const [sub = "list", id] = ctx.args;
@@ -52,6 +55,9 @@ export async function deliveriesCommand(ctx: Ctx): Promise<number> {
       ctx.print(lines.join("\n"), { delivery, ...(wantBody ? { body: body ?? null } : {}) });
       return 0;
     }
+    case "replay":
+    case "rerun":
+      return replayCommand(ctx, "delivery", id, USAGE);
     default:
       throw new UsageError(`Unknown deliveries subcommand "${sub}"`, USAGE);
   }

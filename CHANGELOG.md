@@ -41,6 +41,16 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
   response (`outcome`, `response`), `GET /jobs?outcome=`, `?include=response`, the `response`
   artifact, `skillhook jobs list --outcome` (new column) and `jobs show --response`, the MCP
   `list_jobs` filter and `skillhook_status`.
+- Replay. `skillhook deliveries replay <id>` (`POST /deliveries/<id>/replay`, MCP `replay_delivery`)
+  runs a recorded delivery again through the skill as it is now, and `skillhook jobs replay <id>`
+  (`POST /jobs/<id>/replay`, MCP `replay_job`) does the same for any earlier job: a new job with
+  `trigger: replay`, `source.method: REPLAY` and `replay_of: {delivery, job}`, the original payload,
+  redacted headers (plus `x-skillhook-replay-of`), query string and sender IP. The signature is not
+  checked again (a delivery that was rejected needs `--force` / `force`), `when` filters apply unless
+  `--skip-filters`, nothing is de-duplicated, and `runner`/`model`/`effort` can be overridden. Through
+  the running server when there is one, in the CLI process otherwise. The guardrails tell the agent it
+  is replaying. `src/manual.ts` (manual runs) and `src/replay.ts` (the planner) are new leaf modules,
+  re-exported from `src/ops.ts`.
 
 ## 0.3.0 (2026-09-23)
 

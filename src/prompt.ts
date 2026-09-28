@@ -66,6 +66,7 @@ export function renderTemplate(text: string, vars: Record<string, unknown>, payl
 function describeTrigger(trigger: WebhookEvent["trigger"]): string {
   if (trigger === "webhook") return "triggered by an inbound webhook";
   if (trigger === "schedule") return "started by a schedule (no inbound request: there is no external sender, and the payload only says which slot fired)";
+  if (trigger === "replay") return "replaying an earlier delivery at an operator's request (the original sender is not waiting for this run; check what earlier runs already did before repeating side effects)";
   return `triggered by an inbound ${trigger} request`;
 }
 

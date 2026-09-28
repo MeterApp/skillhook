@@ -55,4 +55,11 @@ describe("buildPrompt", () => {
     expect(buildPrompt({ ...input("Go.", {}), skill: file }).guardrails).toContain("Before you finish, write /jobs/j1/response.json");
     expect(renderTemplate("{{response_path}}", { response_path: "/r.json" }, {}).text).toBe("/r.json");
   });
+
+  it("describes a replay as such in the guardrails", () => {
+    const base = input("Go.", {});
+    const built = buildPrompt({ ...base, event: { ...base.event, trigger: "replay" } });
+    expect(built.guardrails).toContain("replaying an earlier delivery");
+    expect(built.prompt).toContain("- trigger: replay");
+  });
 });

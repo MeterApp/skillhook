@@ -178,6 +178,32 @@ describe("cli", () => {
     expect(jobsTable.out()).toContain("outcome");
   });
 
+  it("replays a recorded delivery and an earlier job in this process when no server is running", async () => {
+    const { DeliveryLog } = await import("./delivery-log.js");
+    const log = new DeliveryLog(paths.jobsDir, () => ({ max: 100, store_bodies: true, body_max_bytes: 10_000 }));
+    const base = { skill: "hello", received_at: "2026-09-28T12:05:00.000Z", ip: "203.0.113.9", method: "POST", path: "/hooks/hello", query: {}, headers: { "content-type": "application/json" }, content_type: "application/json", bytes: 17, body_kind: "json" as const, duration_ms: 1 };
+    const skipped = log.record({ ...base, outcome: "skipped", http_status: 200, code: "skipped", reason: "payload.action equals \"x\": missing", rawBody: Buffer.from('{"name":"Replay"}') });
+    const r = io();
+    expect(await main(["deliveries", "replay", skipped.id, ...dir, "--json"], r.cli)).toBe(0);
+    expect(r.json().via).toBe("local");
+    const replayed = r.json().job as { id: string; trigger: string; status: string; replay_of: { delivery: string }; source: { method: string; ip: string } };
+    expect(replayed).toMatchObject({ trigger: "replay", status: "succeeded", replay_of: { delivery: skipped.id }, source: { method: "REPLAY", ip: "203.0.113.9" } });
+    const rejected = log.record({ ...base, outcome: "rejected", http_status: 401, code: "missing_token", reason: "no bearer token", rawBody: Buffer.from('{"name":"R2"}') });
+    const refused = io();
+    expect(await main(["deliveries", "replay", rejected.id, ...dir, "--json"], refused.cli)).toBe(1);
+    expect(String(refused.json().error)).toContain("force");
+    const forced = io();
+    expect(await main(["deliveries", "replay", rejected.id, ...dir, "--force", "--json"], forced.cli)).toBe(0);
+    expect((forced.json().job as { status: string }).status).toBe("succeeded");
+    const j = io();
+    expect(await main(["jobs", "replay", replayed.id, ...dir, "--json"], j.cli)).toBe(0);
+    expect((j.json().job as { replay_of: { job: string }; trigger: string }).replay_of).toEqual({ job: replayed.id });
+    const missing = io();
+    expect(await main(["jobs", "replay", "20200101T000000Z-zzzzzz", ...dir, "--json"], missing.cli)).toBe(1);
+    const noId = io();
+    expect(await main(["deliveries", "replay", ...dir, "--json"], noId.cli)).toBe(2);
+  });
+
   it("links a repository's skillhook.yaml, lists and runs its hooks, and unlinks it", async () => {
     const repo = path.join(paths.home, "repo");
     const bare = path.join(paths.home, "bare");

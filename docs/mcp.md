@@ -92,6 +92,8 @@ Every tool returns a text block (a one-line summary followed by JSON) and the sa
 | `cancel_job` | `id` | Cancel a queued or running job through the running server's admin API. Fails when no server is running (jobs started by `skillhook run` must be stopped by killing that process). |
 | `list_deliveries` | optional `skill`, `outcome` (`accepted`, `duplicate`, `in_flight`, `skipped`, `rejected`, `challenge`, `error`), `since`, `after`, `limit` (default 20, max 200) | Every webhook the server received, newest first, with what became of it: the answer to "why did that webhook not run". |
 | `get_delivery` | `id`; optional `include_body` | One delivery record, plus the body the log kept for a refused delivery (or the payload of the job an accepted one created). |
+| `replay_delivery` | `id`; optional `force` (a rejected delivery), `skip_filters`, `runner`, `model`, `effort`, `wait_seconds` (default 120) | Runs a recorded delivery again through the skill as it is now: a new job with trigger `replay`, no signature check, `when` filters unless skipped, never de-duplicated. Through the running server when there is one, otherwise in-process. |
+| `replay_job` | `id`; optional `skip_filters`, `runner`, `model`, `effort`, `wait_seconds` | The same for an earlier job's request (`replay_of: {job}`). |
 
 ### Secrets
 

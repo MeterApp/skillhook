@@ -9,10 +9,13 @@ import { describeCondition, evaluateConditions } from "./filters.js";
 import { newJobId } from "./ids.js";
 import { isTerminal, JOB_ARTIFACTS, JOB_STATUSES, type JobArtifact, type JobRecord, type JobStatus, type JobStore } from "./jobs.js";
 import type { Logger } from "./logger.js";
+import { createManualJob } from "./manual.js";
 import { deliveryFingerprint, parseBody, redactHeaders, TRIGGERS, type BodyKind, type Trigger, type WebhookEvent } from "./payload.js";
+import { planReplay, ReplayError, replayOfFor, type ReplayPlan } from "./replay.js";
 import { JOB_OUTCOMES, type JobOutcome } from "./response.js";
 import type { JobQueue } from "./queue.js";
 import { resolveRunSettings } from "./run.js";
+import { RunnerNameSchema } from "./config.js";
 import type { SkillRegistry } from "./registry.js";
 import { nextRun } from "./schedule.js";
 import type { ScheduleStatus } from "./scheduler.js";
@@ -512,6 +515,31 @@ export function createServer(deps: ServerDeps): Server {
     return job;
   }
 
+  /** `POST /deliveries/<id>/replay` and `POST /jobs/<id>/replay`: the original request again, through the skill as it is now, as a new job. */
+  async function replay(req: IncomingMessage, res: ServerResponse, url: URL, headers: Record<string, string>, source: "delivery" | "job", id: string): Promise<void> {
+    const rawBody = await readBody(req, config.max_body_bytes);
+    const body = rawBody.length ? (parseBody(headers["content-type"], rawBody).payload as Record<string, unknown>) : {};
+    if (!isPlainObject(body)) throw new HttpError(400, "bad_request", "expected a JSON object body");
+    if (body.runner !== undefined && !RunnerNameSchema.safeParse(body.runner).success) throw new HttpError(400, "bad_request", "runner must be claude, codex or shell");
+    let plan: ReplayPlan;
+    try {
+      plan = planReplay({ config, store, registry, deliveryLog: deps.deliveryLog }, { source, id, skipFilters: body.skip_filters === true, force: body.force === true, overrides: { runner: body.runner as RunnerName | undefined, model: body.model as string | undefined, effort: body.effort as string | undefined } });
+    } catch (error) {
+      if (error instanceof ReplayError) throw new HttpError(error.status, error.code, error.message);
+      throw error;
+    }
+    const replayOf = replayOfFor(plan.origin);
+    if (!plan.ok) {
+      logger.info("replay skipped by filter", { skill: plan.skill.name, replay_of: replayOf, reason: plan.reason });
+      return send(res, 200, { ok: true, skipped: true, reason: plan.reason, replay_of: replayOf });
+    }
+    const job = createManualJob({ config, store }, plan.input);
+    logger.info("replay accepted", { skill: job.skill, job: job.id, replay_of: replayOf, trigger: job.trigger });
+    queue.enqueue(job);
+    const wait = Math.min(Number(body.wait ?? 0) || parseWait(url, headers, config.max_wait_seconds), config.max_wait_seconds);
+    return respondWithJob(res, job, wait, { replay_of: replayOf });
+  }
+
   /** `GET /jobs/<id>/events`: a `status` snapshot, then `stdout`/`stderr` chunks as the files grow and `status` updates from the bus, then `end`. */
   function streamJob(req: IncomingMessage, res: ServerResponse, url: URL, job: JobRecord): void {
     const wanted = (url.searchParams.get("streams") ?? "stdout").split(",").map((s) => s.trim()).filter(Boolean);
@@ -648,6 +676,7 @@ export function createServer(deps: ServerDeps): Server {
         if (since && Number.isNaN(Date.parse(since))) throw new HttpError(400, "bad_request", "since must be an ISO-8601 instant");
         return send(res, 200, deps.deliveryLog.list({ skill: url.searchParams.get("skill") ?? undefined, outcome: outcome as DeliveryOutcome | undefined, since, after: url.searchParams.get("after") ?? undefined, limit: pageLimit(url) }));
       }
+      if (segments.length === 3 && segments[2] === "replay" && method === "POST") return replay(req, res, url, headers, "delivery", segments[1] as string);
       if (segments.length === 2 && method === "GET") {
         const delivery = deps.deliveryLog.get(segments[1] as string);
         if (!delivery) throw new HttpError(404, "unknown_delivery", "unknown delivery");
@@ -701,6 +730,7 @@ export function createServer(deps: ServerDeps): Server {
         return send(res, 200, { job: publicJob(job), ...(include.length ? { artifacts } : {}) });
       }
       if (segments.length === 3 && segments[2] === "events" && method === "GET") return streamJob(req, res, url, job);
+      if (segments.length === 3 && segments[2] === "replay" && method === "POST") return replay(req, res, url, headers, "job", id);
       if (segments.length === 4 && segments[2] === "artifacts" && method === "GET") return sendArtifact(res, url, job, segments[3] as string);
       if (segments.length === 3 && segments[2] === "cancel" && method === "POST") {
         const cancelled = queue.cancel(id);

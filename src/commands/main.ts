@@ -49,8 +49,9 @@ Running
   send <skill> [--payload …] [--wait S] [--url BASE|--public|--local] [--header "K: v"]...   POST a signed test webhook
   schedules list | next <name> [--count N] | run <name> [--wait S]   Skills with a schedule: next and last runs; fire one now
   jobs list [--skill S] [--status ST] [--trigger T] [--since ISO] [--after ID] [--limit N] | show <id> [--result|--prompt|--stdout|--stderr] | logs <id> [-f]
-  jobs cancel <id> | resume <id> [--exec] | path <id> | prune [--keep N]
+  jobs cancel <id> | replay <id> [--skip-filters] [--wait S] | resume <id> [--exec] | path <id> | prune [--keep N]
   deliveries list [--skill S] [--outcome O] [--since ISO] [--after ID] [--limit N] | show <id> [--body]   Every webhook received, whatever became of it
+  deliveries replay <id> [--force] [--skip-filters] [--runner R] [--model M] [--wait S]   Run a recorded delivery again (no signature check)
 
 Agents
   mcp [--print-config]                                     MCP server over stdio (tools for Claude Code, Codex, Cursor, …)

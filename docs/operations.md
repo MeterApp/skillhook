@@ -130,6 +130,10 @@ skillhook jobs cancel <id>           # via the running server's admin API
 ```
 
 ```bash
+skillhook jobs replay <id> [--skip-filters] [--runner R] [--model M] [--effort E] [--wait S]   # the same request again, as a new job
+```
+
+```bash
 skillhook jobs resume <id> [--exec]  # prints (or runs) `cd <cwd> && claude --resume <session>` / `codex resume <thread>`
 ```
 
@@ -157,7 +161,13 @@ skillhook deliveries list [--skill NAME] [--outcome accepted|duplicate|in_flight
 skillhook deliveries show <id> [--body]
 ```
 
+```bash
+skillhook deliveries replay <id> [--force] [--skip-filters] [--runner R] [--model M] [--effort E] [--wait S]
+```
+
 When a sender reports failures, `skillhook deliveries list --outcome rejected` shows what arrived and why it was refused; `--json` gives the records, `GET /deliveries` the same over the admin API ([api.md](api.md#get-deliveries)), and the MCP tools `list_deliveries` / `get_delivery` the same to an agent. The running server also publishes each record as a `delivery.received` event.
+
+Once the cause is fixed (a secret pasted, a filter corrected, a skill installed), `deliveries replay <id>` runs the recorded request again through the skill as it is now: a new job with `trigger: replay` and `replay_of`, the original payload, headers and query, no signature check (`--force` for a delivery that was rejected, since its body was never verified), `when` filters applied unless `--skip-filters`, never de-duplicated. `jobs replay <id>` does the same for any earlier job. Both go through the running server when there is one (`POST /deliveries/<id>/replay`, `POST /jobs/<id>/replay`; MCP `replay_delivery`, `replay_job`) and run in the CLI process otherwise. The agent is told it is replaying, so a well-written skill checks what earlier runs already did before repeating side effects.
 
 ## Configuration
 

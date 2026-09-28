@@ -144,7 +144,7 @@ Every runner gets a freshly built environment:
 | `PATH` | The server's `PATH` followed by `~/.local/bin`, `~/.npm-global/bin`, `~/.bun/bin`, `~/.cargo/bin`, `/opt/homebrew/bin`, `/opt/homebrew/sbin`, `/usr/local/bin`, `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`, so launchd's minimal PATH still finds `claude`, `codex`, `gh`, `node`. |
 | Runner credentials | Every variable whose name starts with `ANTHROPIC_`, `CLAUDE_`, `OPENAI_` or `CODEX_`, plus `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `https_proxy`, `http_proxy`, `no_proxy`. Values come from `.env` merged with the server environment. |
 | Explicit | Names listed in `env_passthrough` (config) and the skill's `env:`. |
-| Job | `SKILLHOOK_JOB_ID`, `SKILLHOOK_JOB_DIR`, `SKILLHOOK_SKILL`, `SKILLHOOK_SKILL_DIR`, `SKILLHOOK_PAYLOAD_PATH`, `SKILLHOOK_EVENT_PATH`, `SKILLHOOK_PROMPT_PATH`, `SKILLHOOK_RESPONSE_PATH` (where the agent reports the outcome), `SKILLHOOK_TRIGGER` (`webhook`/`cli`/`mcp`/`api`/`schedule`), `SKILLHOOK_RUNNER`. |
+| Job | `SKILLHOOK_JOB_ID`, `SKILLHOOK_JOB_DIR`, `SKILLHOOK_SKILL`, `SKILLHOOK_SKILL_DIR`, `SKILLHOOK_PAYLOAD_PATH`, `SKILLHOOK_EVENT_PATH`, `SKILLHOOK_PROMPT_PATH`, `SKILLHOOK_RESPONSE_PATH` (where the agent reports the outcome), `SKILLHOOK_TRIGGER` (`webhook`/`cli`/`mcp`/`api`/`schedule`/`replay`), `SKILLHOOK_RUNNER`. |
 | Never implicit | `SKILLHOOK_ADMIN_TOKEN`, `SKILLHOOK_SECRET_*` (only if a skill lists them in `env:`). |
 
 A `skillhook serve` started from inside an interactive Claude Code session does not leak that session's `CLAUDE_CODE_*` variables to child runs: prefix passthrough applies to `.env` only, and only the credential names listed above are copied from the server's environment.

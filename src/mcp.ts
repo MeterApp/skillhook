@@ -9,7 +9,7 @@ import { listExamples } from "./examples.js";
 import { JOB_ARTIFACTS, JOB_STATUSES, type JobArtifact, type JobStatus } from "./jobs.js";
 import { TRIGGERS, type Trigger } from "./payload.js";
 import { JOB_OUTCOMES, type JobOutcome } from "./response.js";
-import { addExampleSkill, createOps, createSkill, generateSecretFor, initProject, linkProject, listProjects, publicJob, resolveBaseUrl, runSkillLocally, sendSignedWebhook, setSecret, triggerViaServer, unlinkProject, webhookUrl, type LinkResult, type Ops } from "./ops.js";
+import { addExampleSkill, createOps, createSkill, generateSecretFor, initProject, linkProject, listProjects, planReplay, postToServer, publicJob, resolveBaseUrl, runSkillLocally, sendSignedWebhook, setSecret, triggerViaServer, unlinkProject, webhookUrl, type LinkResult, type Ops } from "./ops.js";
 import type { Paths } from "./paths.js";
 import { listSchedules, scheduleStatus } from "./scheduler.js";
 import { skillSummary } from "./server.js";
@@ -27,7 +27,7 @@ Skills live in <home>/skills/<name>/SKILL.md; the \`skillhook:\` frontmatter blo
 A repository can declare its own hooks in a version-controlled skillhook.yaml (webhook name → run: shell command | skill: SKILL.md directory | prompt: inline instructions); link_project registers it so the hooks are served, list_projects shows what runs from which webhook.
 A \`schedule:\` key (cron expression, optional timezone/catch_up/overlap) on any skill or hook makes the running server fire it on time without a webhook; \`webhook: false\` makes it schedule-only. list_schedules shows the next and last runs.
 Jobs are directories under <home>/jobs/<id> with payload.json, prompt.md, stdout.log, result.md and, when the agent reported one, response.json. A job's \`status\` says how the process ended; its \`outcome\` (completed, partial, needs_human, nothing_to_do, failed, unknown) says whether the task was done, as reported by the agent through response.json or a structured answer (\`response: { mode: structured }\` in the skill).
-Every webhook the server received, including rejected, filtered and duplicate ones, is in the delivery log: list_deliveries and get_delivery show what arrived and why it did not run.`;
+Every webhook the server received, including rejected, filtered and duplicate ones, is in the delivery log: list_deliveries and get_delivery show what arrived and why it did not run; replay_delivery (or replay_job) runs it again through the skill as it is now.`;
 
 type ToolResult = { content: { type: "text"; text: string }[]; structuredContent?: Record<string, unknown>; isError?: boolean };
 
@@ -234,6 +234,35 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
       const page = o.deliveryLog.list({ skill, outcome, since, after, limit: limit ?? 20 });
       return ok({ deliveries: page.deliveries, next_after: page.next_after });
     }),
+  );
+
+  const replayInput = { id: z.string(), skip_filters: z.boolean().optional().describe("run even when the skill's `when` conditions do not match the original request"), runner: z.enum(["claude", "codex", "shell"]).optional(), model: z.string().optional(), effort: z.string().optional(), wait_seconds: z.number().int().min(0).max(1800).optional().describe("default 120") };
+  const replayTool = async (source: "delivery" | "job", input: { id: string; force?: boolean; skip_filters?: boolean; runner?: "claude" | "codex" | "shell"; model?: string; effort?: string; wait_seconds?: number }): Promise<ToolResult> => {
+    const o = ops();
+    const wait = input.wait_seconds ?? 120;
+    const overrides = { runner: input.runner, model: input.model, effort: input.effort };
+    const viaServer = await postToServer(o, `/${source === "delivery" ? "deliveries" : "jobs"}/${input.id}/replay`, { force: input.force, skip_filters: input.skip_filters, ...overrides, wait });
+    if (viaServer) {
+      const body = viaServer.body as Record<string, unknown>;
+      if (viaServer.status >= 400) throw new Error(`${String(body.error)}: ${String(body.message)}`);
+      return ok({ via: "server", base_url: viaServer.baseUrl, http_status: viaServer.status, ...body }, body.skipped ? `Not replayed: ${String(body.reason)} (skip_filters runs it anyway)` : `Job ${String(body.job_id)}: ${String(body.status)}${body.outcome ? ` (${String(body.outcome)})` : ""}`);
+    }
+    const plan = planReplay(o, { source, id: input.id, skipFilters: input.skip_filters, force: input.force, overrides });
+    if (!plan.ok) return ok({ via: "local", ok: true, skipped: true, reason: plan.reason }, `Not replayed: ${plan.reason} (skip_filters runs it anyway)`);
+    const job = await runSkillLocally(o, { ...plan.input, waitMs: wait * 1000 });
+    return ok({ via: "local", job: publicJob(job), job_dir: o.store.pathsFor(job.id).dir }, `Job ${job.id}: ${job.status}${job.outcome ? ` (${job.outcome})` : ""}${job.error ? ` (${job.error})` : ""}`);
+  };
+
+  server.registerTool(
+    "replay_delivery",
+    { title: "Replay delivery", description: "Runs a recorded delivery again through the skill as it is now, as a new job with trigger `replay`: the original payload, headers and query, no signature check, `when` filters applied unless skip_filters, never de-duplicated. A delivery that was rejected needs `force` (its body was never verified). Uses the running server when there is one, otherwise runs in-process.", inputSchema: z.object({ ...replayInput, force: z.boolean().optional().describe("replay a delivery that was rejected or errored") }) },
+    wrap((input) => replayTool("delivery", input)),
+  );
+
+  server.registerTool(
+    "replay_job",
+    { title: "Replay job", description: "Runs the request an earlier job received again, as a new job with trigger `replay` and `replay_of` pointing at the original (same payload, headers and query; `when` filters applied unless skip_filters; runner/model/effort may be overridden).", inputSchema: z.object(replayInput) },
+    wrap((input) => replayTool("job", input)),
   );
 
   server.registerTool(

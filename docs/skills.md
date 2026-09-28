@@ -247,7 +247,7 @@ The Markdown body is rendered with a minimal template engine before it is sent t
 | `{{received_at}}` | ISO-8601 timestamp of the delivery. |
 | `{{source_ip}}` | Client IP (taken from `X-Forwarded-For`, `X-Real-IP` or `CF-Connecting-IP` when the request came through a loopback proxy such as Tailscale). |
 | `{{delivery_id}}` | Delivery id (empty when none). |
-| `{{trigger}}` | `webhook`, `cli` (`skillhook run`), `mcp` (MCP `run_skill` without a server), `api` (`POST /skills/<name>/run`, including MCP runs through a running server) or `schedule` (a `schedule:` slot fired; the payload is then skillhook's `{scheduled_for, schedule}` object, see [schedules.md](schedules.md)). |
+| `{{trigger}}` | `webhook`, `cli` (`skillhook run`), `mcp` (MCP `run_skill` without a server), `api` (`POST /skills/<name>/run`, including MCP runs through a running server), `schedule` (a `schedule:` slot fired; the payload is then skillhook's `{scheduled_for, schedule}` object, see [schedules.md](schedules.md)) or `replay` (an operator replayed an earlier delivery or job; the headers carry `x-skillhook-replay-of`). |
 
 Unknown placeholders render as an empty string. Headers whose name matches `signature`, `token`, `secret`, `api-key`/`apikey`, `authorization`, `cookie` or `password` are removed before they reach `{{headers}}`, `event.json` or the agent.
 

@@ -6,6 +6,7 @@ import { TRIGGERS, type Trigger } from "../payload.js";
 import { JOB_OUTCOMES, jobOutcome, type JobOutcome } from "../response.js";
 import { publicJob } from "../server.js";
 import { sleep } from "../util.js";
+import { replayCommand } from "./replay.js";
 import { bool, CommandError, formatDuration, num, relativeTime, str, table, UsageError, type Ctx } from "./shared.js";
 
 const USAGE = `Usage:
@@ -13,6 +14,7 @@ const USAGE = `Usage:
   skillhook jobs show <id> [--result] [--response] [--prompt] [--stdout] [--stderr]
   skillhook jobs logs <id> [--follow|-f] [--stderr]
   skillhook jobs cancel <id>
+  skillhook jobs replay <id> [--skip-filters] [--runner R] [--model M] [--effort E] [--wait S]   run the same request again as a new job
   skillhook jobs resume <id> [--exec]      print (or run) the command that reopens the agent session
   skillhook jobs path <id>
   skillhook jobs prune [--keep N]`;
@@ -52,6 +54,7 @@ export async function jobsCommand(ctx: Ctx): Promise<number> {
         `  runner:   ${job.runner}${job.model ? ` (${job.model})` : ""}${job.effort ? ` effort=${job.effort}` : ""}`,
         `  trigger:  ${job.trigger} from ${job.source.ip}${job.source.user_agent ? ` (${job.source.user_agent})` : ""}`,
         `  created:  ${job.created_at}${job.duration_ms !== undefined ? `  took ${formatDuration(job.duration_ms)}` : ""}`,
+        ...(job.replay_of ? [`  replays:  ${[job.replay_of.delivery ? `delivery ${job.replay_of.delivery}` : "", job.replay_of.job ? `job ${job.replay_of.job}` : ""].filter(Boolean).join(", ")}`] : []),
         ...(job.cwd ? [`  cwd:      ${job.cwd}`] : []),
         ...(job.cost_usd !== undefined ? [`  cost:     $${job.cost_usd.toFixed(4)}`] : []),
         ...(job.session_id ? [`  session:  ${job.session_id}`] : []),
@@ -128,6 +131,9 @@ export async function jobsCommand(ctx: Ctx): Promise<number> {
       ctx.print(response.body.ok ? `Cancelling ${job.id}` : `Could not cancel ${job.id}: ${JSON.stringify(response.body)}`, { ...response.body, http_status: response.status });
       return response.body.ok ? 0 : 1;
     }
+    case "replay":
+    case "rerun":
+      return replayCommand(ctx, "job", id, USAGE);
     case "resume": {
       const job = store.get(requireId(id));
       if (!job) throw new CommandError(`Unknown job ${id}`);

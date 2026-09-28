@@ -265,7 +265,7 @@ Rate-limit windows are fixed one-minute buckets per client IP, kept in memory.
 - `Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN`, from anywhere the server is reachable (including the public URL); or
 - no token at all, only for direct loopback connections that carry no proxy header (`X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Real-IP`, `CF-Connecting-IP`, `Forwarded`, `Via`, `Tailscale-User-Login`, `ngrok-trace-id`), which is how the CLI and the MCP server talk to the local server. A request that arrives through a tunnel always needs the token.
 
-`skillhook init` generates `SKILLHOOK_ADMIN_TOKEN`. Rotate it with `skillhook secret generate admin --force`. If it is unset, the admin API is reachable from localhost only and the server logs a warning at start. `POST /skills/<name>/run` bypasses webhook signature checks by design, so treat the admin token like a root credential for your skills.
+`skillhook init` generates `SKILLHOOK_ADMIN_TOKEN`. Rotate it with `skillhook secret generate admin --force`. If it is unset, the admin API is reachable from localhost only and the server logs a warning at start. `POST /skills/<name>/run` bypasses webhook signature checks by design, so treat the admin token like a root credential for your skills. The same goes for replays: `POST /deliveries/<id>/replay` and `POST /jobs/<id>/replay` run a recorded request again without checking its signature (it was checked when it arrived, or it was rejected and the caller has to pass `force`), so an admin can make any skill process any body the server ever received.
 
 ## Files on disk
 

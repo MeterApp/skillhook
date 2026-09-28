@@ -49,6 +49,8 @@ export interface JobRecord {
   outcome?: JobOutcome;
   /** What the agent reported (structured output or `response.json`): outcome, summary, links, data. */
   response?: JobResponse;
+  /** For `trigger: replay`: the delivery-log record and/or job this run repeats. */
+  replay_of?: { delivery?: string; job?: string };
   delivery_id?: string;
   /** Hash of payload + query for in-flight de-duplication of webhook deliveries (see `deliveryFingerprint`). */
   fingerprint?: string;
@@ -80,6 +82,7 @@ export interface CreateJobInput {
   source: JobSource;
   delivery_id?: string;
   fingerprint?: string;
+  replay_of?: { delivery?: string; job?: string };
   event: WebhookEvent;
   rawBody?: Buffer;
 }
@@ -160,6 +163,7 @@ export class JobStore {
       created_at: nowIso(),
       delivery_id: input.delivery_id,
       fingerprint: input.fingerprint,
+      replay_of: input.replay_of,
       source: input.source,
     };
     writeFileSync(paths.payload, `${payloadJson(input.event.payload)}\n`, { mode: 0o600 });
