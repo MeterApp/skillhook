@@ -1,11 +1,12 @@
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { unlinkSync } from "node:fs";
+import { closeSync, openSync, readSync, statSync, unlinkSync } from "node:fs";
 import { parseAuthorizationScheme, safeEqual, verifyRequest, type InboundRequest } from "./auth.js";
 import type { Config } from "./config.js";
 import { ADMIN_TOKEN_ENV, type Secrets } from "./env.js";
+import { EVENT_TYPES, type Events } from "./events.js";
 import { describeCondition, evaluateConditions } from "./filters.js";
 import { newJobId } from "./ids.js";
-import type { JobRecord, JobStatus, JobStore } from "./jobs.js";
+import { isTerminal, JOB_ARTIFACTS, type JobArtifact, type JobRecord, type JobStatus, type JobStore } from "./jobs.js";
 import type { Logger } from "./logger.js";
 import { deliveryFingerprint, parseBody, redactHeaders, type Trigger, type WebhookEvent } from "./payload.js";
 import type { JobQueue } from "./queue.js";
@@ -29,6 +30,8 @@ export interface ServerDeps {
   logger: Logger;
   /** Live schedule state for `/health` (admin); absent when the server runs without a scheduler. */
   schedules?: () => ScheduleStatus[];
+  /** The process-wide event bus: `GET /events` streams it and `GET /jobs/<id>/events` follows one job on it. */
+  events?: Events;
 }
 
 export interface ServerState {
@@ -128,6 +131,87 @@ function send(res: ServerResponse, status: number, body: unknown, headers: Recor
     ...headers,
   });
   res.end(text);
+}
+
+/** How often `GET /jobs/<id>/events` looks for new output and a finished job. */
+const STREAM_POLL_MS = 250;
+/** A stream of a job that already produced more than this starts at the tail. */
+const STREAM_TAIL_MAX = 512 * 1024;
+const SSE_HEARTBEAT_MS = 15_000;
+
+interface EventStream {
+  send(message: { id?: string; event?: string; data: unknown }): void;
+  /** Runs when the client goes away or `close()` is called. */
+  onClose(fn: () => void): void;
+  close(): void;
+  readonly closed: boolean;
+}
+
+/** Starts a `text/event-stream` response: headers now, one `data:` block per message, a comment every 15 s to keep proxies awake. */
+function openEventStream(req: IncomingMessage, res: ServerResponse): EventStream {
+  res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "x-accel-buffering": "no" });
+  res.flushHeaders();
+  res.write(": connected\n\n");
+  let closed = false;
+  const cleanups: (() => void)[] = [];
+  const heartbeat = setInterval(() => {
+    if (!closed) res.write(": ping\n\n");
+  }, SSE_HEARTBEAT_MS);
+  heartbeat.unref();
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(heartbeat);
+    for (const fn of cleanups.splice(0)) {
+      try {
+        fn();
+      } catch {
+        /* cleanup must not throw */
+      }
+    }
+    res.end();
+  };
+  res.on("close", close);
+  req.on("error", close);
+  return {
+    send(message) {
+      if (closed) return;
+      let text = "";
+      if (message.id !== undefined) text += `id: ${message.id}\n`;
+      if (message.event) text += `event: ${message.event}\n`;
+      text += `data: ${JSON.stringify(message.data)}\n\n`;
+      res.write(text);
+    },
+    onClose(fn) {
+      if (closed) fn();
+      else cleanups.push(fn);
+    },
+    close,
+    get closed() {
+      return closed;
+    },
+  };
+}
+
+/** `length` bytes of `file` from `offset`, as text. */
+function readFrom(file: string, offset: number, length: number): string {
+  if (length <= 0) return "";
+  const fd = openSync(file, "r");
+  try {
+    const buffer = Buffer.alloc(length);
+    const read = readSync(fd, buffer, 0, length, offset);
+    return buffer.subarray(0, read).toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function fileSize(file: string): number | undefined {
+  try {
+    return statSync(file).size;
+  } catch {
+    return undefined;
+  }
 }
 
 function parseWait(url: URL, headers: Record<string, string>, max: number): number {
@@ -330,6 +414,73 @@ export function createServer(deps: ServerDeps): Server {
     return job;
   }
 
+  /** `GET /jobs/<id>/events`: a `status` snapshot, then `stdout`/`stderr` chunks as the files grow and `status` updates from the bus, then `end`. */
+  function streamJob(req: IncomingMessage, res: ServerResponse, url: URL, job: JobRecord): void {
+    const wanted = (url.searchParams.get("streams") ?? "stdout").split(",").map((s) => s.trim()).filter(Boolean);
+    for (const name of wanted) if (name !== "stdout" && name !== "stderr") throw new HttpError(400, "bad_request", `unknown stream "${name}" (stdout, stderr)`);
+    const streams = wanted as ("stdout" | "stderr")[];
+    const files = store.pathsFor(job.id);
+    const offsets: Record<"stdout" | "stderr", number> = { stdout: 0, stderr: 0 };
+    const stream = openEventStream(req, res);
+    const pump = () => {
+      for (const name of streams) {
+        const size = fileSize(files[name]);
+        if (size === undefined || size <= offsets[name]) continue;
+        if (offsets[name] === 0 && size > STREAM_TAIL_MAX) offsets[name] = size - STREAM_TAIL_MAX;
+        const chunk = readFrom(files[name], offsets[name], size - offsets[name]);
+        offsets[name] = size;
+        stream.send({ event: name, data: chunk });
+      }
+    };
+    let ended = false;
+    const end = (final: JobRecord) => {
+      if (ended) return;
+      ended = true;
+      pump();
+      stream.send({ event: "end", data: publicJob(final) });
+      stream.close();
+    };
+    stream.send({ event: "status", data: publicJob(job) });
+    if (isTerminal(job.status)) return end(job);
+    const timer = setInterval(() => {
+      pump();
+      const current = store.get(job.id);
+      if (!current) return end(job);
+      if (isTerminal(current.status)) end(current);
+    }, STREAM_POLL_MS);
+    stream.onClose(() => clearInterval(timer));
+    if (deps.events) {
+      const off = deps.events.onAny((event) => {
+        if (!event.type.startsWith("job.")) return;
+        const data = event.data as { job?: JobRecord };
+        if (data.job?.id !== job.id) return;
+        if (event.type === "job.finished") end(data.job);
+        else stream.send({ event: "status", data: publicJob(data.job) });
+      });
+      stream.onClose(off);
+    }
+  }
+
+  /** `GET /jobs/<id>/artifacts/<name>`: the raw file, optionally only its last `?tail=` bytes. */
+  function sendArtifact(res: ServerResponse, url: URL, job: JobRecord, name: string): void {
+    if (!(JOB_ARTIFACTS as string[]).includes(name)) throw new HttpError(404, "unknown_artifact", `unknown artifact "${name}" (${JOB_ARTIFACTS.join(", ")})`);
+    const file = store.pathsFor(job.id)[name as JobArtifact];
+    const size = fileSize(file);
+    if (size === undefined) throw new HttpError(404, "unknown_artifact", `artifact "${name}" has not been written`);
+    const tailParam = Number(url.searchParams.get("tail") ?? 0);
+    const tailBytes = Number.isFinite(tailParam) && tailParam > 0 ? Math.floor(tailParam) : 0;
+    const offset = tailBytes && size > tailBytes ? size - tailBytes : 0;
+    let isJson = name === "event";
+    if (name === "payload") {
+      try {
+        isJson = store.readEvent(job.id).body_kind === "json";
+      } catch {
+        isJson = false;
+      }
+    }
+    send(res, 200, readFrom(file, offset, size - offset), { "content-type": isJson ? "application/json; charset=utf-8" : "text/plain; charset=utf-8", "x-artifact-bytes": String(size), ...(offset ? { "x-artifact-truncated": "true" } : {}) });
+  }
+
   async function respondWithJob(res: ServerResponse, job: JobRecord, wait: number, extra: Record<string, unknown> = {}): Promise<void> {
     if (wait > 0) {
       const finished = await queue.waitFor(job.id, wait * 1000);
@@ -357,6 +508,20 @@ export function createServer(deps: ServerDeps): Server {
     if (segments[0] === "health" && segments.length === 1) {
       // Public callers learn only that the server is up; queue details need admin access.
       return send(res, 200, isAdmin(headers, req, viaProxy) ? { ok: true, version: VERSION, uptime_seconds: Math.round((Date.now() - startedAt) / 1000), queue: queue.stats(), ...(deps.schedules ? { schedules: deps.schedules() } : {}) } : { ok: true, version: VERSION });
+    }
+    if (segments[0] === "events" && segments.length === 1) {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (method !== "GET") throw new HttpError(405, "method_not_allowed", "use GET");
+      if (!deps.events) throw new HttpError(404, "not_found", "this server has no event stream");
+      const types = (url.searchParams.get("types") ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+      for (const type of types) if (!(EVENT_TYPES as string[]).includes(type)) throw new HttpError(400, "bad_request", `unknown event type "${type}"`);
+      const stream = openEventStream(req, res);
+      const off = deps.events.onAny((event) => {
+        if (types.length && !types.includes(event.type)) return;
+        stream.send({ id: String(event.seq), event: event.type, data: event });
+      });
+      stream.onClose(off);
+      return;
     }
     if (segments[0] === "hooks" && segments.length === 2) {
       const skillName = decodeURIComponent(segments[1] as string);
@@ -404,6 +569,8 @@ export function createServer(deps: ServerDeps): Server {
         for (const name of include) artifacts[name] = store.readArtifact(id, name);
         return send(res, 200, { job: publicJob(job), ...(include.length ? { artifacts } : {}) });
       }
+      if (segments.length === 3 && segments[2] === "events" && method === "GET") return streamJob(req, res, url, job);
+      if (segments.length === 4 && segments[2] === "artifacts" && method === "GET") return sendArtifact(res, url, job, segments[3] as string);
       if (segments.length === 3 && segments[2] === "cancel" && method === "POST") {
         const cancelled = queue.cancel(id);
         return send(res, cancelled ? 200 : 409, { ok: cancelled, job_id: id, status: store.get(id)?.status });

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { adminRequest, findRunningServer } from "../client.js";
+import { adminRequest, findRunningServer, openAdminEventStream } from "../client.js";
 import { isTerminal, JOB_STATUSES, type JobArtifact, type JobStatus } from "../jobs.js";
 import { publicJob } from "../server.js";
 import { sleep } from "../util.js";
@@ -57,8 +57,25 @@ export async function jobsCommand(ctx: Ctx): Promise<number> {
     case "tail": {
       const job = store.get(requireId(id));
       if (!job) throw new CommandError(`Unknown job ${id}`);
-      const file = bool(ctx.flags, "stderr") ? store.pathsFor(job.id).stderr : store.pathsFor(job.id).stdout;
+      const wantStderr = bool(ctx.flags, "stderr");
+      const file = wantStderr ? store.pathsFor(job.id).stderr : store.pathsFor(job.id).stdout;
       const follow = bool(ctx.flags, "follow", "f");
+      if (follow && !isTerminal(job.status)) {
+        // A running server streams the file and the status changes as they happen; without one, poll the file below.
+        const running = await findRunningServer(ctx.paths);
+        if (running) {
+          const streamed = await openAdminEventStream(running.baseUrl, ctx.secrets(), `/jobs/${job.id}/events?streams=${wantStderr ? "stderr" : "stdout"}`, (event) => {
+            if (event.event === "stdout" || event.event === "stderr") {
+              const text = JSON.parse(event.data) as string;
+              ctx.io.stdout(text.endsWith("\n") ? text : `${text}\n`);
+            } else if (event.event === "end") {
+              const final = JSON.parse(event.data) as { status: string; error?: string };
+              ctx.warn(`— job ${final.status}${final.error ? `: ${final.error}` : ""}`);
+            }
+          });
+          if (streamed.status === 200) return 0;
+        }
+      }
       let offset = 0;
       const emit = () => {
         if (!existsSync(file)) return;

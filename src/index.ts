@@ -13,6 +13,7 @@ export * from "./filters.js";
 export * from "./payload.js";
 export * from "./prompt.js";
 export * from "./jobs.js";
+export * from "./events.js";
 export * from "./run.js";
 export * from "./queue.js";
 export * from "./server.js";

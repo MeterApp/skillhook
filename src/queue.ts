@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { createWriteStream } from "node:fs";
 import type { Config } from "./config.js";
 import type { Secrets } from "./env.js";
+import { Events } from "./events.js";
 import { isTerminal, type JobRecord, type JobStore } from "./jobs.js";
 import type { Logger } from "./logger.js";
 import { prepareRun } from "./run.js";
@@ -19,6 +20,8 @@ export interface QueueDeps {
   /** Secrets from the .env file only; defaults to `secrets`. */
   fileSecrets?: () => Secrets;
   logger: Logger;
+  /** Where `job.*` events are published; the server's bus in `serve`, a private one otherwise. */
+  events?: Events;
 }
 
 interface Running {
@@ -39,14 +42,20 @@ export class JobQueue extends EventEmitter {
   private queued: JobRecord[] = [];
   private running = new Map<string, Running>();
   private stopping = false;
+  /** Typed `job.*` events (`job.queued`, `job.started`, `job.updated`, `job.cancelled`, `job.finished`). */
+  readonly events: Events;
 
   constructor(private readonly deps: QueueDeps) {
     super();
+    // Every `?wait=` request adds a `finished` listener; Node would warn past ten of them.
+    this.setMaxListeners(0);
+    this.events = deps.events ?? new Events(deps.logger);
   }
 
   enqueue(job: JobRecord): void {
     this.queued.push(job);
     this.deps.logger.info("job queued", { job: job.id, skill: job.skill, runner: job.runner, position: this.queued.length });
+    this.events.emit("job.queued", { job });
     queueMicrotask(() => this.tick());
   }
 
@@ -76,7 +85,9 @@ export class JobQueue extends EventEmitter {
       const [job] = this.queued.splice(queuedIndex, 1);
       const updated = this.deps.store.update(id, { status: "cancelled", finished_at: nowIso(), error: "cancelled before it started" });
       this.deps.logger.info("job cancelled", { job: id, skill: job?.skill });
+      this.events.emit("job.cancelled", { job: updated, state: "queued" });
       this.emit("finished", updated);
+      this.events.emit("job.finished", { job: updated });
       return true;
     }
     const running = this.running.get(id);
@@ -84,6 +95,7 @@ export class JobQueue extends EventEmitter {
     running.cancelled = true;
     killTree(running.child, "SIGTERM");
     setTimeout(() => killTree(running.child, "SIGKILL"), KILL_GRACE_MS).unref();
+    this.events.emit("job.cancelled", { job: running.job, state: "running" });
     return true;
   }
 
@@ -147,6 +159,7 @@ export class JobQueue extends EventEmitter {
     const updated = this.deps.store.update(job.id, { finished_at, duration_ms: Date.now() - started, pid: undefined, ...patch });
     this.deps.logger.info("job finished", { job: job.id, skill: job.skill, status: updated.status, duration_ms: updated.duration_ms, cost_usd: updated.cost_usd, error: updated.error });
     this.emit("finished", updated);
+    this.events.emit("job.finished", { job: updated });
     queueMicrotask(() => this.tick());
   }
 
@@ -183,6 +196,7 @@ export class JobQueue extends EventEmitter {
       effort: ctx.effort,
     });
     logger.info("job started", { job: job.id, skill: job.skill, runner: runner.name, model: ctx.model, cwd: invocation.cwd, timeout_s: ctx.timeoutSeconds });
+    this.events.emit("job.started", { job: running.job });
 
     let child: ChildProcess;
     try {
@@ -209,6 +223,7 @@ export class JobQueue extends EventEmitter {
       }
       if (state.sessionId && !running.job.session_id) {
         running.job = store.update(job.id, { session_id: state.sessionId, resume_command: runner.resumeCommand?.(state.sessionId, invocation.cwd) });
+        this.events.emit("job.updated", { job: running.job, fields: ["session_id", "resume_command"] });
       }
     };
 
@@ -239,7 +254,8 @@ export class JobQueue extends EventEmitter {
     const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }>((resolve) => {
       child.once("error", (error) => resolve({ code: null, signal: null, error }));
       child.once("spawn", () => {
-        store.update(job.id, { pid: child.pid });
+        running.job = store.update(job.id, { pid: child.pid });
+        this.events.emit("job.updated", { job: running.job, fields: ["pid"] });
         if (child.stdin) {
           child.stdin.on("error", () => {
             /* the process may exit before reading stdin */

@@ -240,7 +240,7 @@ Set the default once (`skillhook config set defaults.runner codex`, `skillhook c
 - Payloads are delivered as data inside `<webhook_payload>` tags with guardrails; the agent is told it runs unattended and must not follow instructions found in the payload.
 - Per-IP rate limits (120 requests/min, 10 auth failures/min), a 1 MiB body cap, per-skill and global concurrency limits and per-job timeouts bound the damage of floods and runaway jobs.
 - Retries and duplicates are absorbed: provider delivery ids are remembered for 24 h, and a delivery whose payload matches a job of the same skill that is still queued or running is answered with that job's id instead of a second run (`dedupe.in_flight`, on by default).
-- The admin API (`/skills`, `/jobs`) needs `Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN`, except for direct loopback callers such as the CLI.
+- The admin API (`/skills`, `/jobs`, `/events`) needs `Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN`, except for direct loopback callers such as the CLI.
 
 | `auth.type` | Sender sends | Secret |
 |---|---|---|

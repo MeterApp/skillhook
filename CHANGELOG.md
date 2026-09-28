@@ -4,6 +4,19 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- An event bus inside `skillhook serve` (`src/events.ts`): the queue publishes `job.queued`,
+  `job.started`, `job.updated`, `job.cancelled` and `job.finished`, the scheduler
+  `schedule.registered`, `schedule.fired` and `schedule.skipped`, the registry `skill.changed` (a
+  `SKILL.md` or `skillhook.yaml` that appeared, changed or disappeared, noticed on the next lookup or
+  listing) and the server `server.started` / `server.stopping`. Every event carries a `seq`, a
+  timestamp and the full record.
+- Two streaming admin routes (server-sent events): `GET /events` (the whole bus, `?types=` to filter)
+  and `GET /jobs/<id>/events` (one job: `status` snapshots, `stdout`/`stderr` as they are written,
+  `end`). `GET /jobs/<id>/artifacts/<name>` returns one artifact file as-is (`?tail=<bytes>`).
+  `skillhook jobs logs <id> -f` follows a running job through the server when one is running.
+- Many senders waiting with `?wait=` on the same server no longer trigger Node's
+  `MaxListenersExceededWarning`.
+
 ## 0.3.0 (2026-09-23)
 
 - Scheduled hooks. A `schedule:` key on any skill (`skillhook:` block) or hook (`skillhook.yaml`) runs it

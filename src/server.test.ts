@@ -1,15 +1,16 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { signRequest } from "./auth.js";
 import { loadConfig } from "./config.js";
+import { Events } from "./events.js";
 import { JobStore } from "./jobs.js";
 import { silentLogger } from "./logger.js";
 import { JobQueue } from "./queue.js";
 import { Scheduler } from "./scheduler.js";
 import { createServer } from "./server.js";
 import { SkillRegistry } from "./registry.js";
-import { FAKE_CLAUDE, FAKE_CODEX, tempHome, writeConfigFile, writeEnv, writeSkill } from "./test-support/helpers.js";
+import { FAKE_CLAUDE, FAKE_CODEX, readSse, tempHome, writeConfigFile, writeEnv, writeSkill } from "./test-support/helpers.js";
 import type { Server } from "node:http";
 
 const paths = tempHome();
@@ -17,6 +18,7 @@ let server: Server;
 let base = "";
 let queue: JobQueue;
 let store: JobStore;
+let events: Events;
 const recordFile = path.join(paths.home, "record.json");
 const projectDir = path.join(paths.home, "repo");
 const ADMIN = "admin-token-123";
@@ -85,9 +87,10 @@ beforeAll(async () => {
   store = new JobStore(paths.jobsDir, { maxJobs: 100, dedupeWindowSeconds: 3600 });
   const { loadSecrets } = await import("./env.js");
   const secrets = () => loadSecrets(paths, {});
-  queue = new JobQueue({ store, config, registry, secrets, fileSecrets: secrets, logger: silentLogger });
-  const scheduler = new Scheduler({ registry, store, queue, config, logger: silentLogger, now: () => new Date("2026-09-23T10:00:00Z") });
-  server = createServer({ config, paths, store, queue, registry, secrets, logger: silentLogger, schedules: () => scheduler.status() });
+  events = new Events(silentLogger);
+  queue = new JobQueue({ store, config, registry, secrets, fileSecrets: secrets, logger: silentLogger, events });
+  const scheduler = new Scheduler({ registry, store, queue, config, logger: silentLogger, now: () => new Date("2026-09-23T10:00:00Z"), events });
+  server = createServer({ config, paths, store, queue, registry, secrets, logger: silentLogger, events, schedules: () => scheduler.status() });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const address = server.address();
   base = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
@@ -337,6 +340,70 @@ describe("HTTP surface", () => {
     expect(list.find((s) => s.name === "hello")).toMatchObject({ webhook: true, schedule: null });
     const run = await fetch(`${base}/skills/nightly/run`, { method: "POST", headers: { authorization: `Bearer ${ADMIN}`, "content-type": "application/json" }, body: JSON.stringify({ payload: { manual: true }, wait: 20 }) });
     expect((await json(run)).status).toBe("succeeded");
+  });
+
+  it("streams the event bus to admins over SSE", async () => {
+    expect((await fetch(`${base}/events`, { headers: { "x-forwarded-for": "203.0.113.1" } })).status).toBe(401);
+    expect((await fetch(`${base}/events?types=nope`, { headers: { authorization: `Bearer ${ADMIN}` } })).status).toBe(400);
+    const stream = await fetch(`${base}/events?types=job.queued,job.finished`, { headers: { authorization: `Bearer ${ADMIN}` } });
+    expect(stream.status).toBe(200);
+    expect(stream.headers.get("content-type")).toContain("text/event-stream");
+    const posted = await json(await fetch(`${base}/hooks/hello`, { method: "POST", body: JSON.stringify({ name: "Sse" }), headers: { authorization: "Bearer hello-secret" } }));
+    const got = await readSse(stream, (event) => event.event === "job.finished" && (JSON.parse(event.data) as { data: { job: { id: string } } }).data.job.id === posted.job_id);
+    const types = got.map((event) => event.event);
+    expect(types).toContain("job.queued");
+    expect(types.every((type) => type === "job.queued" || type === "job.finished")).toBe(true);
+    const last = JSON.parse(got.at(-1)!.data) as { seq: number; type: string; at: string; data: { job: { id: string; status: string } } };
+    expect(last).toMatchObject({ type: "job.finished", data: { job: { id: posted.job_id, status: "succeeded" } } });
+    expect(got.at(-1)!.id).toBe(String(last.seq));
+    expect(events.listenerCount()).toBeGreaterThanOrEqual(0);
+  });
+
+  it("follows one job's output and status over SSE and serves raw artifacts", async () => {
+    const posted = await json(await fetch(`${base}/hooks/slow`, { method: "POST", body: JSON.stringify({ stream: true }), headers: { authorization: "Bearer s", "content-type": "application/json" } }));
+    const id = String(posted.job_id);
+    const stream = await fetch(`${base}/jobs/${id}/events?streams=stdout,stderr`, { headers: { authorization: `Bearer ${ADMIN}` } });
+    expect(stream.status).toBe(200);
+    const got = await readSse(stream, (event) => event.event === "end", 20_000);
+    expect(got[0]?.event).toBe("status");
+    expect((JSON.parse(got[0]!.data) as { id: string }).id).toBe(id);
+    expect(got.some((event) => event.event === "status" && (JSON.parse(event.data) as { status: string }).status === "running")).toBe(true);
+    const output = got.filter((event) => event.event === "stdout").map((event) => JSON.parse(event.data) as string).join("");
+    expect(output).toContain('"subtype":"init"');
+    expect(output).toContain("FAKE OK");
+    expect((JSON.parse(got.at(-1)!.data) as { status: string }).status).toBe("succeeded");
+    // A job that has already finished answers at once with everything it has.
+    const done = await readSse(await fetch(`${base}/jobs/${id}/events`, { headers: { authorization: `Bearer ${ADMIN}` } }), (event) => event.event === "end");
+    expect(done.map((event) => event.event)).toEqual(["status", "stdout", "end"]);
+    expect((await fetch(`${base}/jobs/${id}/events?streams=nope`, { headers: { authorization: `Bearer ${ADMIN}` } })).status).toBe(400);
+    expect((await fetch(`${base}/jobs/${id}/events`, { headers: { "x-forwarded-for": "203.0.113.1" } })).status).toBe(401);
+    // Raw artifacts.
+    const prompt = await fetch(`${base}/jobs/${id}/artifacts/prompt`, { headers: { authorization: `Bearer ${ADMIN}` } });
+    expect(prompt.status).toBe(200);
+    expect(prompt.headers.get("content-type")).toContain("text/plain");
+    expect(await prompt.text()).toContain("# Skill: slow");
+    const payload = await fetch(`${base}/jobs/${id}/artifacts/payload`, { headers: { authorization: `Bearer ${ADMIN}` } });
+    expect(payload.headers.get("content-type")).toContain("application/json");
+    expect(await payload.json()).toEqual({ stream: true });
+    const tail = await fetch(`${base}/jobs/${id}/artifacts/stdout?tail=5`, { headers: { authorization: `Bearer ${ADMIN}` } });
+    expect((await tail.text()).length).toBe(5);
+    expect(tail.headers.get("x-artifact-truncated")).toBe("true");
+    expect(Number(tail.headers.get("x-artifact-bytes"))).toBeGreaterThan(5);
+    const missing = await fetch(`${base}/jobs/${id}/artifacts/nope`, { headers: { authorization: `Bearer ${ADMIN}` } });
+    expect(missing.status).toBe(404);
+    expect((await json(missing)).error).toBe("unknown_artifact");
+  });
+
+  it("does not warn about listener limits when many callers wait at once", async () => {
+    const warn = vi.spyOn(process, "emitWarning");
+    try {
+      const responses = await Promise.all(Array.from({ length: 12 }, (_, i) => fetch(`${base}/hooks/hello?wait=20`, { method: "POST", body: JSON.stringify({ name: `Wait${i}` }), headers: { authorization: "Bearer hello-secret" } })));
+      expect(responses.map((r) => r.status)).toEqual(Array(12).fill(200));
+      const maxListeners = warn.mock.calls.filter((call) => `${String(call[0])} ${String((call[0] as { name?: string })?.name)} ${String(call[1])}`.includes("MaxListeners"));
+      expect(maxListeners).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("runs identical deliveries when in-flight de-duplication is off for the skill", async () => {

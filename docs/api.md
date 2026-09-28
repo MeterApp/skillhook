@@ -8,6 +8,7 @@ Conventions:
 - Errors are `{"ok": false, "error": "<code>", "message": "<text>"}`; codes are listed at the end.
 - Timeouts: keep-alive 65 s, headers 70 s, whole request `max(300 s, max_wait_seconds + 30 s)`.
 - Every request counts against the per-IP limit `rate_limit.requests_per_minute` (120); beyond it the answer is `429 rate_limited`.
+- `GET /events` and `GET /jobs/<id>/events` answer `text/event-stream` and stay open; every other route is one JSON (or text) response.
 
 Related: [security.md](security.md) (authentication), [skills.md](skills.md) (filters, dedupe, placeholders), [operations.md](operations.md) (job files).
 
@@ -24,6 +25,9 @@ Related: [security.md](security.md) (authentication), [skills.md](skills.md) (fi
 | `GET` | `/jobs` | admin | Recent jobs. |
 | `GET` | `/jobs/<id>` | admin | One job, optionally with artifacts. |
 | `POST` | `/jobs/<id>/cancel` | admin | Cancel a queued or running job. |
+| `GET` | `/jobs/<id>/artifacts/<name>` | admin | One artifact file as it is on disk (`?tail=<bytes>` for its end). |
+| `GET` | `/jobs/<id>/events` | admin | Server-sent events for one job: `status` snapshots, `stdout`/`stderr` as they are written, `end`. |
+| `GET` | `/events` | admin | Server-sent events for the whole server: `job.*`, `schedule.*`, `skill.changed`, `server.*` (`?types=` to filter). |
 
 Anything else is `404 not_found`; another method on `/hooks/<skill>` is `405 method_not_allowed`.
 
@@ -271,6 +275,43 @@ Ids that do not exist (or do not look like `YYYYMMDDTHHMMSSZ-xxxxxx`) are `404 u
 
 `200 {"ok": true, "job_id": "…", "status": "…"}` when the job was queued (it becomes `cancelled` at once) or running (SIGTERM now, SIGKILL after 10 s, then `cancelled`). `409 {"ok": false, "job_id": "…", "status": "succeeded"}` when it had already finished.
 
+## `GET /jobs/<id>/artifacts/<name>`
+
+`<name>` is one of `stdout`, `stderr`, `prompt`, `result`, `payload`, `event`. The body is the file as written, with no JSON envelope: `application/json` for `event` and for a `payload` that was parsed as JSON, `text/plain` otherwise. `x-artifact-bytes` carries the file's full size. `?tail=<bytes>` returns only the last `<bytes>` bytes and adds `x-artifact-truncated: true`. A name outside the list, or a file the job has not written yet, is `404 unknown_artifact`.
+
+```bash
+curl -sS -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" "http://127.0.0.1:8787/jobs/20260916T025442Z-r1wn6g/artifacts/result"
+```
+
+## `GET /jobs/<id>/events`
+
+A `text/event-stream` that follows one job. Messages, in order:
+
+- `event: status`, `data:` the job record: once at connect, then after each change (`running`, `pid`/`session_id` captured, cancel requested);
+- `event: stdout` / `event: stderr`, `data:` a JSON string with the new bytes, sent as the files grow (`?streams=stdout,stderr`; default `stdout`; a file already larger than 512 KiB starts at its tail);
+- `event: end`, `data:` the final record, after which the server closes the stream.
+
+A job that has already finished gets `status`, the whole output and `end` at once. A comment line (`: ping`) every 15 s keeps proxies from closing an idle stream. `skillhook jobs logs <id> -f` uses this route when a server is running, and reads the file otherwise.
+
+## `GET /events`
+
+A `text/event-stream` of the server's event bus. Each message carries `id` (the event's `seq`, increasing by one per event in this server process), `event` (the type) and `data` (the whole event, `{"seq", "type", "at", "data"}`). `?types=job.finished,schedule.fired` limits it to those types; an unknown type is `400 bad_request`. Events that happened before the connection, or while it was down, are not replayed: a consumer that reconnects should reconcile through `/jobs` and `/health`.
+
+| Type | `data` |
+|---|---|
+| `server.started`, `server.stopping` | `{state}` (the `server.json` record) and `{reason, running}` |
+| `job.queued`, `job.started`, `job.finished` | `{job}` |
+| `job.updated` | `{job, fields}`: `pid`, `session_id`, `resume_command` captured while running |
+| `job.cancelled` | `{job, state}` with `state` `queued` or `running`; `job.finished` follows |
+| `schedule.registered` | `{skill, cron, timezone, next_due}` |
+| `schedule.fired` | `{skill, slot, job, caught_up}` |
+| `schedule.skipped` | `{skill, slot, reason}`: `in_flight`, `caught_up`, `too_old` or `duplicate` |
+| `skill.changed` | `{name, action, source}` with `action` `added`, `changed` or `removed`, noticed when a lookup or listing reads the changed file |
+
+```bash
+curl -sN -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" "http://127.0.0.1:8787/events?types=job.finished,schedule.fired"
+```
+
 ## Job record
 
 | Field | Type | Notes |
@@ -302,11 +343,11 @@ Ids that do not exist (or do not look like `YYYYMMDDTHHMMSSZ-xxxxxx`) are `404 u
 |---|---|---|
 | 200 | — | Result available, duplicate, skipped, Slack challenge, admin reads, successful cancel. |
 | 202 | — | Job queued (or still running after `wait`). |
-| 400 | `bad_request` | `/skills/<skill>/run` body is not a JSON object. |
+| 400 | `bad_request` | `/skills/<skill>/run` body is not a JSON object; unknown `?types=` (`/events`) or `?streams=` (`/jobs/<id>/events`) value. |
 | 401 | `missing_token`, `invalid_token`, `missing_credentials`, `invalid_credentials`, `missing_signature`, `invalid_signature`, `missing_timestamp`, `invalid_timestamp`, `stale_timestamp` | Webhook authentication failed. |
 | 401 | `unauthorized` | Admin route without a valid token. |
 | 403 | `ip_not_allowed` | Client IP not in the skill's `allow_ips`. |
-| 404 | `unknown_skill`, `unknown_job`, `not_found` | |
+| 404 | `unknown_skill`, `unknown_job`, `unknown_artifact`, `not_found` | |
 | 404 | `schedule_only` | The skill has `webhook: false`; it runs only on its `schedule:`. |
 | 405 | `method_not_allowed` | |
 | 409 | — (`ok: false`) | Cancel on a finished job. |

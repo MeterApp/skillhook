@@ -1,4 +1,5 @@
 import { ADMIN_TOKEN_ENV, readEnvFile } from "../env.js";
+import { Events } from "../events.js";
 import { JobQueue } from "../queue.js";
 import { createLogger } from "../logger.js";
 import { Scheduler } from "../scheduler.js";
@@ -12,12 +13,14 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   const port = num(ctx.flags, "port") ?? config.port;
   const host = str(ctx.flags, "host") ?? config.host;
   const logger = createLogger({ level: (str(ctx.flags, "log-level") as "info" | undefined) ?? config.log_level, format: bool(ctx.flags, "pretty") || (ctx.io.isTTY && !ctx.json) ? "pretty" : "json" });
+  const events = new Events(logger);
   const registry = ctx.registry();
+  registry.onChange((change) => events.emit("skill.changed", change));
   const store = ctx.store();
   const secrets = () => ctx.secrets();
-  const queue = new JobQueue({ store, config, registry, secrets, fileSecrets: () => readEnvFile(ctx.paths.envFile), logger });
-  const scheduler = new Scheduler({ registry, store, queue, config, logger });
-  const server = createServer({ config, paths: ctx.paths, store, queue, registry, secrets, logger, schedules: () => scheduler.status() });
+  const queue = new JobQueue({ store, config, registry, secrets, fileSecrets: () => readEnvFile(ctx.paths.envFile), logger, events });
+  const scheduler = new Scheduler({ registry, store, queue, config, logger, events });
+  const server = createServer({ config, paths: ctx.paths, store, queue, registry, secrets, logger, events, schedules: () => scheduler.status() });
 
   const loaded = registry.list();
   for (const error of loaded.errors) logger.error("skill failed to load", { skill: error.name, error: error.error });
@@ -41,7 +44,9 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   });
   const address = server.address();
   const boundPort = typeof address === "object" && address ? address.port : port;
-  writeServerState(ctx.paths, { pid: process.pid, host, port: boundPort, started_at: new Date().toISOString(), version: VERSION, public_url: config.public_url });
+  const state = { pid: process.pid, host, port: boundPort, started_at: new Date().toISOString(), version: VERSION, public_url: config.public_url };
+  writeServerState(ctx.paths, state);
+  events.emit("server.started", { state });
   logger.info("skillhook listening", { url: `http://${host}:${boundPort}`, public_url: config.public_url, skills: loaded.skills.map((s) => s.name), concurrency: config.concurrency, home: ctx.paths.home, version: VERSION });
   if (config.public_url) for (const skill of loaded.skills) logger.info("webhook url", { skill: skill.name, url: `${config.public_url}/hooks/${skill.name}` });
 
@@ -62,6 +67,7 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info("shutting down", { signal, running: queue.stats().running });
+    events.emit("server.stopping", { reason: signal, running: queue.stats().running });
     scheduler.stop();
     server.close();
     await queue.shutdown();

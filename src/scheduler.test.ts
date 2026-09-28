@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "./config.js";
 import { loadSecrets } from "./env.js";
+import { Events, type SkillhookEvent } from "./events.js";
 import { JobStore, type JobRecord } from "./jobs.js";
 import { silentLogger } from "./logger.js";
 import { JobQueue } from "./queue.js";
@@ -22,14 +23,15 @@ function harness(skills: Record<string, string>, projects: string[] = []) {
   const registry = new SkillRegistry(paths.skillsDir, { projects: () => projects });
   const store = new JobStore(paths.jobsDir, { maxJobs: 100, dedupeWindowSeconds: 86_400 });
   const secrets = () => loadSecrets(paths, {});
-  const queue = new JobQueue({ store, config, registry, secrets, fileSecrets: secrets, logger: silentLogger });
+  const events = new Events();
+  const queue = new JobQueue({ store, config, registry, secrets, fileSecrets: secrets, logger: silentLogger, events });
   let clock = at("2026-09-23T10:00:30Z");
-  const scheduler = new Scheduler({ registry, store, queue, config, logger: silentLogger, now: () => clock, tickMs: 60 * 60 * 1000 });
+  const scheduler = new Scheduler({ registry, store, queue, config, logger: silentLogger, now: () => clock, tickMs: 60 * 60 * 1000, events });
   const setClock = (iso: string) => {
     clock = at(iso);
   };
   const finished = async (job: JobRecord, timeoutMs = 15_000) => (await queue.waitFor(job.id, timeoutMs)) ?? store.require(job.id);
-  return { paths, config, registry, store, queue, scheduler, setClock, finished, close: async () => (scheduler.stop(), queue.shutdown()) };
+  return { paths, config, registry, store, queue, scheduler, events, setClock, finished, close: async () => (scheduler.stop(), queue.shutdown()) };
 }
 
 describe("dueSlots", () => {
@@ -45,6 +47,29 @@ describe("dueSlots", () => {
 });
 
 describe("Scheduler", () => {
+  it("publishes schedule.registered, schedule.fired and schedule.skipped on the event bus", async () => {
+    const h = harness({ minutely: `description: m\n${SHELL("echo ev")}  schedule: "* * * * *"\n` });
+    const seen: SkillhookEvent[] = [];
+    h.events.onAny((event) => seen.push(event));
+    h.scheduler.start();
+    expect(seen.map((event) => event.type)).toEqual(["schedule.registered"]);
+    expect(seen[0]?.data).toEqual({ skill: "minutely", cron: "* * * * *", timezone: "UTC", next_due: "2026-09-23T10:01:00.000Z" });
+    h.setClock("2026-09-23T10:03:05Z"); // three slots are due: the latest fires, the two older ones are skipped (catch_up: latest)
+    const tick = h.scheduler.tick();
+    expect(tick.fired).toHaveLength(1);
+    const job = tick.fired[0] as JobRecord;
+    expect(seen.filter((event) => event.type === "schedule.skipped").map((event) => event.data)).toEqual([
+      { skill: "minutely", slot: "2026-09-23T10:02:00.000Z", reason: "caught_up" },
+      { skill: "minutely", slot: "2026-09-23T10:01:00.000Z", reason: "caught_up" },
+    ]);
+    const fired = seen.find((event) => event.type === "schedule.fired");
+    expect(fired?.data).toMatchObject({ skill: "minutely", slot: "2026-09-23T10:03:00.000Z", caught_up: false, job: { id: job.id } });
+    expect(seen.map((event) => event.type)).toContain("job.queued");
+    await h.finished(job);
+    expect(seen.map((event) => event.type)).toContain("job.finished");
+    return h.close();
+  });
+
   it("waits for the next slot when it first sees a schedule, then fires each slot exactly once", async () => {
     const h = harness({ minutely: `description: every minute\n${SHELL("echo scheduled")}  schedule: "* * * * *"\n` });
     h.scheduler.start(); // ticks at 10:00:30: the schedule is registered, nothing is due yet
