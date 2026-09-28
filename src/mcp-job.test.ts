@@ -1,40 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { InMemoryTransport } from "@modelcontextprotocol/server";
 import { describe, expect, it } from "vitest";
 import { buildJobMcpServer, jobFromEnv, JOB_MCP_INSTRUCTIONS } from "./mcp-job.js";
 import { answerQuestion, readProgress, readQuestion } from "./progress.js";
 import { tempHome } from "./test-support/helpers.js";
+import { connectMcp } from "./test-support/mcp-client.js";
 
-type Message = Record<string, unknown> & { id?: number; result?: Record<string, unknown>; error?: { message: string } };
-
-/** A minimal JSON-RPC client over the SDK's in-memory transport (the client package is not a dependency). */
 async function connect(jobId: string, jobDir: string) {
-  const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
-  const server = buildJobMcpServer({ jobId, jobDir, humanWaitSeconds: 2 });
-  const pending = new Map<number, (message: Message) => void>();
-  clientSide.onmessage = (message) => {
-    const m = message as Message;
-    if (typeof m.id === "number" && pending.has(m.id)) pending.get(m.id)!(m);
-  };
-  await clientSide.start();
-  await server.connect(serverSide);
-  let seq = 0;
-  const request = (method: string, params: Record<string, unknown> = {}) =>
-    new Promise<Message>((resolve) => {
-      const id = ++seq;
-      pending.set(id, resolve);
-      void clientSide.send({ jsonrpc: "2.0", id, method, params });
-    });
-  const init = await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } });
-  await clientSide.send({ jsonrpc: "2.0", method: "notifications/initialized" });
-  const call = async (name: string, args: Record<string, unknown> = {}) => {
-    const response = await request("tools/call", { name, arguments: args });
-    if (response.error) throw new Error(response.error.message);
-    const result = response.result as { content: { type: string; text: string }[]; structuredContent?: Record<string, unknown>; isError?: boolean };
-    return { text: result.content.map((c) => c.text).join("\n"), data: result.structuredContent ?? {}, isError: result.isError === true };
-  };
-  return { init, request, call, close: () => clientSide.close() };
+  return connectMcp(buildJobMcpServer({ jobId, jobDir, humanWaitSeconds: 2 }));
 }
 
 describe("skillhook mcp --job", () => {

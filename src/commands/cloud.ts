@@ -1,7 +1,7 @@
 import { adminRequest, findRunningServer, readServerState } from "../client.js";
 import { assertSecureCloudUrl, CLOUD_PRIVATE_KEY_ENV, CLOUD_TOKEN_ENV, cloudDisabledByEnv, resolveCloudUrl } from "../cloud/config.js";
 import { CloudHttpError } from "../cloud/http.js";
-import { clearLinkCredentials, machineInfo, pairMachine, revokeToken, writeLinkCredentials } from "../cloud/pair.js";
+import { cloudStatus, disconnectCloud, machineInfo, pairMachine, writeLinkCredentials } from "../cloud/pair.js";
 import { machineKeyPair, publicKeyOf, SealError } from "../cloud/seal.js";
 import { readEnvFile } from "../env.js";
 import { bool, CommandError, str, UsageError, type Ctx } from "./shared.js";
@@ -72,26 +72,16 @@ export async function cloudCommand(ctx: Ctx): Promise<number> {
     }
     case "disconnect": {
       const keepToken = bool(ctx.flags, "keep-token");
-      const token = readEnvFile(ctx.paths.envFile)[CLOUD_TOKEN_ENV];
-      const url = resolveCloudUrl(env, config.cloud);
-      const wasEnabled = config.cloud.enabled;
-      let revoked = false;
-      if (token && !keepToken) revoked = await revokeToken(url, token);
-      clearLinkCredentials(ctx.paths, { keepToken });
-      const running = await findRunningServer(ctx.paths);
-      if (running) await notifyReload(ctx, running.baseUrl);
-      ctx.print(`${wasEnabled ? "Disconnected from" : "Not connected to"} ${url}.${token && !keepToken ? revoked ? " Token revoked." : " The cloud could not be told; the token was removed here." : keepToken ? " Token kept in .env." : ""} The running server stops the link within a few seconds.`, { ok: true, url, was_enabled: wasEnabled, token_removed: Boolean(token) && !keepToken, revoked });
+      const done = await disconnectCloud(ctx.paths, env, { keepToken, notify: (baseUrl) => notifyReload(ctx, baseUrl) });
+      ctx.print(`${done.was_enabled ? "Disconnected from" : "Not connected to"} ${done.url}.${done.token_removed ? (done.revoked ? " Token revoked." : " The cloud could not be told; the token was removed here.") : keepToken ? " Token kept in .env." : ""} The running server stops the link within a few seconds.`, { ok: true, ...done });
       return 0;
     }
     case "status": {
-      const token = Boolean(readEnvFile(ctx.paths.envFile)[CLOUD_TOKEN_ENV]);
-      const url = resolveCloudUrl(env, config.cloud);
-      const running = await findRunningServer(ctx.paths);
-      const link = running?.health.cloud ?? null;
-      const data = { enabled: config.cloud.enabled, env_disabled: cloudDisabledByEnv(env), url, machine_id: config.cloud.machine_id ?? null, mode: config.cloud.mode, token_present: token, server_running: Boolean(running), link };
+      const data = await cloudStatus(ctx.paths, env);
+      const link = data.link;
       const lines = [
-        `${config.cloud.enabled ? "enabled" : "not connected"} · ${url}${config.cloud.machine_id ? ` · machine ${config.cloud.machine_id}` : ""} · mode ${config.cloud.mode} · token ${token ? "present" : "missing"}${cloudDisabledByEnv(env) ? " · SKILLHOOK_NO_CLOUD set" : ""}`,
-        ...(link ? [`link: ${link.state}${link.reason ? ` (${link.reason})` : ""}${link.last_sync_at ? `, last sync ${link.last_sync_at}` : ""}${link.outbox_depth ? `, ${link.outbox_depth} event(s) waiting` : ""}${link.last_error ? `, last error: ${link.last_error}` : ""}`] : running ? ["link: the running server reports no link state"] : ["link: no running server"]),
+        `${data.enabled ? "enabled" : "not connected"} · ${data.url}${data.machine_id ? ` · machine ${data.machine_id}` : ""} · mode ${data.mode} · token ${data.token_present ? "present" : "missing"}${data.env_disabled ? " · SKILLHOOK_NO_CLOUD set" : ""}`,
+        ...(link ? [`link: ${link.state}${link.reason ? ` (${link.reason})` : ""}${link.last_sync_at ? `, last sync ${link.last_sync_at}` : ""}${link.outbox_depth ? `, ${link.outbox_depth} event(s) waiting` : ""}${link.last_error ? `, last error: ${link.last_error}` : ""}`] : data.server_running ? ["link: the running server reports no link state"] : ["link: no running server"]),
         ...(Object.keys(link?.ingress_urls ?? {}).length ? [`hosted URLs: ${Object.entries(link?.ingress_urls ?? {}).map(([skill, u]) => `${skill} ${u}`).join(", ")}`] : []),
       ];
       ctx.print(lines.join("\n"), data);

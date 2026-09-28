@@ -4,6 +4,9 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- MCP tools `cloud_status` and `cloud_disconnect`. There is deliberately no `cloud_connect`: pairing hands
+  the machine to an account, so the person runs `skillhook cloud connect --code …` themselves. The setup
+  skill gains a Skillhook Cloud step that says so.
 - The Skillhook Cloud link, opt-in. `skillhook cloud connect --code XXXX-XXXX [--control]` pairs the
   machine (the token goes to `.env` as `SKILLHOOK_CLOUD_TOKEN`, `cloud.*` to skillhook.json; observe
   mode unless `--control`), `cloud status` and `cloud disconnect` (which revokes the token) complete

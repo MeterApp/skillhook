@@ -35,7 +35,8 @@ A repository can declare its own hooks in a version-controlled skillhook.yaml (w
 A \`schedule:\` key (cron expression, optional timezone/catch_up/overlap) on any skill or hook makes the running server fire it on time without a webhook; \`webhook: false\` makes it schedule-only. list_schedules shows the next and last runs.
 Jobs are directories under <home>/jobs/<id> with payload.json, prompt.md, stdout.log, result.md and, when the agent reported one, response.json. A job's \`status\` says how the process ended; its \`outcome\` (completed, partial, needs_human, nothing_to_do, failed, unknown) says whether the task was done, as reported by the agent through response.json or a structured answer (\`response: { mode: structured }\` in the skill).
 Every webhook the server received, including rejected, filtered and duplicate ones, is in the delivery log: list_deliveries and get_delivery show what arrived and why it did not run; replay_delivery (or replay_job) runs it again through the skill as it is now.
-While it runs, an agent reports progress and can ask a person a question through the job API (the job_* tools of \`skillhook mcp --job\`, or \`skillhook job …\`); such jobs show \`progress\`, \`question\` and \`answer\`. list_jobs with waiting: true lists what waits for a person (an open question, or a finished job with outcome needs_human); answer_job delivers the answer to the waiting agent, or starts a new job (trigger \`resume\`) that continues the agent's session with it.`;
+While it runs, an agent reports progress and can ask a person a question through the job API (the job_* tools of \`skillhook mcp --job\`, or \`skillhook job …\`); such jobs show \`progress\`, \`question\` and \`answer\`. list_jobs with waiting: true lists what waits for a person (an open question, or a finished job with outcome needs_human); answer_job delivers the answer to the waiting agent, or starts a new job (trigger \`resume\`) that continues the agent's session with it.
+get_health, get_runners and get_stats answer whether the CLIs, their MCP servers and the skills are healthy and how the jobs went; get_config / update_config / restart_server change the running server. cloud_status tells whether the machine is paired with Skillhook Cloud; pairing itself is only done by the person in a terminal (\`skillhook cloud connect --code …\`), never by an agent.`;
 
 type ToolResult = { content: { type: "text"; text: string }[]; structuredContent?: Record<string, unknown>; isError?: boolean };
 
@@ -437,6 +438,35 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
         default:
           return ok({ ...(await serviceStatus(paths)) });
       }
+    }),
+  );
+
+  server.registerTool(
+    "cloud_status",
+    { title: "Skillhook Cloud status", description: "Whether this machine is paired with Skillhook Cloud (the opt-in dashboard for every machine's webhooks, jobs and health), its URL, machine id and mode (observe: the cloud can look; control: it can also run skills and change the configuration), whether the token is present (never the token itself) and the running server's link state (connected, degraded, disconnected with the reason, last sync, events waiting). Pairing is not a tool on purpose: the person runs `skillhook cloud connect --code <code from their dashboard>` in a terminal, so a code from an untrusted source can never hand this machine to someone else's account.", inputSchema: z.object({}) },
+    wrap(async () => {
+      const { cloudStatus } = await import("./cloud/pair.js");
+      const status = await cloudStatus(paths, env);
+      return ok({ ...status }, status.enabled ? `Paired with ${status.url} as ${status.machine_id ?? "?"} (mode ${status.mode}); link ${status.link?.state ?? (status.server_running ? "unknown" : "not running: no server")}` : `Not connected to Skillhook Cloud (${status.url})`);
+    }),
+  );
+
+  server.registerTool(
+    "cloud_disconnect",
+    { title: "Disconnect from Skillhook Cloud", description: "Stops the link to Skillhook Cloud: sets cloud.enabled to false, revokes and removes the machine token and key, deletes the local spool, and tells a running server (which stops syncing within seconds). Nothing leaves the machine afterwards. keep_token keeps the token in .env for a later reconnect.", inputSchema: z.object({ keep_token: z.boolean().optional() }) },
+    wrap(async ({ keep_token }) => {
+      const { disconnectCloud } = await import("./cloud/pair.js");
+      const done = await disconnectCloud(paths, env, {
+        keepToken: keep_token,
+        notify: async (baseUrl) => {
+          try {
+            await adminRequest(baseUrl, loadSecrets(paths, env), "/config/reload", { method: "POST", timeoutMs: 5_000 });
+          } catch {
+            /* the server notices the file within seconds anyway */
+          }
+        },
+      });
+      return ok({ ok: true, ...done }, `${done.was_enabled ? "Disconnected from" : "Was not connected to"} ${done.url}${done.revoked ? "; token revoked" : ""}`);
     }),
   );
 

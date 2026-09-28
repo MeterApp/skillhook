@@ -75,6 +75,46 @@ export function clearLinkCredentials(paths: Paths, options: { keepToken?: boolea
   rmSync(cloudStateDir(paths.jobsDir), { recursive: true, force: true });
 }
 
+export interface CloudStatusView {
+  enabled: boolean;
+  env_disabled: boolean;
+  url: string;
+  machine_id: string | null;
+  mode: MachineMode;
+  token_present: boolean;
+  server_running: boolean;
+  /** The running server's link state, when a server runs. */
+  link: import("./link.js").LinkStatusView | null;
+}
+
+/** What `skillhook cloud status` and the MCP tool `cloud_status` report; never the token itself. */
+export async function cloudStatus(paths: Paths, env: NodeJS.ProcessEnv): Promise<CloudStatusView> {
+  const { loadConfig } = await import("../config.js");
+  const { readEnvFile } = await import("../env.js");
+  const { findRunningServer } = await import("../client.js");
+  const { cloudDisabledByEnv, resolveCloudUrl } = await import("./config.js");
+  const config = loadConfig(paths);
+  const running = await findRunningServer(paths);
+  return { enabled: config.cloud.enabled, env_disabled: cloudDisabledByEnv(env), url: resolveCloudUrl(env, config.cloud), machine_id: config.cloud.machine_id ?? null, mode: config.cloud.mode, token_present: Boolean(readEnvFile(paths.envFile)[CLOUD_TOKEN_ENV]), server_running: Boolean(running), link: running?.health.cloud ?? null };
+}
+
+/** `skillhook cloud disconnect` / MCP `cloud_disconnect`: revoke (best effort), clear the local pairing, tell a running server. */
+export async function disconnectCloud(paths: Paths, env: NodeJS.ProcessEnv, options: { keepToken?: boolean; notify?: (baseUrl: string) => Promise<void> } = {}): Promise<{ url: string; was_enabled: boolean; token_removed: boolean; revoked: boolean }> {
+  const { loadConfig } = await import("../config.js");
+  const { readEnvFile } = await import("../env.js");
+  const { findRunningServer } = await import("../client.js");
+  const { resolveCloudUrl } = await import("./config.js");
+  const config = loadConfig(paths);
+  const token = readEnvFile(paths.envFile)[CLOUD_TOKEN_ENV];
+  const url = resolveCloudUrl(env, config.cloud);
+  let revoked = false;
+  if (token && !options.keepToken) revoked = await revokeToken(url, token);
+  clearLinkCredentials(paths, { keepToken: options.keepToken });
+  const running = await findRunningServer(paths);
+  if (running && options.notify) await options.notify(running.baseUrl);
+  return { url, was_enabled: config.cloud.enabled, token_removed: Boolean(token) && !options.keepToken, revoked };
+}
+
 /** Tells the cloud the token is no longer used. Best effort: never throws. */
 export async function revokeToken(url: string, token: string, fetchImpl?: typeof fetch): Promise<boolean> {
   try {
