@@ -4,6 +4,9 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- The cloud link checks the runners as soon as it connects, so the dashboard shows whether `claude` and
+  `codex` are installed and signed in before the first job runs (previously only after one).
+
 ## 0.5.0 (2026-09-28)
 
 - MCP tools `cloud_status` and `cloud_disconnect`. There is deliberately no `cloud_connect`: pairing hands

@@ -53,7 +53,7 @@ skillhook cloud disconnect    # cloud.enabled: false, token removed from .env an
 
 The running server opens HTTPS requests to `cloud.url` (`POST /api/agent/sync`); the cloud may hold a request up to 25 seconds when it has nothing to say, which makes the link both the heartbeat and the command channel ([cloud-protocol.md](cloud-protocol.md)). Each request carries:
 
-- **Events**: every delivery (the delivery record with redacted headers, and the body when `cloud.upload_payloads` allows it and it is at most 256 KiB), every job change (the job record without its command line; the result up to 8 KiB), progress lines (at most one per job every five seconds, questions and answers always), schedule and skill changes, configuration changes, health changes and runner readiness, plus `link.started` / `link.stopped`.
+- **Events**: every delivery (the delivery record with redacted headers, and the body when `cloud.upload_payloads` allows it and it is at most 256 KiB), every job change (the job record without its command line; the result up to 8 KiB), progress lines (at most one per job every five seconds, questions and answers always), schedule and skill changes, configuration changes, health changes and runner readiness (checked once when the link connects, then whenever a job checks it), plus `link.started` / `link.stopped`.
 - **A snapshot** on connect and every `cloud.snapshot_interval_seconds`: skill summaries, projects, schedules, the effective configuration, the last health and readiness answers and a day of stats.
 - **A deep health report** every `cloud.health_interval_seconds`.
 - **Command results** and **hosted-ingress acknowledgements** (below).

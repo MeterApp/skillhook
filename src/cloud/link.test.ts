@@ -11,6 +11,7 @@ import { JobStore, type JobRecord } from "../jobs.js";
 import { silentLogger } from "../logger.js";
 import type { WebhookEvent } from "../payload.js";
 import { JobQueue } from "../queue.js";
+import type { ReadinessCache } from "../readiness.js";
 import { SkillRegistry } from "../registry.js";
 import { createServer } from "../server.js";
 import { FakeCloud } from "../test-support/fake-cloud.js";
@@ -55,6 +56,8 @@ interface SetupOptions {
   /** Run jobs and accept control commands (a queue with the fake runner, the control handlers, a fake supervisor). */
   control?: boolean;
   extraEnv?: Record<string, string>;
+  /** A readiness cache stand-in, built with the link's event bus. */
+  readiness?: (events: Events) => ReadinessCache;
 }
 
 async function setup(options: SetupOptions = {}) {
@@ -81,7 +84,8 @@ async function setup(options: SetupOptions = {}) {
     const q = queue;
     cleanups.push(() => q.shutdown());
   }
-  const link = new CloudLink({ paths, config, secrets, fileSecrets, events, logger: silentLogger, registry, store, deliveryLog, serverState: () => undefined, localBaseUrl: options.localBaseUrl ?? (() => undefined), env: options.env ?? {}, fetchImpl: options.fetchImpl, timing: TIMING, control, queueStats: queue ? () => (queue as JobQueue).stats() : undefined });
+  const readiness = options.readiness?.(events);
+  const link = new CloudLink({ paths, config, secrets, fileSecrets, events, logger: silentLogger, registry, store, deliveryLog, serverState: () => undefined, localBaseUrl: options.localBaseUrl ?? (() => undefined), env: options.env ?? {}, fetchImpl: options.fetchImpl, timing: TIMING, control, queueStats: queue ? () => (queue as JobQueue).stats() : undefined, readiness });
   cleanups.push(() => link.stop("test"));
   return { fake, paths, config, events, store, deliveryLog, registry, link, secrets, queue, restarts };
 }
@@ -478,6 +482,27 @@ describe("CloudLink", () => {
     expect(uploaded.ranges[0]).toMatch(/^bytes 0-1048575\/\d+$/);
     expect((art.art!.result as { sha256: string }).sha256).toBe(uploaded.sha256);
     expect(art.small).toMatchObject({ ok: true, result: { name: "prompt", truncated: false, text: expect.stringContaining("# Skill: slow") } });
+  });
+
+  it("checks the runners once it connects, so their readiness reaches the cloud before any job runs", async () => {
+    let checks = 0;
+    const { fake, link } = await setup({
+      readiness: (events) =>
+        ({
+          all: async () => {
+            checks++;
+            const readiness = { runner: "claude", found: true, ready: false, authenticated: false, detail: "not logged in", checked_at: new Date().toISOString() };
+            events.emit("runners.changed", { runner: "claude", readiness } as never);
+            return [readiness];
+          },
+          last: () => undefined,
+        }) as unknown as ReadinessCache,
+    });
+    link.start();
+    await fake.waitFor(() => fake.requests.some((r) => r.events.some((e) => e.type === "runners.changed")));
+    const changed = fake.requests.flatMap((r) => r.events).find((e) => e.type === "runners.changed")!;
+    expect(changed.data).toMatchObject({ runner: "claude", readiness: { ready: false, authenticated: false } });
+    expect(checks).toBe(1);
   });
 
   it("says goodbye with link.stopped on the way out", async () => {

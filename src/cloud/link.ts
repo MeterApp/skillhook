@@ -611,6 +611,9 @@ export class CloudLink {
     if (this.needsStartEvent) {
       this.outbox.append(machineId, "link.started", { at: nowIso(), version: PROTOCOL_VERSION, mode: cloud.mode });
       this.needsStartEvent = false;
+      // Nothing else checks the runners until a job starts; their first readiness becomes runners.changed events, which
+      // is how the dashboard learns whether claude and codex are installed and signed in.
+      void this.deps.readiness?.all().catch((error: unknown) => this.deps.logger.warn("runner readiness check for the cloud failed", { error: errorMessage(error) }));
     }
     const snapshotDue = now - this.lastSnapshotAt >= (this.hints.snapshot_interval_s ?? cloud.snapshot_interval_seconds) * 1000;
     if (this.deps.health && now - this.lastHealthAt >= (this.hints.health_interval_s ?? cloud.health_interval_seconds) * 1000) {
