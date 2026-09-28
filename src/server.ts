@@ -16,6 +16,7 @@ import type { Logger } from "./logger.js";
 import { createAdhocJob, createManualJob } from "./manual.js";
 import { deliveryFingerprint, parseBody, redactHeaders, TRIGGERS, type BodyKind, type Trigger, type WebhookEvent } from "./payload.js";
 import { readProgress } from "./progress.js";
+import { collectStats, parseSince } from "./stats.js";
 import { planReplay, ReplayError, replayOfFor, type ReplayPlan } from "./replay.js";
 import { JOB_OUTCOMES, jobOutcome, type JobOutcome } from "./response.js";
 import type { JobQueue } from "./queue.js";
@@ -658,6 +659,17 @@ export function createServer(deps: ServerDeps): Server {
       const network = quick ? url.searchParams.get("network") !== "0" : url.searchParams.get("network") === "1";
       const { report, cached } = await deps.health.get({ deep, network, refresh: url.searchParams.get("refresh") === "1" });
       return send(res, 200, { ...report, cached });
+    }
+    if (segments[0] === "stats" && segments.length === 1) {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (method !== "GET") throw new HttpError(405, "method_not_allowed", "use GET");
+      const sinceRaw = url.searchParams.get("since") ?? undefined;
+      const since = parseSince(sinceRaw);
+      if (sinceRaw && !since) throw new HttpError(400, "bad_request", "since must be like 24h, 7d, 2w or an ISO-8601 instant");
+      const untilRaw = url.searchParams.get("until") ?? undefined;
+      const until = parseSince(untilRaw);
+      if (untilRaw && !until) throw new HttpError(400, "bad_request", "until must be an ISO-8601 instant");
+      return send(res, 200, collectStats(store, deps.deliveryLog, { since, until, skill: url.searchParams.get("skill") ?? undefined }));
     }
     if (segments[0] === "runners" && segments.length === 1) {
       requireAdmin(headers, req, viaProxy, ip);

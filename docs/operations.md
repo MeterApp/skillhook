@@ -281,6 +281,10 @@ Probes run with the job environment (`baseRunEnv`): a `CLAUDE_CONFIG_DIR`, `CODE
 
 The server keeps one report per flavour for `health.cache_seconds` (60) and publishes `health.changed` on the event stream when a check changes status (or on the first report), so a dashboard can watch logins expire and MCP servers fail without polling.
 
+## Stats
+
+`skillhook stats [--since 24h|7d|2w|ISO] [--until ISO] [--skill NAME]` sums up the job directories and the delivery log: jobs by status, outcome, trigger, runner and failure kind, success and completion rates, duration and queue-wait percentiles, cost and tokens, deliveries by outcome and HTTP status, and the same per skill. It reads the files directly (no server needed); the same report is `GET /stats` ([api.md](api.md#get-stats)) and the MCP tool `get_stats`. Without `--since` the newest 5000 jobs and deliveries are counted.
+
 ## Keeping a Mac awake
 
 Jobs run only while the machine is awake. On a desktop Mac disable sleep (`sudo pmset -a sleep 0`, or System Settings → Energy → Prevent automatic sleeping when the display is off). A laptop that stays on power can run `caffeinate -s` in a terminal, or use the same `pmset` setting. Tailscale reconnects after wake and providers such as Granola retry failed deliveries for days, so a short sleep loses nothing, but a long one delays every job until wake. Schedules are caught up at wake according to each hook's `catch_up` ([schedules.md](schedules.md)); `skillhook doctor` warns when a machine with schedules is allowed to sleep.

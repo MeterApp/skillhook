@@ -475,6 +475,21 @@ describe("cli", () => {
     expect(await main(["jobs", "list", "--failure", "nope", ...dir, "--json"], bad.cli)).toBe(2);
   });
 
+  it("prints stats over the local jobs", async () => {
+    const stats = io();
+    expect(await main(["stats", ...dir, "--json"], stats.cli)).toBe(0);
+    const report = stats.json() as { jobs: { total: number; by_status: Record<string, number> }; deliveries: { total: number }; skills: Record<string, { jobs: number }> };
+    expect(report.jobs.total).toBeGreaterThan(3);
+    expect(report.jobs.by_status.succeeded).toBeGreaterThan(0);
+    expect(report.skills.hello?.jobs).toBeGreaterThan(0);
+    const human = io();
+    expect(await main(["stats", "--since", "7d", "--skill", "hello", ...dir], human.cli)).toBe(0);
+    expect(human.out()).toContain("skill hello");
+    expect(human.out()).toContain("by skill:");
+    const bad = io();
+    expect(await main(["stats", "--since", "lately", ...dir, "--json"], bad.cli)).toBe(2);
+  });
+
   it("runs doctor, url and expose status without crashing", async () => {
     const d = io({ SKILLHOOK_NO_UPDATE_CHECK: "1" });
     const code = await main(["doctor", ...dir, "--json"], d.cli);

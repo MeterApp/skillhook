@@ -13,6 +13,7 @@ import { healthCommand } from "./health.js";
 import { jobCommand } from "./job.js";
 import { jobsCommand } from "./jobs.js";
 import { runnersCommand } from "./runners.js";
+import { statsCommand } from "./stats.js";
 import { deliveriesCommand } from "./deliveries.js";
 import { exposeCommand, urlCommand } from "./expose.js";
 import { serviceCommand } from "./service.js";
@@ -59,6 +60,7 @@ Running
   jobs cancel <id> | replay <id> [--skip-filters] [--wait S] | resume <id> [--exec] | path <id> | prune [--keep N]
   deliveries list [--skill S] [--outcome O] [--since ISO] [--after ID] [--limit N] | show <id> [--body]   Every webhook received, whatever became of it
   deliveries replay <id> [--force] [--skip-filters] [--runner R] [--model M] [--wait S]   Run a recorded delivery again (no signature check)
+  stats [--since 24h|7d|ISO] [--until ISO] [--skill S]      Jobs by status, outcome, runner and failure; durations, cost, tokens; deliveries; per skill
 
 Agents
   mcp [--print-config]                                     MCP server over stdio (tools for Claude Code, Codex, Cursor, …)
@@ -93,6 +95,7 @@ const COMMANDS: Record<string, Command> = {
   doctor: doctorCommand,
   health: healthCommand,
   runners: runnersCommand,
+  stats: statsCommand,
   config: configCommand,
   mcp: mcpCommand,
   update: updateCommand,

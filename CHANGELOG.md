@@ -71,6 +71,11 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
   question, or outcome `needs_human`); a run that ends with its question unanswered counts as
   `needs_human`. New block fields `agent_api` (`mcp` | `cli` | `none`) and `human_wait_seconds`; new
   job variables `SKILLHOOK_BIN`, `SKILLHOOK_HOME`, `SKILLHOOK_HUMAN_WAIT_SECONDS`.
+- Stats. `skillhook stats [--since 24h|7d|ISO] [--until ISO] [--skill S]`, `GET /stats` and the MCP tool
+  `get_stats` sum up the job directories and the delivery log: jobs by status, outcome, trigger, runner
+  and failure kind, success and completion rates, duration and queue-wait percentiles, cost and
+  tokens (Claude and Codex usage added up), deliveries by outcome and HTTP status, and the same per
+  skill.
 - Runner readiness, failure kinds and fallback. Before a job spawns, skillhook checks that its runner is
   installed and logged in (or has an API key), with the job environment, cached for
   `health.readiness_cache_seconds` (60): `skillhook runners`, `GET /runners`, MCP `get_runners`, event

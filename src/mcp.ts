@@ -19,6 +19,7 @@ import { resolveRunSettings } from "./run.js";
 import type { Paths } from "./paths.js";
 import { listSchedules, scheduleStatus } from "./scheduler.js";
 import { skillSummary } from "./server.js";
+import { collectStats, formatStats, parseSince } from "./stats.js";
 import { installService, readServiceLog, restartService, serviceStatus, uninstallService } from "./service.js";
 import { AUTH_TYPES, parseSkillDocument, type AuthType } from "./skills.js";
 import { currentExposures, disableExposure, enableExposure, tailscaleStatus } from "./tailscale.js";
@@ -461,6 +462,20 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
       }
       const report = await runHealth(paths, { env, deep: deep ?? true, network: network ?? true });
       return ok({ via: "local", ...report }, formatHealth(report));
+    }),
+  );
+
+  server.registerTool(
+    "get_stats",
+    { title: "Stats", description: "Numbers over the jobs and deliveries on this machine: jobs by status, outcome, trigger, runner and failure kind, success and completion rates, duration and queue-wait percentiles, cost and tokens, deliveries by outcome and HTTP status, and the same per skill. `since` takes 24h, 7d, 2w or an ISO-8601 instant.", inputSchema: z.object({ since: z.string().optional(), until: z.string().optional(), skill: z.string().optional() }) },
+    wrap(({ since, until, skill }) => {
+      const parsedSince = parseSince(since);
+      if (since && !parsedSince) throw new Error("since must be like 24h, 7d, 2w or an ISO-8601 instant");
+      const parsedUntil = parseSince(until);
+      if (until && !parsedUntil) throw new Error("until must be an ISO-8601 instant");
+      const o = ops();
+      const report = collectStats(o.store, o.deliveryLog, { since: parsedSince, until: parsedUntil, skill });
+      return ok({ ...report }, formatStats(report));
     }),
   );
 

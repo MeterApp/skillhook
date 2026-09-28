@@ -819,6 +819,34 @@ describe("HTTP surface", () => {
     expect(ok.status).toBe("succeeded");
   });
 
+  it("serves stats over the jobs and deliveries it recorded", async () => {
+    const auth = { authorization: `Bearer ${ADMIN}` };
+    expect((await fetch(`${base}/stats`, { headers: { "x-forwarded-for": "203.0.113.1" } })).status).toBe(401);
+    expect((await fetch(`${base}/stats?since=yesterday`, { headers: auth })).status).toBe(400);
+    expect((await fetch(`${base}/stats?until=nope`, { headers: auth })).status).toBe(400);
+    const all = (await json(await fetch(`${base}/stats`, { headers: auth }))) as unknown as { window: { since: string | null }; jobs: { total: number; by_status: Record<string, number>; by_failure_kind: Record<string, number>; success_rate: number | null; cost_usd: number; tokens: { input: number } }; deliveries: { total: number; by_outcome: Record<string, number>; by_http_status: Record<string, number> }; skills: Record<string, { jobs: number; deliveries: number }> };
+    expect(all.window.since).toBeNull();
+    expect(all.jobs.total).toBeGreaterThan(10);
+    expect(all.jobs.by_status.succeeded).toBeGreaterThan(5);
+    expect(all.jobs.by_failure_kind.rate_limit).toBeGreaterThanOrEqual(1);
+    expect(all.jobs.success_rate).toBeGreaterThan(0);
+    expect(all.jobs.cost_usd).toBeGreaterThan(0);
+    expect(all.jobs.tokens.input).toBeGreaterThan(0);
+    expect(all.deliveries.total).toBeGreaterThan(all.jobs.total - 5);
+    expect(all.deliveries.by_outcome.rejected).toBeGreaterThan(0);
+    expect(all.deliveries.by_http_status["401"]).toBeGreaterThan(0);
+    const hello = all.skills.hello!;
+    expect(hello).toMatchObject({ jobs: expect.any(Number) });
+    expect(hello.deliveries).toBeGreaterThan(hello.jobs - 1);
+    const recent = (await json(await fetch(`${base}/stats?since=1h&skill=hello`, { headers: auth }))) as unknown as { window: { skill: string; since: string }; jobs: { total: number }; skills: Record<string, unknown> };
+    expect(recent.window.skill).toBe("hello");
+    expect(Date.parse(recent.window.since)).toBeGreaterThan(Date.now() - 3_700_000);
+    expect(recent.jobs.total).toBe(hello.jobs);
+    expect(Object.keys(recent.skills)).toEqual(["hello"]);
+    const none = (await json(await fetch(`${base}/stats?until=2020-01-01T00:00:00Z`, { headers: auth }))) as unknown as { jobs: { total: number }; deliveries: { total: number } };
+    expect(none).toMatchObject({ jobs: { total: 0 }, deliveries: { total: 0 } });
+  });
+
   it("pages and filters jobs", async () => {
     const auth = { authorization: `Bearer ${ADMIN}` };
     const first = (await json(await fetch(`${base}/jobs?limit=2`, { headers: auth }))) as unknown as { jobs: { id: string }[]; next_after: string | null };

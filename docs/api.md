@@ -21,6 +21,7 @@ Related: [security.md](security.md) (authentication), [skills.md](skills.md) (fi
 | `GET` | `/health/checks` | admin | The grouped health report (`skillhook health`), cached; `?deep=0`, `?network=1`, `?refresh=1`. |
 | `GET` | `/doctor` | admin | The quick report (`skillhook doctor`), cached; `?network=0`, `?refresh=1`. |
 | `GET` | `/runners` | admin | Is each runner installed and logged in (what a job checks before it starts); `?refresh=1`. |
+| `GET` | `/stats` | admin | Numbers over jobs and deliveries: by status, outcome, runner, failure kind; durations, cost, tokens; per skill (`?since=24h`, `?until=`, `?skill=`). |
 | `GET`, `HEAD` | `/hooks/<skill>` | none | `200` text when the skill exists, is enabled and has a webhook, `404` otherwise (`schedule_only` for a `webhook: false` skill). Lets providers "test" the URL. |
 | `POST`, `PUT` | `/hooks/<skill>` | the skill's `auth` | Deliver a webhook. `404 schedule_only` for a skill with `webhook: false`. |
 | `GET` | `/skills` | admin | Every skill with its effective settings. |
@@ -428,6 +429,22 @@ curl -sS -X POST -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" -H "Content-T
 ## `POST /jobs/<id>/replay`
 
 The same for an earlier job, whatever its trigger: its `event.json` (payload, redacted headers, query) is run again as a new job with `trigger: "replay"` and `replay_of: {"job": "<id>"}`. The body takes `skip_filters`, `runner`, `model`, `effort` and `wait` as above (`force` is not needed: a job's request was accepted). `404 unknown_job` / `404 unknown_skill`.
+
+## `GET /stats`
+
+Query: `since=<24h|7d|2w|ISO-8601>` (default: everything on disk, newest 5000 jobs and deliveries), `until=<ISO-8601>`, `skill=<name>`. Response:
+
+```json
+{
+  "window": { "since": "2026-09-27T12:00:00.000Z", "until": null, "skill": null },
+  "jobs": { "total": 42, "finished": 40, "queued": 1, "running": 1, "by_status": { "succeeded": 37, "failed": 2, "timed_out": 1, "…": 0 }, "by_outcome": { "completed": 30, "partial": 2, "needs_human": 3, "nothing_to_do": 2, "failed": 3, "unknown": 0 }, "by_trigger": { "webhook": 38, "…": 0 }, "by_runner": { "claude": 40, "codex": 2, "shell": 0 }, "by_failure_kind": { "rate_limit": 1, "auth": 1, "…": 0 }, "success_rate": 0.925, "completion_rate": 0.865, "duration_ms": { "count": 40, "p50": 42000, "p95": 190000, "avg": 61000, "max": 300000 }, "queue_wait_ms": { "count": 41, "p50": 200, "p95": 4000, "avg": 700, "max": 9000 }, "cost_usd": 1.2345, "tokens": { "input": 120000, "output": 30000, "cached_input": 80000 }, "waiting_for_human": 2 },
+  "deliveries": { "total": 60, "by_outcome": { "accepted": 42, "duplicate": 3, "in_flight": 0, "skipped": 5, "rejected": 10, "challenge": 0, "error": 0 }, "by_http_status": { "202": 42, "200": 8, "401": 9, "413": 1 }, "accepted_rate": 0.7, "last_received_at": "2026-09-28T11:58:00.000Z" },
+  "skills": { "hello": { "jobs": 30, "by_status": { "…": 0 }, "by_outcome": { "…": 0 }, "success_rate": 0.97, "cost_usd": 0.9, "tokens": { "…": 0 }, "duration_ms": { "…": 0 }, "deliveries": 41, "last_job": { "id": "20260928T115800Z-k3x9q2", "status": "succeeded", "outcome": "completed", "created_at": "2026-09-28T11:58:00.000Z" } } },
+  "generated_at": "2026-09-28T12:00:00.000Z"
+}
+```
+
+`success_rate` is succeeded over finished jobs; `completion_rate` is completed plus nothing_to_do over finished jobs with a reported outcome; percentiles are nearest-rank over finished jobs (`queue_wait_ms`: creation to start). Tokens add Claude's `input_tokens` / `output_tokens` / `cache_read_input_tokens` and Codex's `input_tokens` / `output_tokens` / `cached_input_tokens`. `400 bad_request` for a `since` or `until` that does not parse.
 
 ## Delivery record
 
