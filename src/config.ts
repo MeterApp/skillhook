@@ -1,4 +1,6 @@
+import { statSync } from "node:fs";
 import { z } from "zod";
+import type { Events } from "./events.js";
 import { FallbackSchema } from "./runners/failure.js";
 import { readFileSync } from "node:fs";
 import { exists, writeJsonFile } from "./util.js";
@@ -168,24 +170,141 @@ export function writeConfig(paths: Paths, config: ConfigInput | Record<string, u
   writeJsonFile(paths.configFile, config);
 }
 
-/** Sets a dotted key (`defaults.model`) in the raw config file, validating the result. */
-export function setConfigValue(paths: Paths, dotted: string, value: unknown): Record<string, unknown> {
-  const raw = readRawConfig(paths);
+/** Sets (or, with `undefined`, removes) a dotted key in a raw config object; prototype keys are refused. */
+function assignDotted(raw: Record<string, unknown>, dotted: string, value: unknown, file: string): void {
   const segments = dotted.split(".");
   let cursor: Record<string, unknown> = raw;
   for (const segment of segments.slice(0, -1)) {
     // `__proto__`, `constructor` and `prototype` would walk into Object.prototype instead of the config file.
-    if (segment === "" || segment === "__proto__" || segment === "constructor" || segment === "prototype") throw new ConfigError(`Invalid config key "${dotted}"`, paths.configFile);
+    if (segment === "" || segment === "__proto__" || segment === "constructor" || segment === "prototype") throw new ConfigError(`Invalid config key "${dotted}"`, file);
     const next = cursor[segment];
     if (typeof next !== "object" || next === null || Array.isArray(next)) cursor[segment] = {};
     cursor = cursor[segment] as Record<string, unknown>;
   }
   const last = segments[segments.length - 1] as string;
-  if (last === "" || last === "__proto__" || last === "constructor" || last === "prototype") throw new ConfigError(`Invalid config key "${dotted}"`, paths.configFile);
+  if (last === "" || last === "__proto__" || last === "constructor" || last === "prototype") throw new ConfigError(`Invalid config key "${dotted}"`, file);
   if (value === undefined) delete cursor[last];
   else cursor[last] = value;
+}
+
+/** Sets a dotted key (`defaults.model`) in the raw config file, validating the result. */
+export function setConfigValue(paths: Paths, dotted: string, value: unknown): Record<string, unknown> {
+  const raw = readRawConfig(paths);
+  assignDotted(raw, dotted, value, paths.configFile);
   writeConfig(paths, raw);
   return raw;
+}
+
+export interface ConfigPatch {
+  /** Dotted keys to set (`{"defaults.model": "sonnet", "concurrency": 3}`). */
+  set?: Record<string, unknown>;
+  /** Dotted keys to remove. */
+  unset?: string[];
+}
+
+/** Applies several changes to the raw config file in one validated write. `$schema` is not a setting. */
+export function updateConfig(paths: Paths, patch: ConfigPatch): { raw: Record<string, unknown>; config: Config } {
+  const raw = readRawConfig(paths);
+  const keys = [...Object.keys(patch.set ?? {}), ...(patch.unset ?? [])];
+  for (const key of keys) if (key === "$schema" || key.startsWith("$schema.")) throw new ConfigError(`"$schema" is not a setting`, paths.configFile);
+  for (const [key, value] of Object.entries(patch.set ?? {})) assignDotted(raw, key, value, paths.configFile);
+  for (const key of patch.unset ?? []) assignDotted(raw, key, undefined, paths.configFile);
+  writeConfig(paths, raw);
+  return { raw, config: ConfigSchema.parse(raw) };
+}
+
+/** Keys that only a restart applies: the bind address. Everything else the running server takes over on reload. */
+export const RESTART_CONFIG_KEYS: (keyof Config)[] = ["host", "port"];
+export const HOT_CONFIG_KEYS: (keyof Config)[] = (Object.keys(ConfigSchema.shape) as (keyof Config)[]).filter((key) => key !== "$schema" && !RESTART_CONFIG_KEYS.includes(key));
+
+/** Top-level keys whose values differ. */
+export function diffConfig(before: Config, after: Config): (keyof Config)[] {
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)] as (keyof Config)[]);
+  return [...keys].filter((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]));
+}
+
+export interface ConfigReload {
+  changed: (keyof Config)[];
+  /** Applied to the live config now. */
+  applied: (keyof Config)[];
+  /** Changed in the file, effective at the next start. */
+  restart_required: (keyof Config)[];
+  pending_restart: (keyof Config)[];
+}
+
+/**
+ * The running server's config: one object, shared by the server, the queue, the scheduler and every run, patched in
+ * place on `reload()` so nothing needs a new reference. Restart-only keys are remembered as `pendingRestart()`.
+ */
+export class ConfigRef {
+  readonly current: Config;
+  private readonly pending = new Set<keyof Config>();
+  /** The restart-only values this process started with; a file that returns to them clears the pending restart. */
+  private readonly startedWith: Record<string, string>;
+  private stamp = -1;
+
+  constructor(
+    private readonly paths: Paths,
+    initial: Config,
+    private readonly deps: { events?: Events; onChange?: (applied: (keyof Config)[], config: Config) => void } = {},
+  ) {
+    this.current = initial;
+    this.startedWith = Object.fromEntries(RESTART_CONFIG_KEYS.map((key) => [key, JSON.stringify(initial[key])]));
+    this.stamp = this.mtime();
+  }
+
+  get(): Config {
+    return this.current;
+  }
+
+  pendingRestart(): (keyof Config)[] {
+    return [...this.pending];
+  }
+
+  private mtime(): number {
+    try {
+      return statSync(this.paths.configFile).mtimeMs;
+    } catch {
+      return 0;
+    }
+  }
+
+  /** Re-reads the file (throws `ConfigError` when it is invalid; the live config is then untouched). */
+  reload(): ConfigReload {
+    this.stamp = this.mtime(); // this version of the file has been looked at, valid or not
+    const next = loadConfig(this.paths);
+    const changed = diffConfig(this.current, next);
+    const applied: (keyof Config)[] = [];
+    const restart: (keyof Config)[] = [];
+    for (const key of changed) {
+      if (RESTART_CONFIG_KEYS.includes(key)) restart.push(key);
+      else {
+        (this.current as Record<string, unknown>)[key] = next[key];
+        applied.push(key);
+      }
+    }
+    for (const key of RESTART_CONFIG_KEYS) {
+      if (JSON.stringify(next[key]) !== this.startedWith[key]) this.pending.add(key);
+      else this.pending.delete(key);
+    }
+    const result: ConfigReload = { changed, applied, restart_required: restart, pending_restart: this.pendingRestart() };
+    if (changed.length) {
+      this.deps.onChange?.(applied, this.current);
+      this.deps.events?.emit("config.changed", { ...result, config: this.current });
+    }
+    return result;
+  }
+
+  /** Reloads when the file's mtime changed (what `serve` polls every few seconds); errors go to `onError`. */
+  poll(onError?: (error: unknown) => void): ConfigReload | undefined {
+    if (this.mtime() === this.stamp) return undefined;
+    try {
+      return this.reload();
+    } catch (error) {
+      onError?.(error);
+      return undefined;
+    }
+  }
 }
 
 /** Parses a CLI value: JSON when it looks like JSON, otherwise a string. */

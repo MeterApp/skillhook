@@ -475,6 +475,22 @@ describe("cli", () => {
     expect(await main(["jobs", "list", "--failure", "nope", ...dir, "--json"], bad.cli)).toBe(2);
   });
 
+  it("tells about the server when the config changes, and reload needs one", async () => {
+    const set = io();
+    expect(await main(["config", "set", "max_wait_seconds", "45", ...dir, "--json"], set.cli)).toBe(0);
+    expect(set.json()).toMatchObject({ ok: true, key: "max_wait_seconds", value: 45, server: null });
+    const unset = io();
+    expect(await main(["config", "unset", "max_wait_seconds", ...dir], unset.cli)).toBe(0);
+    expect(unset.out()).toContain("Removed max_wait_seconds");
+    expect(unset.out()).not.toContain("Server at");
+    const reload = io();
+    expect(await main(["config", "reload", ...dir, "--json"], reload.cli)).toBe(1);
+    expect(String(reload.json().error)).toContain("No running server");
+    const where = io();
+    expect(await main(["config", "path", ...dir, "--json"], where.cli)).toBe(0);
+    expect(where.json().restart_keys).toEqual(["host", "port"]);
+  });
+
   it("prints stats over the local jobs", async () => {
     const stats = io();
     expect(await main(["stats", ...dir, "--json"], stats.cli)).toBe(0);

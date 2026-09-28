@@ -334,7 +334,7 @@ Agents reading this repository should start with [`AGENTS.md`](AGENTS.md) (layou
 | `skillhook stats [--since 24h\|7d\|ISO] [--until ISO] [--skill S]` | Jobs by status, outcome, runner and failure kind; durations, cost, tokens; deliveries by outcome; per skill. |
 | `skillhook deliveries list [--skill S] [--outcome O] [--since ISO] [--after ID] [--limit N]` · `deliveries show <id> [--body]` · `deliveries replay <id> [--force] [--skip-filters] [--wait S]` | Every webhook the server received, whatever became of it: accepted, duplicate, in flight, skipped by a filter, rejected (with the status and reason), Slack challenge; replay one through the skill as it is now. |
 | `skillhook mcp [--print-config]` · `mcp --job` | MCP server over stdio; `--print-config` prints client configuration; `--job` serves one run's job API (the runners start it). |
-| `skillhook config show\|get <key>\|set <key> <value>\|unset <key>\|path` | Read and edit `skillhook.json`. |
+| `skillhook config show\|get <key>\|set <key> <value>\|unset <key>\|reload\|path` | Read and edit `skillhook.json`; `set`/`unset` tell the running server, which applies every key but `host` and `port` live. |
 | `skillhook link [dir] [--no-secret]` / `skillhook unlink <dir>` | Serve the hooks a repository declares in its `skillhook.yaml` (default `.`); stop serving them. |
 | `skillhook projects [list]` / `skillhook projects init [dir] [--force]` | List linked repositories and their hooks; write a starter `skillhook.yaml` and link it. |
 | `skillhook schedules [list]` · `schedules next <name> [--count N]` · `schedules run <name> [--wait S]` | Every skill or hook with a `schedule:`, its next and last runs; preview occurrences; fire one now. |

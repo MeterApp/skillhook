@@ -1,3 +1,4 @@
+import { ConfigRef } from "../config.js";
 import { DeliveryLog } from "../delivery-log.js";
 import { ADMIN_TOKEN_ENV, readEnvFile } from "../env.js";
 import { Events } from "../events.js";
@@ -7,17 +8,28 @@ import { baseRunEnv } from "../runners/env.js";
 import { JobQueue } from "../queue.js";
 import { createLogger } from "../logger.js";
 import { Scheduler } from "../scheduler.js";
-import { clearServerState, createServer, writeServerState } from "../server.js";
+import { clearServerState, createServer, writeServerState, type ServerControl } from "../server.js";
+import { serviceStatus } from "../service.js";
+import { errorMessage } from "../util.js";
 import { checkForUpdate, detectInstall, releaseNotesUrl, UPDATE_CHECK_INTERVAL_MS } from "../update.js";
 import { VERSION } from "../version.js";
 import { bool, num, str, type Ctx } from "./shared.js";
 
 export async function serveCommand(ctx: Ctx): Promise<number> {
-  const config = { ...ctx.config() };
+  const events = new Events();
+  // One live config object for everything in this process; reloads patch it in place (see ConfigRef).
+  const configRef = new ConfigRef(ctx.paths, ctx.config(), {
+    events,
+    onChange: (applied, next) => {
+      if (applied.includes("log_level") && !str(ctx.flags, "log-level")) logger.setLevel(next.log_level);
+      if (applied.includes("jobs")) store.configure({ maxJobs: next.jobs.max_jobs, dedupeWindowSeconds: next.jobs.dedupe_window_seconds });
+    },
+  });
+  const config = configRef.current;
   const port = num(ctx.flags, "port") ?? config.port;
   const host = str(ctx.flags, "host") ?? config.host;
   const logger = createLogger({ level: (str(ctx.flags, "log-level") as "info" | undefined) ?? config.log_level, format: bool(ctx.flags, "pretty") || (ctx.io.isTTY && !ctx.json) ? "pretty" : "json" });
-  const events = new Events(logger);
+  events.setLogger(logger);
   const registry = ctx.registry();
   registry.onChange((change) => events.emit("skill.changed", change));
   const store = ctx.store();
@@ -28,7 +40,30 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   const scheduler = new Scheduler({ registry, store, queue, config, logger, events });
   const startedAt = new Date().toISOString();
   const health = new HealthCache(ctx.paths, { ttlMs: () => config.health.cache_seconds * 1000, options: () => ({ env: ctx.io.env, timeoutMs: config.health.probe_timeout_seconds * 1000, live: () => ({ started_at: startedAt, queue: queue.stats() }) }), events });
-  const server = createServer({ config, paths: ctx.paths, store, queue, registry, secrets, logger, events, deliveryLog, health, readiness, schedules: () => scheduler.status() });
+  let shuttingDown = false;
+  const stop = async (reason: string, options: { force: boolean; waitSeconds: number }) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info("shutting down", { reason, running: queue.stats().running, force: options.force, wait_seconds: options.waitSeconds });
+    events.emit("server.stopping", { reason, running: queue.stats().running });
+    scheduler.stop();
+    server.close();
+    if (options.force) await queue.shutdown();
+    else if ((await queue.drain(options.waitSeconds * 1000)) > 0) {
+      logger.warn("jobs still running after the wait; terminating them", { running: queue.stats().running });
+      await queue.shutdown();
+    }
+    clearServerState(ctx.paths);
+    process.exit(0);
+  };
+  const control: ServerControl = {
+    supervised: async () => {
+      const status = await serviceStatus(ctx.paths);
+      return status.running && status.pid === process.pid;
+    },
+    restart: (options) => void stop("restart", options),
+  };
+  const server = createServer({ config, paths: ctx.paths, store, queue, registry, secrets, logger, events, deliveryLog, health, readiness, configRef, control, schedules: () => scheduler.status() });
 
   const loaded = registry.list();
   for (const error of loaded.errors) logger.error("skill failed to load", { skill: error.name, error: error.error });
@@ -70,20 +105,13 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   void announceUpdate();
   setInterval(() => void announceUpdate(), UPDATE_CHECK_INTERVAL_MS).unref();
 
-  let shuttingDown = false;
-  const shutdown = async (signal: string) => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    logger.info("shutting down", { signal, running: queue.stats().running });
-    events.emit("server.stopping", { reason: signal, running: queue.stats().running });
-    scheduler.stop();
-    server.close();
-    await queue.shutdown();
-    clearServerState(ctx.paths);
-    process.exit(0);
-  };
-  process.on("SIGINT", () => void shutdown("SIGINT"));
-  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  // A manual edit of skillhook.json is picked up within a few seconds (`skillhook config set` also tells the server).
+  setInterval(() => {
+    const reload = configRef.poll((error) => logger.error("config file is invalid; keeping the running settings", { error: errorMessage(error) }));
+    if (reload?.changed.length) logger.info("config reloaded", { applied: reload.applied, restart_required: reload.restart_required });
+  }, 5_000).unref();
+  process.on("SIGINT", () => void stop("SIGINT", { force: true, waitSeconds: 0 }));
+  process.on("SIGTERM", () => void stop("SIGTERM", { force: true, waitSeconds: 0 }));
   await new Promise(() => {
     /* run until signalled */
   });

@@ -223,6 +223,14 @@ Once the cause is fixed (a secret pasted, a filter corrected, a skill installed)
 | `log_level` | `"info"` | `debug`, `info`, `warn`, `error`. |
 | `update_check` | `true` | Daily check of the npm registry for a newer skillhook (`SKILLHOOK_NO_UPDATE_CHECK=1` and `CI` disable it as well). |
 
+### Changing it while the server runs
+
+The running server holds one live configuration. `skillhook config set` / `unset` (and the MCP tool `update_config`, and `PATCH /config`) write the file and tell the server, which re-reads it at once; a file edited by hand is noticed within five seconds, or right away with `skillhook config reload` (`POST /config/reload`). Every key but `host` and `port` applies live: concurrency, defaults, limits, rate limits, retention, health and delivery settings, `log_level`, `env_passthrough`, `projects`, the runner commands. `host` and `port` are the bind address and wait for a restart; the server reports them as `pending_restart` (`GET /config`, `skillhook config set` prints `restart required for: port`). A file that does not validate is refused: `config set` refuses to write it, and a hand-edited invalid file is logged and ignored until it parses again. Each reload that changed something is a `config.changed` event on `GET /events`.
+
+### Restarting the server
+
+`skillhook service restart` restarts the service now. `POST /control/restart` (MCP `restart_server`) is the gentle version for a server run as the service: it stops taking requests, lets running jobs finish (up to `wait_seconds`, default 30; `force` terminates them) and exits, and launchd / systemd starts it again; queued jobs survive. A `skillhook serve` in a terminal answers `409 not_a_service` (nothing would bring it back): stop it with Ctrl-C instead.
+
 Examples:
 
 ```bash

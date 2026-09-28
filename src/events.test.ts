@@ -46,6 +46,7 @@ describe("Events", () => {
     const errors: Record<string, unknown>[] = [];
     const logger: Logger = {
       level: "error",
+    setLevel() {},
       debug() {},
       info() {},
       warn() {},

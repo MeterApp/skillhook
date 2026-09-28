@@ -1,12 +1,15 @@
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { closeSync, openSync, readSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, statSync, unlinkSync } from "node:fs";
+import path from "node:path";
 import { parseAuthorizationScheme, safeEqual, verifyRequest, type InboundRequest } from "./auth.js";
-import type { Config } from "./config.js";
+import { ConfigError, configExists, HOT_CONFIG_KEYS, RESTART_CONFIG_KEYS, updateConfig, type Config, type ConfigRef } from "./config.js";
 import { DELIVERY_OUTCOMES, readDeliveryBody, type DeliveryLog, type DeliveryOutcome } from "./delivery-log.js";
 import { ADMIN_TOKEN_ENV, type Secrets } from "./env.js";
 import { EVENT_TYPES, type Events } from "./events.js";
 import type { HealthCache } from "./health.js";
 import type { ReadinessCache } from "./readiness.js";
+import { readServiceLog, serviceStatus as readServiceStatus, type ServiceStatus } from "./service.js";
+import { applyUpdate, type ApplyUpdateResult } from "./update.js";
 import { FAILURE_KINDS, type FailureKind } from "./runners/failure.js";
 import { describeCondition, evaluateConditions } from "./filters.js";
 import { newJobId } from "./ids.js";
@@ -45,6 +48,15 @@ export interface ServerDeps {
   health?: HealthCache;
   /** Runner readiness behind `GET /runners` (the queue's pre-flight shares it). */
   readiness?: ReadinessCache;
+  /** The live config behind `GET /config`, `PATCH /config` and `POST /config/reload` (built by `serve`). */
+  configRef?: ConfigRef;
+  /** `POST /control/restart` (built by `serve`; absent means 404). */
+  control?: ServerControl;
+  /** Injectable for tests: the launchd / systemd status and the service log behind `GET /service` and `GET /logs`. */
+  serviceStatus?: () => Promise<ServiceStatus>;
+  serviceLog?: (lines: number) => string;
+  /** Injectable for tests: the update check and install behind `POST /update`. */
+  applyUpdate?: (options: { install: boolean }) => Promise<ApplyUpdateResult>;
   /** The process-wide event bus: `GET /events` streams it and `GET /jobs/<id>/events` follows one job on it. */
   events?: Events;
   /** Where every `/hooks/<skill>` request is recorded; `GET /deliveries` reads it. Absent: nothing is recorded. */
@@ -74,10 +86,13 @@ class HttpError extends Error {
 /** Fixed-window counter per key; good enough to blunt brute force and accidental floods. */
 export class RateLimiter {
   private buckets = new Map<string, { count: number; resetAt: number }>();
+  private readonly limit: () => number;
   constructor(
-    private readonly limit: number,
+    limit: number | (() => number),
     private readonly windowMs = 60_000,
-  ) {}
+  ) {
+    this.limit = typeof limit === "number" ? () => limit : limit; // a getter follows config reloads
+  }
   hit(key: string, now = Date.now()): boolean {
     const bucket = this.buckets.get(key);
     if (!bucket || bucket.resetAt <= now) {
@@ -86,8 +101,15 @@ export class RateLimiter {
       return true;
     }
     bucket.count++;
-    return bucket.count <= this.limit;
+    return bucket.count <= this.limit();
   }
+}
+
+/** What `POST /control/restart` needs from `serve`: whether a supervisor brings the server back, and the stop itself. */
+export interface ServerControl {
+  supervised(): Promise<boolean>;
+  /** Stops accepting requests, lets running jobs finish (or kills them when forced), exits 0. Called after the response was sent. */
+  restart(options: { force: boolean; waitSeconds: number }): void;
 }
 
 function lowerHeaders(req: IncomingMessage): Record<string, string> {
@@ -290,8 +312,8 @@ export function skillSummary(skill: Skill, config: Config, secrets: Secrets): Re
 
 export function createServer(deps: ServerDeps): Server {
   const { config, store, queue, registry, logger } = deps;
-  const requests = new RateLimiter(config.rate_limit.requests_per_minute);
-  const authFailures = new RateLimiter(config.rate_limit.auth_failures_per_minute);
+  const requests = new RateLimiter(() => config.rate_limit.requests_per_minute);
+  const authFailures = new RateLimiter(() => config.rate_limit.auth_failures_per_minute);
   const startedAt = Date.now();
 
   /** Admin = a valid admin token, or a direct loopback connection with no proxy headers and no token (the CLI on this machine). */
@@ -659,6 +681,84 @@ export function createServer(deps: ServerDeps): Server {
       const network = quick ? url.searchParams.get("network") !== "0" : url.searchParams.get("network") === "1";
       const { report, cached } = await deps.health.get({ deep, network, refresh: url.searchParams.get("refresh") === "1" });
       return send(res, 200, { ...report, cached });
+    }
+    if (segments[0] === "config" && (segments.length === 1 || (segments.length === 2 && segments[1] === "reload"))) {
+      requireAdmin(headers, req, viaProxy, ip);
+      const describe = (reload?: { applied: string[]; restart_required: string[]; pending_restart: string[] }) => ({ config: deps.configRef?.get() ?? config, file: deps.paths.configFile, exists: configExists(deps.paths), hot_keys: HOT_CONFIG_KEYS, restart_keys: RESTART_CONFIG_KEYS, pending_restart: reload?.pending_restart ?? deps.configRef?.pendingRestart() ?? [] });
+      if (segments.length === 1 && method === "GET") return send(res, 200, describe());
+      if (segments.length === 2 && method === "POST") {
+        if (!deps.configRef) throw new HttpError(404, "not_found", "this server does not reload its config");
+        let reload: ReturnType<ConfigRef["reload"]>;
+        try {
+          reload = deps.configRef.reload();
+        } catch (error) {
+          if (error instanceof ConfigError) throw new HttpError(400, "config_invalid", error.message);
+          throw error;
+        }
+        logger.info("config reloaded", { applied: reload.applied, restart_required: reload.restart_required });
+        return send(res, 200, { ok: true, changed: reload.changed, applied: reload.applied, restart_required: reload.restart_required.length > 0, restart_required_keys: reload.restart_required, ...describe(reload) });
+      }
+      if (segments.length === 1 && method === "PATCH") {
+        const rawBody = await readBody(req, config.max_body_bytes);
+        const body = rawBody.length ? (parseBody(headers["content-type"], rawBody).payload as Record<string, unknown>) : {};
+        if (!isPlainObject(body)) throw new HttpError(400, "bad_request", "expected a JSON object body");
+        if (body.set !== undefined && !isPlainObject(body.set)) throw new HttpError(400, "bad_request", "set must be an object of dotted keys");
+        if (body.unset !== undefined && !(Array.isArray(body.unset) && body.unset.every((k) => typeof k === "string"))) throw new HttpError(400, "bad_request", "unset must be an array of dotted keys");
+        const patch = { set: body.set as Record<string, unknown> | undefined, unset: body.unset as string[] | undefined };
+        if (!Object.keys(patch.set ?? {}).length && !patch.unset?.length) throw new HttpError(400, "bad_request", "nothing to change: give set and/or unset");
+        try {
+          updateConfig(deps.paths, patch);
+        } catch (error) {
+          if (error instanceof ConfigError) throw new HttpError(400, error.message.includes("Invalid config key") || error.message.includes("$schema") ? "config_key_not_allowed" : "config_invalid", error.message);
+          throw error;
+        }
+        const reload = deps.configRef?.reload();
+        logger.info("config updated", { set: Object.keys(patch.set ?? {}), unset: patch.unset ?? [], applied: reload?.applied, restart_required: reload?.restart_required });
+        return send(res, 200, { ok: true, applied: reload?.applied ?? [], restart_required: (reload?.restart_required.length ?? 0) > 0, restart_required_keys: reload?.restart_required ?? [], ...describe(reload), ...(deps.configRef ? {} : { note: "written to the file; this server has no live config, restart it" }) });
+      }
+      throw new HttpError(405, "method_not_allowed", "use GET, PATCH or POST /config/reload");
+    }
+    if (segments[0] === "control" && segments.length === 2 && segments[1] === "restart") {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (method !== "POST") throw new HttpError(405, "method_not_allowed", "use POST");
+      if (!deps.control) throw new HttpError(404, "not_found", "this server cannot restart itself");
+      const rawBody = await readBody(req, config.max_body_bytes);
+      const body = rawBody.length ? (parseBody(headers["content-type"], rawBody).payload as Record<string, unknown>) : {};
+      if (!isPlainObject(body)) throw new HttpError(400, "bad_request", "expected a JSON object body");
+      const force = body.force === true;
+      const waitSeconds = Math.min(600, Math.max(0, Math.floor(Number(body.wait_seconds ?? 30)) || 0));
+      if (!(await deps.control.supervised())) throw new HttpError(409, "not_a_service", "this server is not run by launchd or systemd, so nothing would start it again; restart it yourself");
+      logger.warn("restart requested through the admin API", { force, wait_seconds: waitSeconds, ip, running: queue.stats().running });
+      send(res, 202, { ok: true, restarting: true, force, wait_seconds: waitSeconds, running: queue.stats().running });
+      setImmediate(() => deps.control?.restart({ force, waitSeconds }));
+      return;
+    }
+    if (segments[0] === "service" && segments.length === 1) {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (method !== "GET") throw new HttpError(405, "method_not_allowed", "use GET");
+      const service = await (deps.serviceStatus ?? (() => readServiceStatus(deps.paths)))();
+      return send(res, 200, { service, this_pid: process.pid, supervised: service.running && service.pid === process.pid });
+    }
+    if (segments[0] === "logs" && segments.length === 1) {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (method !== "GET") throw new HttpError(405, "method_not_allowed", "use GET");
+      const wanted = Number(url.searchParams.get("lines") ?? 200);
+      const count = Number.isFinite(wanted) && wanted > 0 ? Math.min(2000, Math.floor(wanted)) : 200;
+      const text = (deps.serviceLog ?? ((n: number) => readServiceLog(deps.paths, n)))(count);
+      const file = path.join(deps.paths.logsDir, "service.log");
+      return send(res, 200, { file, exists: existsSync(file), lines: text ? text.replace(/\n$/, "").split("\n") : [] });
+    }
+    if (segments[0] === "update" && segments.length === 1) {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (method !== "POST") throw new HttpError(405, "method_not_allowed", "use POST");
+      const rawBody = await readBody(req, config.max_body_bytes);
+      const body = rawBody.length ? (parseBody(headers["content-type"], rawBody).payload as Record<string, unknown>) : {};
+      if (!isPlainObject(body)) throw new HttpError(400, "bad_request", "expected a JSON object body");
+      const install = body.install === true;
+      if (install) logger.warn("update install requested through the admin API", { ip });
+      // The server never restarts itself here: a restart is its own request (POST /control/restart).
+      const result = await (deps.applyUpdate ?? ((o: { install: boolean }) => applyUpdate(deps.paths, { install: o.install, restartService: false })))({ install });
+      return send(res, 200, result);
     }
     if (segments[0] === "stats" && segments.length === 1) {
       requireAdmin(headers, req, viaProxy, ip);

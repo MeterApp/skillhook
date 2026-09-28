@@ -170,6 +170,14 @@ export class JobQueue extends EventEmitter {
     return answer;
   }
 
+  /** Stops starting new jobs and waits up to `timeoutMs` for the running ones to finish on their own; returns how many are still running. */
+  async drain(timeoutMs: number): Promise<number> {
+    this.stopping = true;
+    const deadline = Date.now() + timeoutMs;
+    while (this.running.size > 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+    return this.running.size;
+  }
+
   /** Stops starting new jobs and terminates running ones (they are marked interrupted). */
   async shutdown(): Promise<void> {
     this.stopping = true;

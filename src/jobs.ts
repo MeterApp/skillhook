@@ -202,10 +202,15 @@ export class JobStore {
 
   constructor(
     public readonly jobsDir: string,
-    private readonly options: { maxJobs: number; dedupeWindowSeconds: number },
+    private options: { maxJobs: number; dedupeWindowSeconds: number },
   ) {
     ensureDir(jobsDir);
     this.deliveriesFile = path.join(jobsDir, ".deliveries.json");
+  }
+
+  /** New retention and dedupe settings (a config reload). */
+  configure(options: { maxJobs: number; dedupeWindowSeconds: number }): void {
+    this.options = options;
   }
 
   pathsFor(id: string): JobPaths {

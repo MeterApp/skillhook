@@ -25,7 +25,7 @@ What it does not defend against:
 - The server binds `host: 127.0.0.1` by default. Nothing on the LAN or the internet reaches it directly; a TLS proxy on the same machine (Tailscale Serve/Funnel, `cloudflared`, `ngrok`) forwards to it. Keep it that way. `skillhook expose` prints a note if the host is not loopback.
 - `trust_proxy: true` (default) makes skillhook use the first `X-Forwarded-For` (or `X-Real-IP` / `CF-Connecting-IP`) entry as the client IP, but only when the TCP peer is loopback. A remote client cannot spoof its address by sending the header itself.
 - `GET /health` is public but tells outsiders only `{ok, version}`; queue details are added for admin callers.
-- The public URL exposes every route, including the admin API (`/skills`, `/jobs`), which is protected by the admin token (below). For a tailnet-only deployment use `skillhook expose tailscale --serve` and add `allow_ips: ["100.64.0.0/10"]` to skills.
+- The public URL exposes every route, including the admin API (`/skills`, `/jobs`, `/config`, `/control/restart`, `/update`, …), which is protected by the admin token (below). The admin token is root-equivalent for skillhook: it can change the configuration (runner commands included), run any skill, restart the server and install updates. Treat it like a shell account on the machine. For a tailnet-only deployment use `skillhook expose tailscale --serve` and add `allow_ips: ["100.64.0.0/10"]` to skills.
 
 ### Outbound connections
 

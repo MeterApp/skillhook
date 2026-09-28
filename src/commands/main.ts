@@ -67,7 +67,7 @@ Agents
   mcp --job                                                The per-run job API as an MCP server (the runners start it; needs $SKILLHOOK_JOB_ID/$SKILLHOOK_JOB_DIR)
   job progress "<msg>" [--state working|blocked] [--percent N] | ask "<question>" [--option A]... [--wait S] | outcome <o> [--summary S] | note "<text>" | context
                                                            Inside a run: report progress, ask a person (waits for the answer), report the outcome
-  config show | get <key> | set <key> <value> | unset <key> | path
+  config show | get <key> | set <key> <value> | unset <key> | reload | path   set/unset tell the running server; most keys apply live, host/port at the next start
 
 Global options: --dir <path> (default $SKILLHOOK_HOME or ~/.skillhook), --json, --help, --version
 Each subcommand prints its own usage on a mistake. Docs: https://github.com/MeterApp/skillhook

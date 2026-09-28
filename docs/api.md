@@ -22,6 +22,12 @@ Related: [security.md](security.md) (authentication), [skills.md](skills.md) (fi
 | `GET` | `/doctor` | admin | The quick report (`skillhook doctor`), cached; `?network=0`, `?refresh=1`. |
 | `GET` | `/runners` | admin | Is each runner installed and logged in (what a job checks before it starts); `?refresh=1`. |
 | `GET` | `/stats` | admin | Numbers over jobs and deliveries: by status, outcome, runner, failure kind; durations, cost, tokens; per skill (`?since=24h`, `?until=`, `?skill=`). |
+| `GET`, `PATCH` | `/config` | admin | The live `skillhook.json` (defaults applied) with what applies live and what needs a restart; change keys in one validated write. |
+| `POST` | `/config/reload` | admin | Re-read `skillhook.json` (after editing it by hand). |
+| `POST` | `/control/restart` | admin | Stop, let running jobs finish, exit; launchd / systemd starts the server again. `409` when not run as the service. |
+| `GET` | `/service` | admin | The launchd / systemd service status. |
+| `GET` | `/logs` | admin | The last lines of the service log (`?lines=200`). |
+| `POST` | `/update` | admin | Ask npm for a newer skillhook; `{"install": true}` installs it (the server does not restart itself). |
 | `GET`, `HEAD` | `/hooks/<skill>` | none | `200` text when the skill exists, is enabled and has a webhook, `404` otherwise (`schedule_only` for a `webhook: false` skill). Lets providers "test" the URL. |
 | `POST`, `PUT` | `/hooks/<skill>` | the skill's `auth` | Deliver a webhook. `404 schedule_only` for a skill with `webhook: false`. |
 | `GET` | `/skills` | admin | Every skill with its effective settings. |
@@ -381,6 +387,7 @@ A `text/event-stream` of the server's event bus. Each message carries `id` (the 
 | `skill.changed` | `{name, action, source}` with `action` `added`, `changed` or `removed`, noticed when a lookup or listing reads the changed file |
 | `health.changed` | `{report, changed}`: a fresh health report whose checks differ from the previous one of the same flavour (`changed` lists `{name, from, to}`; the first report of a flavour has `from: null`) |
 | `runners.changed` | `{runner, readiness, previous?}`: a runner became usable or stopped being so (installed, logged in), as the readiness check sees it |
+| `config.changed` | `{changed, applied, restart_required, pending_restart, config}`: `skillhook.json` was re-read; `applied` took effect now, `restart_required` at the next start |
 
 ```bash
 curl -sN -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" "http://127.0.0.1:8787/events?types=job.finished,schedule.fired"
@@ -429,6 +436,31 @@ curl -sS -X POST -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" -H "Content-T
 ## `POST /jobs/<id>/replay`
 
 The same for an earlier job, whatever its trigger: its `event.json` (payload, redacted headers, query) is run again as a new job with `trigger: "replay"` and `replay_of: {"job": "<id>"}`. The body takes `skip_filters`, `runner`, `model`, `effort` and `wait` as above (`force` is not needed: a job's request was accepted). `404 unknown_job` / `404 unknown_skill`.
+
+## `GET /config`, `PATCH /config`, `POST /config/reload`
+
+`GET` answers `{config, file, exists, hot_keys, restart_keys, pending_restart}`: the live configuration with defaults applied, which top-level keys the running server applies on reload (`hot_keys`, everything but `host` and `port`) and which wait for a restart (`restart_keys`), and the restart-only keys whose file value differs from what this process started with (`pending_restart`).
+
+`PATCH` takes `{"set": {"<dotted key>": value, …}, "unset": ["<dotted key>", …]}` (at least one of them), writes the file once after validating the whole result, re-reads it into the live config and answers `{ok, applied, restart_required, restart_required_keys, pending_restart, config, …}`. `applied` lists the top-level keys that changed and took effect now; `restart_required_keys` those written for the next start. Errors: `400 config_invalid` (the result would not validate: nothing is written), `400 config_key_not_allowed` (`$schema`, `__proto__` and friends), `400 bad_request` (shape).
+
+```bash
+curl -sS -X PATCH -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" -H "content-type: application/json" \
+  -d '{"set":{"concurrency":4,"defaults.model":"sonnet"},"unset":["defaults.effort"]}' http://127.0.0.1:8787/config
+```
+
+`POST /config/reload` re-reads a file edited by hand (the server also notices a changed file within five seconds on its own) and answers the same shape; `400 config_invalid` when the file does not parse, in which case the running settings are kept. Every reload that changed something is a `config.changed` event.
+
+## `POST /control/restart`
+
+Body `{"force"?: boolean, "wait_seconds"?: number}` (default 30, at most 600). The server answers `202 {ok, restarting: true, force, wait_seconds, running}`, stops accepting requests, lets running jobs finish for up to `wait_seconds` (terminates them at once with `force`, or when the wait runs out), removes `server.json` and exits 0; launchd (`KeepAlive`) or systemd (`Restart=always`) starts it again, and queued jobs are re-queued at start. `409 not_a_service` when this server is not the one the service supervises (a `skillhook serve` in a terminal), since nothing would start it again.
+
+## `GET /service`, `GET /logs`
+
+`/service`: `{service: {platform, installed, running, pid, file, logFile, detail?}, this_pid, supervised}` (`supervised` is what `/control/restart` checks). `/logs?lines=200` (at most 2000): `{file, exists, lines}` from `<home>/logs/service.log`.
+
+## `POST /update`
+
+Body `{"install"?: boolean}`. Answers what `skillhook update` prints: `{ok, current, latest, available, checked_at, registry, cached, install: {method, command}, release_notes, installed, service_restarted, service_note, error?}`. With `install: true` and a newer version, the package manager that installed skillhook runs the upgrade; the server itself keeps running the old code until `POST /control/restart` (it never restarts itself from this route), and `service_note` says so. `ok: false` with `error` when the registry did not answer, when skillhook runs from a source checkout, or when the install failed.
 
 ## `GET /stats`
 
@@ -511,6 +543,7 @@ Query: `since=<24h|7d|2w|ISO-8601>` (default: everything on disk, newest 5000 jo
 | 202 | — | Job queued (or still running after `wait`). |
 | 400 | `bad_request` | `/skills/<skill>/run` body is not a JSON object; unknown `?types=` (`/events`), `?streams=` (`/jobs/<id>/events`), `?status=`/`?trigger=` (`/jobs`), `?outcome=` (`/deliveries`) or malformed `?since=` value; `/skills/test` without `skill_md`; `/jobs/<id>/answer` without `answer` or with a `resume` other than `auto`/`never`; an unknown `?failure=` kind (`/jobs`). |
 | 400 | `invalid_skill_document` | `/skills/test`: the SKILL.md does not validate (the message says why). |
+| 400 | `config_invalid`, `config_key_not_allowed` | `PATCH /config` would not validate (nothing written) or names `$schema` / a prototype key; `POST /config/reload` found an unparsable file. |
 | 401 | `missing_token`, `invalid_token`, `missing_credentials`, `invalid_credentials`, `missing_signature`, `invalid_signature`, `missing_timestamp`, `invalid_timestamp`, `stale_timestamp` | Webhook authentication failed. |
 | 401 | `unauthorized` | Admin route without a valid token. |
 | 403 | `ip_not_allowed` | Client IP not in the skill's `allow_ips`. |
@@ -520,6 +553,7 @@ Query: `since=<24h|7d|2w|ISO-8601>` (default: everything on disk, newest 5000 jo
 | 409 | — (`ok: false`) | Cancel on a finished job. |
 | 409 | `replay_needs_force`, `no_body` | Replaying a rejected delivery without `force`; a delivery whose body was not kept. |
 | 409 | `not_waiting`, `unknown_skill` | Answering a job that is not waiting for a person; the skill of the job to resume no longer exists. |
+| 409 | `not_a_service` | `POST /control/restart` on a server that launchd / systemd would not start again. |
 | 413 | `payload_too_large` | Body over `max_body_bytes`. |
 | 429 | `rate_limited`, `too_many_failures` | Per-IP limits. |
 | 500 | `invalid_skill`, `internal_error` | `SKILL.md` failed to parse; unexpected error (see the server log). |

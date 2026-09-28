@@ -71,6 +71,16 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
   question, or outcome `needs_human`); a run that ends with its question unanswered counts as
   `needs_human`. New block fields `agent_api` (`mcp` | `cli` | `none`) and `human_wait_seconds`; new
   job variables `SKILLHOOK_BIN`, `SKILLHOOK_HOME`, `SKILLHOOK_HUMAN_WAIT_SECONDS`.
+- Live configuration and remote control. The running server now holds one live `skillhook.json`:
+  `skillhook config set` / `unset` tell it to re-read the file (`skillhook config reload`,
+  `POST /config/reload`, `PATCH /config {set, unset}`, MCP `update_config`; a hand edit is noticed
+  within five seconds), every key but `host` and `port` applies at once, and those two are reported
+  as `pending_restart` (`GET /config`, MCP `get_config`). An invalid change is refused and nothing is
+  written. `POST /control/restart` (MCP `restart_server`) stops a service-run server gracefully and
+  lets launchd / systemd start it again; `GET /service`, `GET /logs` and `POST /update` (MCP
+  `check_update`) expose the service status, its log and the update check to the admin API. New event
+  `config.changed`. Internally `ConfigRef` patches the live config in place, the logger and the job
+  store take new settings, the rate limiter reads its limit at use, and the queue can `drain`.
 - Stats. `skillhook stats [--since 24h|7d|ISO] [--until ISO] [--skill S]`, `GET /stats` and the MCP tool
   `get_stats` sum up the job directories and the delivery log: jobs by status, outcome, trigger, runner
   and failure kind, success and completion rates, duration and queue-wait percentiles, cost and

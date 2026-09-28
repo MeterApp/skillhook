@@ -7,7 +7,7 @@ import type { JobRecord } from "./jobs.js";
 import type { Logger } from "./logger.js";
 import type { JobAnswer, JobQuestion, ProgressEntry } from "./progress.js";
 import type { RunnerReadiness } from "./readiness.js";
-import type { RunnerName } from "./config.js";
+import type { Config, RunnerName } from "./config.js";
 import type { SkipReason } from "./scheduler.js";
 import type { ServerState } from "./server.js";
 import type { SkillSource } from "./skills.js";
@@ -40,11 +40,13 @@ export interface EventMap {
   "health.changed": { report: HealthReport; changed: HealthChange[] };
   /** A runner became usable or stopped being so (installed, logged in), as the readiness check before jobs sees it. */
   "runners.changed": { runner: RunnerName; readiness: RunnerReadiness; previous?: RunnerReadiness };
+  /** `skillhook.json` changed and the server re-read it: `applied` took effect now, `restart_required` at the next start. */
+  "config.changed": { changed: (keyof Config)[]; applied: (keyof Config)[]; restart_required: (keyof Config)[]; pending_restart: (keyof Config)[]; config: Config };
 }
 
 export type EventType = keyof EventMap;
 
-export const EVENT_TYPES: EventType[] = ["server.started", "server.stopping", "delivery.received", "job.queued", "job.started", "job.updated", "job.cancelled", "job.finished", "job.progress", "job.waiting_human", "job.answered", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed", "health.changed", "runners.changed"];
+export const EVENT_TYPES: EventType[] = ["server.started", "server.stopping", "delivery.received", "job.queued", "job.started", "job.updated", "job.cancelled", "job.finished", "job.progress", "job.waiting_human", "job.answered", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed", "health.changed", "runners.changed", "config.changed"];
 
 export interface SkillhookEvent<K extends EventType = EventType> {
   /** Increases by one per event in this process; `GET /events` sends it as the SSE id. */
@@ -62,7 +64,11 @@ export class Events {
   private readonly any = new Set<AnyListener>();
   private counter = 0;
 
-  constructor(private readonly logger?: Logger) {}
+  constructor(private logger?: Logger) {}
+
+  setLogger(logger: Logger): void {
+    this.logger = logger;
+  }
 
   emit<K extends EventType>(type: K, data: EventMap[K]): SkillhookEvent<K> {
     const event: SkillhookEvent<K> = { seq: ++this.counter, type, at: nowIso(), data };

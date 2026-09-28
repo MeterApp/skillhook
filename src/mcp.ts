@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { loadSecrets, readEnvFile } from "./env.js";
-import { setConfigValue } from "./config.js";
+import { ConfigError, configExists, HOT_CONFIG_KEYS, loadConfig, RESTART_CONFIG_KEYS, setConfigValue, updateConfig } from "./config.js";
 import { DELIVERY_OUTCOMES, readDeliveryBody, type DeliveryOutcome } from "./delivery-log.js";
 import { formatDoctor, runDoctor } from "./doctor.js";
 import { formatHealth, runHealth, type HealthReport } from "./health.js";
@@ -24,7 +24,7 @@ import { installService, readServiceLog, restartService, serviceStatus, uninstal
 import { AUTH_TYPES, parseSkillDocument, type AuthType } from "./skills.js";
 import { currentExposures, disableExposure, enableExposure, tailscaleStatus } from "./tailscale.js";
 import { adminRequest, findRunningServer } from "./client.js";
-import { updateStatusFromCache } from "./update.js";
+import { applyUpdate, updateStatusFromCache } from "./update.js";
 import { errorMessage } from "./util.js";
 import { VERSION } from "./version.js";
 
@@ -462,6 +462,65 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
       }
       const report = await runHealth(paths, { env, deep: deep ?? true, network: network ?? true });
       return ok({ via: "local", ...report }, formatHealth(report));
+    }),
+  );
+
+  server.registerTool(
+    "get_config",
+    { title: "Get config", description: "The effective skillhook.json (defaults applied), which keys the running server applies live (`hot_keys`) and which need a restart (`restart_keys`: host, port), and what is pending a restart. From the running server when there is one.", inputSchema: z.object({}) },
+    wrap(async () => {
+      const running = await findRunningServer(paths);
+      if (running) {
+        const response = await adminRequest<Record<string, unknown>>(running.baseUrl, loadSecrets(paths, env), "/config");
+        if (response.status >= 400) throw new Error(`${String(response.body.error)}: ${String(response.body.message)}`);
+        return ok({ via: "server", base_url: running.baseUrl, ...response.body });
+      }
+      return ok({ via: "local", config: loadConfig(paths), file: paths.configFile, exists: configExists(paths), hot_keys: HOT_CONFIG_KEYS, restart_keys: RESTART_CONFIG_KEYS, pending_restart: [] });
+    }),
+  );
+
+  server.registerTool(
+    "update_config",
+    { title: "Update config", description: "Change skillhook.json: `set` maps dotted keys to values ({\"concurrency\": 3, \"defaults.model\": \"sonnet\"}), `unset` lists dotted keys to remove. One validated write; an invalid result changes nothing. The running server re-reads the file at once and says which keys it applied live and which (host, port) wait for a restart (`restart_server`).", inputSchema: z.object({ set: z.record(z.string(), z.unknown()).optional(), unset: z.array(z.string()).optional() }) },
+    wrap(async ({ set, unset }) => {
+      if (!Object.keys(set ?? {}).length && !unset?.length) throw new Error("nothing to change: give set and/or unset");
+      const running = await findRunningServer(paths);
+      if (running) {
+        const response = await adminRequest<Record<string, unknown>>(running.baseUrl, loadSecrets(paths, env), "/config", { method: "PATCH", body: { set, unset } });
+        if (response.status >= 400) throw new Error(`${String(response.body.error)}: ${String(response.body.message)}`);
+        const applied = response.body.applied as string[];
+        const restart = response.body.restart_required_keys as string[];
+        return ok({ via: "server", base_url: running.baseUrl, ...response.body }, [applied.length ? `Applied live: ${applied.join(", ")}` : "", restart.length ? `Restart required for: ${restart.join(", ")}` : ""].filter(Boolean).join("\n") || "Written; the server already had these values");
+      }
+      try {
+        const { config } = updateConfig(paths, { set, unset });
+        return ok({ via: "local", ok: true, applied: [], restart_required: false, restart_required_keys: [], config, file: paths.configFile, hot_keys: HOT_CONFIG_KEYS, restart_keys: RESTART_CONFIG_KEYS, pending_restart: [], note: "no server is running; the next `skillhook serve` reads the file" }, `Written to ${paths.configFile} (no server running)`);
+      } catch (error) {
+        if (error instanceof ConfigError) throw new Error(error.message);
+        throw error;
+      }
+    }),
+  );
+
+  server.registerTool(
+    "restart_server",
+    { title: "Restart server", description: "Ask the running server to restart: it stops accepting requests, lets running jobs finish for up to wait_seconds (default 30; `force: true` terminates them) and exits, and launchd / systemd starts it again. Only works for a server run as the service (409 otherwise); use it after update_config changed host or port, or after an update was installed.", inputSchema: z.object({ force: z.boolean().optional(), wait_seconds: z.number().int().min(0).max(600).optional() }) },
+    wrap(async ({ force, wait_seconds }) => {
+      const running = await findRunningServer(paths);
+      if (!running) throw new Error("No running server to restart");
+      const response = await adminRequest<Record<string, unknown>>(running.baseUrl, loadSecrets(paths, env), "/control/restart", { method: "POST", body: { force: force ?? false, wait_seconds: wait_seconds ?? 30 } });
+      if (response.status >= 400) throw new Error(`${String(response.body.error)}: ${String(response.body.message)}`);
+      return ok({ via: "server", base_url: running.baseUrl, ...response.body }, `Restarting the server at ${running.baseUrl}${force ? " (forced)" : ` once running jobs finish (up to ${wait_seconds ?? 30}s)`}`);
+    }),
+  );
+
+  server.registerTool(
+    "check_update",
+    { title: "Check for updates", description: "Ask the npm registry for the newest skillhook (what `skillhook update` does). With `install: true` and a newer version, upgrade with the package manager that installed skillhook and restart the background service when it has no jobs in progress; a busy service keeps running the old version until `restart_server`.", inputSchema: z.object({ install: z.boolean().optional() }) },
+    wrap(async ({ install }) => {
+      const result = await applyUpdate(paths, { env, install: install ?? false });
+      if (!result.ok && result.error) throw new Error(result.error);
+      return ok({ ...result }, result.installed ? `Installed ${result.latest}${result.service_note ? `. ${result.service_note}` : ""}` : result.available ? `skillhook ${result.current} → ${result.latest} is available (${result.install.command})` : `skillhook ${result.current} is the latest version`);
     }),
   );
 

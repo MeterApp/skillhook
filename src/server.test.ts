@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { signRequest } from "./auth.js";
-import { loadConfig } from "./config.js";
+import { ConfigRef, loadConfig, setConfigValue } from "./config.js";
 import { DeliveryLog } from "./delivery-log.js";
 import { Events } from "./events.js";
 import { HealthCache } from "./health.js";
@@ -22,8 +22,11 @@ let server: Server;
 let base = "";
 let queue: JobQueue;
 let store: JobStore;
+let config: ReturnType<typeof loadConfig>;
 let events: Events;
 let readiness: ReadinessCache;
+let supervised = false;
+const restartCalls: { force: boolean; waitSeconds: number }[] = [];
 let ENV_BASE: Record<string, string> = {};
 const recordFile = path.join(paths.home, "record.json");
 const projectDir = path.join(paths.home, "repo");
@@ -112,7 +115,7 @@ beforeAll(async () => {
   writeFileSync(path.join(projectDir, "skillhook.yaml"), ["hooks:", "  where-am-i:", "    description: Prints the working directory and the payload it got on stdin.", '    run: printf "%s\\n" "$PWD" && cat', "    auth: { type: bearer, secret_env: SKILLHOOK_SECRET_HELLO }", "    when:", "      - { path: action, equals: closed }", "  by-skill:", "    skill: skills/greeter", "    model: haiku", "    auth: { type: bearer, secret_env: SKILLHOOK_SECRET_HELLO }", ""].join("\n"));
   mkdirSync(path.join(projectDir, "skills", "greeter"), { recursive: true });
   writeFileSync(path.join(projectDir, "skills", "greeter", "SKILL.md"), "---\nname: greeter\ndescription: Greets.\nskillhook:\n  model: opus\n  env: [FAKE_CLAUDE_RECORD]\n---\n\nGreet {{payload.name}} from the project.\n");
-  const config = loadConfig(paths);
+  config = loadConfig(paths);
   const registry = new SkillRegistry(paths.skillsDir, { projects: () => [projectDir] });
   store = new JobStore(paths.jobsDir, { maxJobs: 100, dedupeWindowSeconds: 3600 });
   const { loadSecrets } = await import("./env.js");
@@ -123,7 +126,26 @@ beforeAll(async () => {
   queue = new JobQueue({ store, config, registry, secrets, fileSecrets: secrets, logger: silentLogger, events, processEnv: { ...process.env, SKILLHOOK_BIN: "skillhook-test-bin" }, progressPollMs: 100, readiness });
   const scheduler = new Scheduler({ registry, store, queue, config, logger: silentLogger, now: () => new Date("2026-09-23T10:00:00Z"), events });
   const health = new HealthCache(paths, { ttlMs: () => 60_000, options: () => ({ env: { SKILLHOOK_NO_UPDATE_CHECK: "1" }, exposure: false, service: false, live: () => ({ started_at: new Date().toISOString(), queue: queue.stats() }) }), events });
-  server = createServer({ config, paths, store, queue, registry, secrets, logger: silentLogger, events, deliveryLog, health, readiness, schedules: () => scheduler.status() });
+  const configRef = new ConfigRef(paths, config, { events });
+  server = createServer({
+    config,
+    paths,
+    store,
+    queue,
+    registry,
+    secrets,
+    logger: silentLogger,
+    events,
+    deliveryLog,
+    health,
+    readiness,
+    configRef,
+    control: { supervised: async () => supervised, restart: (options) => void restartCalls.push(options) },
+    serviceStatus: async () => ({ platform: "launchd", installed: true, running: true, pid: 4242, file: "/tmp/skillhook.plist", logFile: path.join(paths.logsDir, "service.log") }),
+    serviceLog: (lines) => `${["one", "two", "three"].slice(-lines).join("\n")}\n`,
+    applyUpdate: async ({ install }) => ({ ok: true, current: "0.3.0", latest: "0.3.0", available: false, checked_at: "2026-09-28T00:00:00.000Z", registry: "http://registry.invalid", cached: false, install: { method: "npm", command: "npm install -g @meterapp/skillhook@latest" }, release_notes: null, installed: install, service_restarted: false, service_note: null }),
+    schedules: () => scheduler.status(),
+  });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const address = server.address();
   base = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
@@ -845,6 +867,82 @@ describe("HTTP surface", () => {
     expect(Object.keys(recent.skills)).toEqual(["hello"]);
     const none = (await json(await fetch(`${base}/stats?until=2020-01-01T00:00:00Z`, { headers: auth }))) as unknown as { jobs: { total: number }; deliveries: { total: number } };
     expect(none).toMatchObject({ jobs: { total: 0 }, deliveries: { total: 0 } });
+  });
+
+  it("reads, patches and reloads the live config through the admin API", async () => {
+    const auth = { authorization: `Bearer ${ADMIN}` };
+    const jsonHeaders = { ...auth, "content-type": "application/json" };
+    expect((await fetch(`${base}/config`, { headers: { "x-forwarded-for": "203.0.113.1" } })).status).toBe(401);
+    const shown = await json(await fetch(`${base}/config`, { headers: auth }));
+    expect(shown).toMatchObject({ exists: true, file: paths.configFile, restart_keys: ["host", "port"], pending_restart: [] });
+    expect((shown.config as { concurrency: number }).concurrency).toBe(4);
+    expect(shown.hot_keys).toContain("concurrency");
+    const stream = await fetch(`${base}/events?types=config.changed`, { headers: auth });
+    // A hot key applies at once: ?wait= is now clamped to one second, so a slow job answers 202.
+    const patched = await json(await fetch(`${base}/config`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ set: { max_wait_seconds: 1 } }) }));
+    expect(patched).toMatchObject({ ok: true, applied: ["max_wait_seconds"], restart_required: false, restart_required_keys: [], pending_restart: [] });
+    expect(config.max_wait_seconds).toBe(1);
+    const slow = await fetch(`${base}/hooks/slow?wait=20`, { method: "POST", body: JSON.stringify({ hot: true }), headers: { authorization: "Bearer s", "content-type": "application/json" } });
+    expect(slow.status).toBe(202);
+    expect(String((await json(slow)).note)).toContain("after 1s");
+    const changed = await readSse(stream, (event) => event.event === "config.changed", 10_000);
+    expect((JSON.parse(changed.at(-1)!.data) as { data: { applied: string[]; config: { max_wait_seconds: number } } }).data).toMatchObject({ applied: ["max_wait_seconds"], config: { max_wait_seconds: 1 } });
+    await fetch(`${base}/config`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ set: { max_wait_seconds: 30 } }) });
+    expect(config.max_wait_seconds).toBe(30);
+    // A restart-only key is written but waits.
+    const port = await json(await fetch(`${base}/config`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ set: { port: 9999 } }) }));
+    expect(port).toMatchObject({ ok: true, applied: [], restart_required: true, restart_required_keys: ["port"], pending_restart: ["port"] });
+    expect((port.config as { port: number }).port).toBe(8787);
+    expect((await json(await fetch(`${base}/config`, { headers: auth }))).pending_restart).toEqual(["port"]);
+    const back = await json(await fetch(`${base}/config`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ unset: ["port"] }) }));
+    expect(back).toMatchObject({ restart_required: false, pending_restart: [] });
+    // Bad patches change nothing.
+    expect((await json(await fetch(`${base}/config`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ set: { $schema: "x" } }) }))).error).toBe("config_key_not_allowed");
+    expect((await json(await fetch(`${base}/config`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ set: { "__proto__.polluted": true } }) }))).error).toBe("config_key_not_allowed");
+    expect((await json(await fetch(`${base}/config`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ set: { concurrency: "lots" } }) }))).error).toBe("config_invalid");
+    expect((await fetch(`${base}/config`, { method: "PATCH", headers: jsonHeaders, body: "{}" })).status).toBe(400);
+    expect((await fetch(`${base}/config`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ set: [] }) })).status).toBe(400);
+    expect(config.concurrency).toBe(4);
+    // A file edited by hand is picked up by an explicit reload.
+    setConfigValue(paths, "concurrency", 5);
+    const reloaded = await json(await fetch(`${base}/config/reload`, { method: "POST", headers: auth }));
+    expect(reloaded).toMatchObject({ ok: true, applied: ["concurrency"], restart_required: false });
+    expect(config.concurrency).toBe(5);
+    setConfigValue(paths, "concurrency", 4);
+    await fetch(`${base}/config/reload`, { method: "POST", headers: auth });
+    expect(config.concurrency).toBe(4);
+    expect((await fetch(`${base}/config`, { method: "DELETE", headers: auth })).status).toBe(405);
+  });
+
+  it("restarts only when supervised, and serves the service status, its log and the update check", async () => {
+    const auth = { authorization: `Bearer ${ADMIN}` };
+    const jsonHeaders = { ...auth, "content-type": "application/json" };
+    supervised = false;
+    const refused = await fetch(`${base}/control/restart`, { method: "POST", headers: jsonHeaders, body: "{}" });
+    expect(refused.status).toBe(409);
+    expect((await json(refused)).error).toBe("not_a_service");
+    expect(restartCalls).toEqual([]);
+    supervised = true;
+    const accepted = await json(await fetch(`${base}/control/restart`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ wait_seconds: 5 }) }));
+    expect(accepted).toMatchObject({ ok: true, restarting: true, force: false, wait_seconds: 5 });
+    await sleep(50);
+    expect(restartCalls).toEqual([{ force: false, waitSeconds: 5 }]);
+    const forced = await json(await fetch(`${base}/control/restart`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ force: true, wait_seconds: 100000 }) }));
+    expect(forced).toMatchObject({ force: true, wait_seconds: 600 });
+    await sleep(50);
+    expect(restartCalls[1]).toEqual({ force: true, waitSeconds: 600 });
+    supervised = false;
+    expect((await fetch(`${base}/control/restart`, { method: "POST", headers: { "x-forwarded-for": "203.0.113.1" } })).status).toBe(401);
+    const service = await json(await fetch(`${base}/service`, { headers: auth }));
+    expect(service).toMatchObject({ service: { platform: "launchd", running: true, pid: 4242 }, this_pid: process.pid, supervised: false });
+    const logs = await json(await fetch(`${base}/logs?lines=2`, { headers: auth }));
+    expect(logs).toMatchObject({ lines: ["two", "three"], file: path.join(paths.logsDir, "service.log") });
+    expect(((await json(await fetch(`${base}/logs`, { headers: auth }))).lines as string[]).length).toBe(3);
+    const checked = await json(await fetch(`${base}/update`, { method: "POST", headers: jsonHeaders, body: "{}" }));
+    expect(checked).toMatchObject({ ok: true, latest: "0.3.0", available: false, installed: false });
+    const installed = await json(await fetch(`${base}/update`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ install: true }) }));
+    expect(installed.installed).toBe(true);
+    expect((await fetch(`${base}/update`, { headers: auth })).status).toBe(405);
   });
 
   it("pages and filters jobs", async () => {
