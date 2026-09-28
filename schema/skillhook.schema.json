@@ -221,6 +221,29 @@
       },
       "additionalProperties": false
     },
+    "deliveries": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "max": {
+          "default": 2000,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "store_bodies": {
+          "default": true,
+          "type": "boolean"
+        },
+        "body_max_bytes": {
+          "default": 65536,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "additionalProperties": false
+    },
     "env_passthrough": {
       "default": [],
       "type": "array",

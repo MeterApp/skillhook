@@ -87,9 +87,11 @@ Every tool returns a text block (a one-line summary followed by JSON) and the sa
 |---|---|---|
 | `run_skill` | `name`; optional `payload`, `headers`, `runner`, `model`, `effort`, `wait_seconds` (default 120, max 1800) | Run a skill exactly as a webhook would, without HTTP auth. When a server is running the job goes through its admin API (`via: "server"`, trigger `api`, visible in its queue); otherwise it runs in-process (`via: "local"`, trigger `mcp`). Returns the job record; when the wait elapses first, poll `get_job`. |
 | `send_test_webhook` | `name`; optional `payload`, `public`, `base_url`, `wait_seconds` (max 600) | Prove the HTTP path: signs the payload the way the skill's `auth` expects (bearer, HMAC, Standard Webhooks, Stripe, Slack, …) and POSTs it to `/hooks/<name>` on the local server by default, the public URL with `public: true`, or any `base_url`. Returns the HTTP status, the names of the signed headers and the response body. |
-| `list_jobs` | optional `skill`, `status`, `limit` (default 20, max 200) | Recent jobs, newest first. |
+| `list_jobs` | optional `skill`, `status`, `trigger`, `since` (ISO-8601), `after` (the previous call's `next_after`), `limit` (default 20, max 200) | Recent jobs, newest first, with `next_after` for the next page. |
 | `get_job` | `id`; optional `include` (any of `result`, `prompt`, `stdout`, `stderr`, `payload`, `event`; default `["result"]`) | One job with its directory path and the requested artifacts (each capped at the last 64 KiB). |
 | `cancel_job` | `id` | Cancel a queued or running job through the running server's admin API. Fails when no server is running (jobs started by `skillhook run` must be stopped by killing that process). |
+| `list_deliveries` | optional `skill`, `outcome` (`accepted`, `duplicate`, `in_flight`, `skipped`, `rejected`, `challenge`, `error`), `since`, `after`, `limit` (default 20, max 200) | Every webhook the server received, newest first, with what became of it: the answer to "why did that webhook not run". |
+| `get_delivery` | `id`; optional `include_body` | One delivery record, plus the body the log kept for a refused delivery (or the payload of the job an accepted one created). |
 
 ### Secrets
 

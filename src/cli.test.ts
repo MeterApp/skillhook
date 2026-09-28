@@ -132,6 +132,43 @@ describe("cli", () => {
     expect(String(resume.json().resume_command)).toContain("claude --resume");
   });
 
+  it("lists and shows deliveries the server recorded", async () => {
+    const { DeliveryLog } = await import("./delivery-log.js");
+    const log = new DeliveryLog(paths.jobsDir, () => ({ max: 100, store_bodies: true, body_max_bytes: 1000 }));
+    const rejected = log.record({ skill: "hello", received_at: "2026-09-28T12:00:00.000Z", outcome: "rejected", http_status: 401, code: "missing_token", reason: "no bearer token", ip: "203.0.113.9", method: "POST", path: "/hooks/hello", query: { a: "1" }, headers: { "content-type": "application/json", "user-agent": "curl/8" }, user_agent: "curl/8", content_type: "application/json", bytes: 7, duration_ms: 1, rawBody: Buffer.from('{"x":1}') });
+    log.record({ skill: "hello", received_at: "2026-09-28T12:00:01.000Z", outcome: "accepted", http_status: 202, job_id: "20260928T120001Z-abcdef", ip: "127.0.0.1", method: "POST", path: "/hooks/hello", query: {}, headers: {}, content_type: "application/json", bytes: 2, body_kind: "json", duration_ms: 2 });
+    const list = io();
+    expect(await main(["deliveries", "list", ...dir, "--json"], list.cli)).toBe(0);
+    expect((list.json().deliveries as { outcome: string }[]).map((d) => d.outcome)).toEqual(["accepted", "rejected"]);
+    const only = io();
+    expect(await main(["deliveries", "list", ...dir, "--outcome", "rejected", "--limit", "1", "--json"], only.cli)).toBe(0);
+    expect((only.json().deliveries as { id: string }[]).map((d) => d.id)).toEqual([rejected.id]);
+    expect(only.json().next_after).toBe(rejected.id);
+    const bad = io();
+    expect(await main(["deliveries", "list", ...dir, "--outcome", "nope", "--json"], bad.cli)).toBe(2);
+    const show = io();
+    expect(await main(["deliveries", "show", rejected.id, ...dir, "--body", "--json"], show.cli)).toBe(0);
+    expect((show.json().delivery as { code: string }).code).toBe("missing_token");
+    expect(show.json().body).toMatchObject({ encoding: "utf8", text: '{"x":1}', source: "log" });
+    const human = io();
+    expect(await main(["deliveries", "show", rejected.id, ...dir, "--body"], human.cli)).toBe(0);
+    expect(human.out()).toContain("missing_token");
+    expect(human.out()).toContain("no bearer token");
+    expect(human.out()).toContain('{"x":1}');
+    const missing = io();
+    expect(await main(["deliveries", "show", "20200101T000000Z-zzzzzz", ...dir, "--json"], missing.cli)).toBe(1);
+    const table = io();
+    expect(await main(["deliveries", ...dir], table.cli)).toBe(0);
+    expect(table.out()).toContain("rejected");
+    expect(table.out()).toContain("accepted");
+    const jobs = io();
+    expect(await main(["jobs", "list", ...dir, "--trigger", "cli", "--limit", "1", "--json"], jobs.cli)).toBe(0);
+    expect((jobs.json().jobs as { trigger: string }[]).every((j) => j.trigger === "cli")).toBe(true);
+    expect(typeof jobs.json().next_after === "string" || jobs.json().next_after === null).toBe(true);
+    const badTrigger = io();
+    expect(await main(["jobs", "list", ...dir, "--trigger", "nope", "--json"], badTrigger.cli)).toBe(2);
+  });
+
   it("links a repository's skillhook.yaml, lists and runs its hooks, and unlinks it", async () => {
     const repo = path.join(paths.home, "repo");
     const bare = path.join(paths.home, "bare");

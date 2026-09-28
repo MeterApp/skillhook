@@ -260,7 +260,7 @@ Rate-limit windows are fixed one-minute buckets per client IP, kept in memory.
 
 ## Admin API
 
-`GET /skills`, `POST /skills/<name>/run`, `GET /jobs`, `GET /jobs/<id>`, `POST /jobs/<id>/cancel` (see [api.md](api.md)) accept:
+`GET /skills`, `POST /skills/<name>/run`, `GET /jobs`, `GET /jobs/<id>`, `POST /jobs/<id>/cancel`, `GET /jobs/<id>/artifacts/<name>`, `GET /jobs/<id>/events`, `GET /events`, `GET /deliveries`, `GET /deliveries/<id>` (see [api.md](api.md)) accept:
 
 - `Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN`, from anywhere the server is reachable (including the public URL); or
 - no token at all, only for direct loopback connections that carry no proxy header (`X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Real-IP`, `CF-Connecting-IP`, `Forwarded`, `Via`, `Tailscale-User-Login`, `ngrok-trace-id`), which is how the CLI and the MCP server talk to the local server. A request that arrives through a tunnel always needs the token.
@@ -275,6 +275,8 @@ Rate-limit windows are fixed one-minute buckets per client IP, kept in memory.
 | `<home>/skillhook.json` | 600 (written by skillhook) | Configuration; no secrets. |
 | `<home>/jobs/<id>/*` | 600 | Payloads, prompts, agent stdout/stderr and results. These contain whatever the sender posted and whatever the agent printed. |
 | `<home>/jobs/.deliveries.json` | 600 | Delivery-id index. |
+| `<home>/jobs/.delivery-log/deliveries.jsonl` | 600 | One record per request to `/hooks/<skill>`: outcome, status, reason, client IP, redacted headers (no authorization, signature, token or cookie headers), sizes, job id. Newest `deliveries.max` (2000) kept. |
+| `<home>/jobs/.delivery-log/bodies/<id>.bin` | 600 | The body of a refused delivery (rejected, filtered, error), at most `deliveries.body_max_bytes` (64 KiB), including bodies that failed authentication. `deliveries.store_bodies: false` keeps none. |
 | `<home>/server.json` | 600 | pid/host/port of the running server. |
 | `<home>/logs/service.log` | created by launchd/systemd, not by skillhook | Server log: skill names, job ids, IPs, error messages; never secrets or payload bodies. |
 

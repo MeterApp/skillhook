@@ -3,9 +3,11 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { readEnvFile } from "./env.js";
 import { setConfigValue } from "./config.js";
+import { DELIVERY_OUTCOMES, readDeliveryBody, type DeliveryOutcome } from "./delivery-log.js";
 import { formatDoctor, runDoctor } from "./doctor.js";
 import { listExamples } from "./examples.js";
 import { JOB_ARTIFACTS, JOB_STATUSES, type JobArtifact, type JobStatus } from "./jobs.js";
+import { TRIGGERS, type Trigger } from "./payload.js";
 import { addExampleSkill, createOps, createSkill, generateSecretFor, initProject, linkProject, listProjects, publicJob, resolveBaseUrl, runSkillLocally, sendSignedWebhook, setSecret, triggerViaServer, unlinkProject, webhookUrl, type LinkResult, type Ops } from "./ops.js";
 import type { Paths } from "./paths.js";
 import { listSchedules, scheduleStatus } from "./scheduler.js";
@@ -23,7 +25,8 @@ Typical flow: skillhook_status → create_skill (or add_example) → set_secret/
 Skills live in <home>/skills/<name>/SKILL.md; the \`skillhook:\` frontmatter block sets runner, model, auth and filters. Secrets live in <home>/.env and are never returned by tools except right after generation.
 A repository can declare its own hooks in a version-controlled skillhook.yaml (webhook name → run: shell command | skill: SKILL.md directory | prompt: inline instructions); link_project registers it so the hooks are served, list_projects shows what runs from which webhook.
 A \`schedule:\` key (cron expression, optional timezone/catch_up/overlap) on any skill or hook makes the running server fire it on time without a webhook; \`webhook: false\` makes it schedule-only. list_schedules shows the next and last runs.
-Jobs are directories under <home>/jobs/<id> with payload.json, prompt.md, stdout.log and result.md.`;
+Jobs are directories under <home>/jobs/<id> with payload.json, prompt.md, stdout.log and result.md.
+Every webhook the server received, including rejected, filtered and duplicate ones, is in the delivery log: list_deliveries and get_delivery show what arrived and why it did not run.`;
 
 type ToolResult = { content: { type: "text"; text: string }[]; structuredContent?: Record<string, unknown>; isError?: boolean };
 
@@ -64,6 +67,7 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
       const loaded = o.registry.list();
       const { baseUrl, source } = await resolveBaseUrl(o);
       const jobs = o.store.list({ limit: 10 });
+      const deliveries = o.deliveryLog.list({ limit: 5 }).deliveries;
       const update = updateStatusFromCache(paths);
       return ok(
         {
@@ -78,6 +82,7 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
           skill_errors: loaded.errors,
           projects: loaded.projects.map((p) => ({ dir: p.dir, file: p.file, hooks: p.hooks.map((h) => h.name), error: p.error ?? null, errors: p.errors })),
           recent_jobs: jobs.map((j) => ({ id: j.id, skill: j.skill, status: j.status, created_at: j.created_at, error: j.error ?? null })),
+          recent_deliveries: deliveries.map((d) => ({ id: d.id, skill: d.skill, outcome: d.outcome, http_status: d.http_status, code: d.code ?? null, received_at: d.received_at, job_id: d.job_id ?? null })),
           defaults: o.config.defaults,
         },
         `skillhook ${VERSION} at ${paths.home}; server ${running ? "running" : "not running"}; ${loaded.skills.length} skill(s), ${loaded.projects.length} linked project(s).${update.available ? ` Update ${update.latest} is available (skillhook update --install).` : ""}`,
@@ -212,10 +217,32 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
 
   server.registerTool(
     "list_jobs",
-    { title: "List jobs", description: "Recent jobs, newest first.", inputSchema: z.object({ skill: z.string().optional(), status: z.enum(JOB_STATUSES as [JobStatus, ...JobStatus[]]).optional(), limit: z.number().int().min(1).max(200).optional() }) },
-    wrap(async ({ skill, status, limit }) => {
+    { title: "List jobs", description: "Recent jobs, newest first. `after` (the `next_after` of the previous call) pages further back; `since` is an ISO-8601 instant.", inputSchema: z.object({ skill: z.string().optional(), status: z.enum(JOB_STATUSES as [JobStatus, ...JobStatus[]]).optional(), trigger: z.enum(TRIGGERS as [Trigger, ...Trigger[]]).optional(), since: z.string().optional(), after: z.string().optional(), limit: z.number().int().min(1).max(200).optional() }) },
+    wrap(async ({ skill, status, trigger, since, after, limit }) => {
       const o = ops();
-      return ok({ jobs: o.store.list({ skill, status, limit: limit ?? 20 }).map(publicJob) });
+      const page = o.store.listPage({ skill, status, trigger, since, after, limit: limit ?? 20 });
+      return ok({ jobs: page.jobs.map(publicJob), next_after: page.next_after });
+    }),
+  );
+
+  server.registerTool(
+    "list_deliveries",
+    { title: "List deliveries", description: "Every request to /hooks/<skill> the server received, newest first, with its outcome: accepted (a job was created), duplicate, in_flight, skipped (a when filter), rejected (401, 404, 413, 503, …), challenge, error. Use it to see why a webhook did not run. `after` pages further back.", inputSchema: z.object({ skill: z.string().optional(), outcome: z.enum(DELIVERY_OUTCOMES as [DeliveryOutcome, ...DeliveryOutcome[]]).optional(), since: z.string().optional(), after: z.string().optional(), limit: z.number().int().min(1).max(200).optional() }) },
+    wrap(async ({ skill, outcome, since, after, limit }) => {
+      const o = ops();
+      const page = o.deliveryLog.list({ skill, outcome, since, after, limit: limit ?? 20 });
+      return ok({ deliveries: page.deliveries, next_after: page.next_after });
+    }),
+  );
+
+  server.registerTool(
+    "get_delivery",
+    { title: "Get delivery", description: "One delivery record; `include_body` adds the request body when the log kept it (rejected and filtered deliveries) or the payload of the job an accepted delivery created.", inputSchema: z.object({ id: z.string(), include_body: z.boolean().optional() }) },
+    wrap(async ({ id, include_body }) => {
+      const o = ops();
+      const delivery = o.deliveryLog.get(id);
+      if (!delivery) throw new Error(`Unknown delivery ${id}`);
+      return ok({ delivery, ...(include_body ? { body: readDeliveryBody(o.deliveryLog, o.store, delivery) ?? null } : {}) });
     }),
   );
 

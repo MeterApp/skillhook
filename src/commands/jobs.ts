@@ -2,12 +2,13 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { adminRequest, findRunningServer, openAdminEventStream } from "../client.js";
 import { isTerminal, JOB_STATUSES, type JobArtifact, type JobStatus } from "../jobs.js";
+import { TRIGGERS, type Trigger } from "../payload.js";
 import { publicJob } from "../server.js";
 import { sleep } from "../util.js";
 import { bool, CommandError, formatDuration, num, relativeTime, str, table, UsageError, type Ctx } from "./shared.js";
 
 const USAGE = `Usage:
-  skillhook jobs list [--skill NAME] [--status ${JOB_STATUSES.join("|")}] [--limit N]
+  skillhook jobs list [--skill NAME] [--status ${JOB_STATUSES.join("|")}] [--trigger ${TRIGGERS.join("|")}] [--since ISO] [--after ID] [--limit N]
   skillhook jobs show <id> [--result] [--prompt] [--stdout] [--stderr]
   skillhook jobs logs <id> [--follow|-f] [--stderr]
   skillhook jobs cancel <id>
@@ -23,9 +24,15 @@ export async function jobsCommand(ctx: Ctx): Promise<number> {
     case "ls": {
       const status = str(ctx.flags, "status") as JobStatus | undefined;
       if (status && !JOB_STATUSES.includes(status)) throw new UsageError(`--status must be one of ${JOB_STATUSES.join(", ")}`, USAGE);
-      const jobs = store.list({ skill: str(ctx.flags, "skill"), status, limit: num(ctx.flags, "limit") ?? 30 });
+      const trigger = str(ctx.flags, "trigger") as Trigger | undefined;
+      if (trigger && !TRIGGERS.includes(trigger)) throw new UsageError(`--trigger must be one of ${TRIGGERS.join(", ")}`, USAGE);
+      const since = str(ctx.flags, "since");
+      if (since && Number.isNaN(Date.parse(since))) throw new UsageError("--since must be an ISO-8601 instant", USAGE);
+      const page = store.listPage({ skill: str(ctx.flags, "skill"), status, trigger, since, after: str(ctx.flags, "after"), limit: num(ctx.flags, "limit") ?? 30 });
+      const jobs = page.jobs;
       const rows = jobs.map((j) => [j.id, j.skill, j.status, j.runner + (j.model ? `/${j.model}` : ""), formatDuration(j.duration_ms), relativeTime(j.created_at), (j.error ?? j.result ?? "").split("\n")[0]?.slice(0, 60) ?? ""]);
-      ctx.print(rows.length ? table(rows, ["job", "skill", "status", "runner", "took", "when", "summary"]) : `No jobs in ${store.jobsDir}`, { jobs: jobs.map(publicJob) });
+      const human = rows.length ? `${table(rows, ["job", "skill", "status", "runner", "took", "when", "summary"])}${page.next_after ? `\n(more: --after ${page.next_after})` : ""}` : `No jobs in ${store.jobsDir}`;
+      ctx.print(human, { jobs: jobs.map(publicJob), next_after: page.next_after });
       return 0;
     }
     case "show":

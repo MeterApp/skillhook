@@ -1,6 +1,7 @@
 // In-process event bus for `serve`. The queue, scheduler, registry and server publish state changes here;
 // `GET /events` (SSE), `GET /jobs/<id>/events` and, later, the cloud link subscribe. A listener that throws
 // is logged and never breaks the publisher, and there is no listener cap (every `?wait=` request adds one).
+import type { DeliveryRecord } from "./delivery-log.js";
 import type { JobRecord } from "./jobs.js";
 import type { Logger } from "./logger.js";
 import type { SkipReason } from "./scheduler.js";
@@ -11,6 +12,8 @@ import { errorMessage, nowIso } from "./util.js";
 export interface EventMap {
   "server.started": { state: ServerState };
   "server.stopping": { reason: string; running: number };
+  /** Every request to `/hooks/<skill>`, whatever became of it (see `DeliveryRecord.outcome`). */
+  "delivery.received": { delivery: DeliveryRecord };
   "job.queued": { job: JobRecord };
   "job.started": { job: JobRecord };
   /** A field was captured while the job runs (`pid`, `session_id`, `resume_command`). */
@@ -27,7 +30,7 @@ export interface EventMap {
 
 export type EventType = keyof EventMap;
 
-export const EVENT_TYPES: EventType[] = ["server.started", "server.stopping", "job.queued", "job.started", "job.updated", "job.cancelled", "job.finished", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed"];
+export const EVENT_TYPES: EventType[] = ["server.started", "server.stopping", "delivery.received", "job.queued", "job.started", "job.updated", "job.cancelled", "job.finished", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed"];
 
 export interface SkillhookEvent<K extends EventType = EventType> {
   /** Increases by one per event in this process; `GET /events` sends it as the SSE id. */

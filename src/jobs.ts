@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { RunnerName } from "./config.js";
-import { isJobId, newJobId } from "./ids.js";
+import { idToDate, isJobId, newJobId } from "./ids.js";
 import type { Trigger, WebhookEvent } from "./payload.js";
 import { payloadJson } from "./prompt.js";
 import { ensureDir, nowIso, readJsonFileOr, truncate, writeJsonFile } from "./util.js";
@@ -80,7 +80,20 @@ export interface CreateJobInput {
 export interface JobFilter {
   skill?: string;
   status?: JobStatus | JobStatus[];
+  trigger?: Trigger | Trigger[];
+  /** Only jobs created at or after this instant (ISO-8601); the store stops reading once it is past it. */
+  since?: string;
+  /** Only jobs created at or before this instant. */
+  until?: string;
+  /** Only jobs older than the one with this id (the `next_after` of the previous page). */
+  after?: string;
   limit?: number;
+}
+
+export interface JobPage {
+  jobs: JobRecord[];
+  /** Pass as `after` to get the next page; null when this page was not full. */
+  next_after: string | null;
 }
 
 export type JobArtifact = "stdout" | "stderr" | "prompt" | "result" | "payload" | "event";
@@ -192,18 +205,34 @@ export class JobStore {
   }
 
   list(filter: JobFilter = {}): JobRecord[] {
+    return this.listPage(filter).jobs;
+  }
+
+  /** Newest first, with a cursor. Ids encode their creation time, so `since`/`until`/`after` are decided before a `job.json` is read. */
+  listPage(filter: JobFilter = {}): JobPage {
     const statuses = filter.status ? (Array.isArray(filter.status) ? filter.status : [filter.status]) : undefined;
-    const limit = filter.limit ?? 50;
+    const triggers = filter.trigger ? (Array.isArray(filter.trigger) ? filter.trigger : [filter.trigger]) : undefined;
+    // Ids encode whole seconds, so the bounds are compared at that resolution.
+    const since = wholeSecond(filter.since);
+    const until = wholeSecond(filter.until);
+    const limit = Math.max(1, filter.limit ?? 50);
     const out: JobRecord[] = [];
     for (const id of this.ids()) {
+      if (filter.after && id >= filter.after) continue;
+      const created = idToDate(id)?.getTime();
+      if (created !== undefined) {
+        if (until !== undefined && created > until) continue;
+        if (since !== undefined && created < since) break;
+      }
       const job = this.get(id);
       if (!job) continue;
       if (filter.skill && job.skill !== filter.skill) continue;
       if (statuses && !statuses.includes(job.status)) continue;
+      if (triggers && !triggers.includes(job.trigger)) continue;
       out.push(job);
       if (out.length >= limit) break;
     }
-    return out;
+    return { jobs: out, next_after: out.length >= limit ? (out[out.length - 1] as JobRecord).id : null };
   }
 
   /** Called once at server start: running jobs from a previous process are lost; queued ones are re-run. */
@@ -269,4 +298,10 @@ export class JobStore {
 
 export function isTerminal(status: JobStatus): boolean {
   return TERMINAL_STATUSES.includes(status);
+}
+
+function wholeSecond(iso: string | undefined): number | undefined {
+  if (!iso) return undefined;
+  const time = Date.parse(iso);
+  return Number.isNaN(time) ? undefined : Math.floor(time / 1000) * 1000;
 }

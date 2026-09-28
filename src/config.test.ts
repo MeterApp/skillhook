@@ -12,6 +12,7 @@ describe("config", () => {
     expect(config.runners.claude.permission_mode).toBe("bypassPermissions");
     expect(config.runners.codex.sandbox).toBe("workspace-write");
     expect(config.jobs.dedupe_in_flight).toBe(true);
+    expect(config.deliveries).toEqual({ max: 2000, store_bodies: true, body_max_bytes: 65_536 });
     expect(config.update_check).toBe(true);
     expect(defaultConfig()).toEqual(config);
   });

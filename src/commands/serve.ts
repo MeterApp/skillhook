@@ -1,3 +1,4 @@
+import { DeliveryLog } from "../delivery-log.js";
 import { ADMIN_TOKEN_ENV, readEnvFile } from "../env.js";
 import { Events } from "../events.js";
 import { JobQueue } from "../queue.js";
@@ -17,10 +18,11 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   const registry = ctx.registry();
   registry.onChange((change) => events.emit("skill.changed", change));
   const store = ctx.store();
+  const deliveryLog = new DeliveryLog(ctx.paths.jobsDir, () => config.deliveries);
   const secrets = () => ctx.secrets();
   const queue = new JobQueue({ store, config, registry, secrets, fileSecrets: () => readEnvFile(ctx.paths.envFile), logger, events });
   const scheduler = new Scheduler({ registry, store, queue, config, logger, events });
-  const server = createServer({ config, paths: ctx.paths, store, queue, registry, secrets, logger, events, schedules: () => scheduler.status() });
+  const server = createServer({ config, paths: ctx.paths, store, queue, registry, secrets, logger, events, deliveryLog, schedules: () => scheduler.status() });
 
   const loaded = registry.list();
   for (const error of loaded.errors) logger.error("skill failed to load", { skill: error.name, error: error.error });

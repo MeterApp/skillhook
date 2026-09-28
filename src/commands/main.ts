@@ -10,6 +10,7 @@ import { secretCommand } from "./secret.js";
 import { runCommand } from "./run.js";
 import { sendCommand } from "./send.js";
 import { jobsCommand } from "./jobs.js";
+import { deliveriesCommand } from "./deliveries.js";
 import { exposeCommand, urlCommand } from "./expose.js";
 import { serviceCommand } from "./service.js";
 import { doctorCommand } from "./doctor.js";
@@ -47,8 +48,9 @@ Running
   run <skill> [--payload JSON|@file|-] [--header "K: v"]... [--runner R] [--model M] [--effort E] [--cwd DIR] [--wait S] [--dry-run]
   send <skill> [--payload …] [--wait S] [--url BASE|--public|--local] [--header "K: v"]...   POST a signed test webhook
   schedules list | next <name> [--count N] | run <name> [--wait S]   Skills with a schedule: next and last runs; fire one now
-  jobs list [--skill S] [--status ST] [--limit N] | show <id> [--result|--prompt|--stdout|--stderr] | logs <id> [-f]
+  jobs list [--skill S] [--status ST] [--trigger T] [--since ISO] [--after ID] [--limit N] | show <id> [--result|--prompt|--stdout|--stderr] | logs <id> [-f]
   jobs cancel <id> | resume <id> [--exec] | path <id> | prune [--keep N]
+  deliveries list [--skill S] [--outcome O] [--since ISO] [--after ID] [--limit N] | show <id> [--body]   Every webhook received, whatever became of it
 
 Agents
   mcp [--print-config]                                     MCP server over stdio (tools for Claude Code, Codex, Cursor, …)
@@ -71,6 +73,8 @@ const COMMANDS: Record<string, Command> = {
   send: sendCommand,
   jobs: jobsCommand,
   job: jobsCommand,
+  deliveries: deliveriesCommand,
+  delivery: deliveriesCommand,
   expose: exposeCommand,
   url: urlCommand,
   urls: urlCommand,

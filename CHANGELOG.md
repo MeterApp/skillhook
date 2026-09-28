@@ -16,6 +16,19 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
   `skillhook jobs logs <id> -f` follows a running job through the server when one is running.
 - Many senders waiting with `?wait=` on the same server no longer trigger Node's
   `MaxListenersExceededWarning`.
+- A delivery log. Every request to `/hooks/<skill>` is now recorded in `jobs/.delivery-log/` with its
+  outcome (`accepted`, `duplicate`, `in_flight`, `skipped`, `rejected`, `challenge`, `error`), the HTTP
+  status and error code the sender got, the reason (the failing `when` condition, the auth error), the
+  redacted headers, the client IP and the job it created or was folded into. Refused deliveries keep
+  their body (`deliveries.store_bodies`, `deliveries.body_max_bytes`, 64 KiB) so what arrived can be
+  inspected and, later, replayed; the newest `deliveries.max` (2000) records are kept. New:
+  `skillhook deliveries list|show`, `GET /deliveries` and `GET /deliveries/<id>?include=body`, the MCP
+  tools `list_deliveries` and `get_delivery`, `recent_deliveries` in `skillhook_status`, `deliveries`
+  in `GET /health` (admin) and the `delivery.received` event.
+- `GET /jobs`, `skillhook jobs list` and the MCP tool `list_jobs` page with `after` (`next_after` in
+  the response) and filter by `trigger` and `since`; the route caps `limit` at 500 and answers
+  `400 bad_request` for an unknown `status` or `trigger`. A malformed skill name in a hook URL is
+  `404 unknown_skill` instead of `500`.
 
 ## 0.3.0 (2026-09-23)
 

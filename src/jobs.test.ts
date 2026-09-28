@@ -47,6 +47,18 @@ describe("JobStore", () => {
     expect(s.list({ skill: "a" }).map((j) => j.id)).toEqual([a.id]);
     expect(s.list({ status: ["failed"] }).map((j) => j.id)).toEqual([b.id]);
     expect(s.list({ limit: 1 })).toHaveLength(1);
+    expect(s.list({ trigger: "webhook" })).toHaveLength(2);
+    expect(s.list({ trigger: ["cli", "api"] })).toEqual([]);
+    const page = s.listPage({ limit: 1 });
+    expect(page.jobs.map((j) => j.id)).toEqual([b.id]);
+    expect(page.next_after).toBe(b.id);
+    const rest = s.listPage({ limit: 1, after: b.id });
+    expect(rest.jobs.map((j) => j.id)).toEqual([a.id]);
+    expect(rest.next_after).toBe(a.id);
+    expect(s.listPage({ limit: 1, after: a.id })).toEqual({ jobs: [], next_after: null });
+    expect(s.listPage({ since: b.created_at }).jobs.map((j) => j.id)).toEqual([b.id]);
+    expect(s.listPage({ until: a.created_at }).jobs.map((j) => j.id)).toEqual([a.id]);
+    expect(s.listPage({ since: "nonsense" }).jobs).toHaveLength(2);
   });
 
   it("remembers deliveries within the window", () => {

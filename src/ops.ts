@@ -3,6 +3,7 @@ import path from "node:path";
 import { signRequest } from "./auth.js";
 import { adminRequest, findRunningServer, localBaseUrl } from "./client.js";
 import { loadConfig, readRawConfig, setConfigValue, type Config, type RunnerName } from "./config.js";
+import { DeliveryLog } from "./delivery-log.js";
 import { ADMIN_TOKEN_ENV, defaultSecretEnvFor, loadSecrets, readEnvFile, upsertEnvVar, type Secrets } from "./env.js";
 import { findExample } from "./examples.js";
 import { parseFrontmatter, stringifyFrontmatter } from "./frontmatter.js";
@@ -28,6 +29,8 @@ export interface Ops {
   fileSecrets: () => Secrets;
   registry: SkillRegistry;
   store: JobStore;
+  /** What the server recorded about every webhook it received (read-only outside the server). */
+  deliveryLog: DeliveryLog;
   logger: Logger;
 }
 
@@ -40,6 +43,7 @@ export function createOps(paths: Paths, options: { env?: NodeJS.ProcessEnv; logg
     fileSecrets: () => readEnvFile(paths.envFile),
     registry: new SkillRegistry(paths.skillsDir, { projects: configProjects(paths) }),
     store: new JobStore(paths.jobsDir, { maxJobs: config.jobs.max_jobs, dedupeWindowSeconds: config.jobs.dedupe_window_seconds }),
+    deliveryLog: new DeliveryLog(paths.jobsDir, () => config.deliveries),
     logger: options.logger ?? silentLogger,
   };
 }

@@ -1,4 +1,5 @@
 import { loadConfig, type Config } from "../config.js";
+import { DeliveryLog } from "../delivery-log.js";
 import { loadSecrets, type Secrets } from "../env.js";
 import { JobStore } from "../jobs.js";
 import { resolvePaths, type Paths } from "../paths.js";
@@ -36,7 +37,7 @@ export class CommandError extends Error {
 }
 
 /** Flags that never take a value. Everything else takes the next token unless it starts with `-`. */
-const BOOLEAN_FLAGS = new Set(["json", "help", "h", "dry-run", "follow", "f", "yes", "y", "force", "pretty", "stdin", "public", "serve", "funnel", "result", "prompt", "stdout", "stderr", "exec", "all", "print-config", "quiet", "q", "version", "v", "overwrite", "no-secret", "print", "watch", "verbose", "local", "install", "check", "refresh"]);
+const BOOLEAN_FLAGS = new Set(["json", "help", "h", "dry-run", "follow", "f", "yes", "y", "force", "pretty", "stdin", "public", "serve", "funnel", "result", "prompt", "stdout", "stderr", "exec", "all", "print-config", "quiet", "q", "version", "v", "overwrite", "no-secret", "print", "watch", "verbose", "local", "install", "check", "refresh", "body"]);
 
 export function parseArgs(argv: string[]): { flags: Flags; positionals: string[] } {
   const flags: Flags = {};
@@ -130,6 +131,7 @@ export interface Ctx {
   secrets(): Secrets;
   registry(): SkillRegistry;
   store(): JobStore;
+  deliveryLog(): DeliveryLog;
 }
 
 export function createCtx(flags: Flags, args: string[], io: CliIO): Ctx {
@@ -138,6 +140,7 @@ export function createCtx(flags: Flags, args: string[], io: CliIO): Ctx {
   let config: Config | undefined;
   let registry: SkillRegistry | undefined;
   let store: JobStore | undefined;
+  let deliveryLog: DeliveryLog | undefined;
   return {
     paths,
     flags,
@@ -166,6 +169,11 @@ export function createCtx(flags: Flags, args: string[], io: CliIO): Ctx {
       const cfg = this.config();
       store ??= new JobStore(paths.jobsDir, { maxJobs: cfg.jobs.max_jobs, dedupeWindowSeconds: cfg.jobs.dedupe_window_seconds });
       return store;
+    },
+    deliveryLog() {
+      const cfg = this.config();
+      deliveryLog ??= new DeliveryLog(paths.jobsDir, () => cfg.deliveries);
+      return deliveryLog;
     },
   };
 }

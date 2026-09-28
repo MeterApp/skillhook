@@ -18,6 +18,7 @@ Related: [exposure.md](exposure.md) (public URL), [security.md](security.md) (se
 │   └── <name>/SKILL.md     one directory per skill, plus any files the skill needs
 ├── jobs/
 │   ├── .deliveries.json    delivery-id index for replay protection (also the slots the scheduler fired)
+│   ├── .delivery-log/      every webhook received (deliveries.jsonl) and the bodies of refused ones (bodies/), see Delivery log
 │   ├── .schedules.json     per schedule: last slot handled, last job and its status
 │   └── <job id>/           one directory per job (see Jobs)
 └── logs/
@@ -140,6 +141,22 @@ skillhook jobs prune [--keep N]
 
 `jobs cancel` needs the server that owns the job; a job started by `skillhook run` belongs to that CLI process (stop it with Ctrl-C).
 
+`jobs list` also takes `--trigger webhook|api|cli|mcp|schedule`, `--since <ISO-8601>` and `--after <id>` (the `next_after` printed under a full page).
+
+### Delivery log
+
+Jobs only exist for deliveries that were accepted. Everything else the server answered on `/hooks/<skill>` (a wrong secret, an unknown skill, a `when` filter that did not match, a duplicate, an oversized body, a rate limit) used to be a log line; now every request is a record in `jobs/.delivery-log/deliveries.jsonl` with its outcome (`accepted`, `duplicate`, `in_flight`, `skipped`, `rejected`, `challenge`, `error`), the HTTP status and error code the sender got, the reason, the redacted headers, the client IP and, for accepted deliveries, the job id. Refused deliveries (`rejected`, `skipped`, `error`) keep their body in `jobs/.delivery-log/bodies/<id>.bin` so you can see what arrived and replay it later (`deliveries.store_bodies: false` turns that off; `deliveries.body_max_bytes`, 64 KiB, caps it). The log keeps the newest `deliveries.max` (2000) records; older ones and their bodies are dropped. All files are mode 600.
+
+```bash
+skillhook deliveries list [--skill NAME] [--outcome accepted|duplicate|in_flight|skipped|rejected|challenge|error] [--since ISO] [--after ID] [--limit N]
+```
+
+```bash
+skillhook deliveries show <id> [--body]
+```
+
+When a sender reports failures, `skillhook deliveries list --outcome rejected` shows what arrived and why it was refused; `--json` gives the records, `GET /deliveries` the same over the admin API ([api.md](api.md#get-deliveries)), and the MCP tools `list_deliveries` / `get_delivery` the same to an agent. The running server also publishes each record as a `delivery.received` event.
+
 ## Configuration
 
 `skillhook.json` is validated strictly: unknown keys and wrong types are errors, and `config set` refuses to write an invalid file. `skillhook config show` prints the effective configuration with defaults applied; `config get <dotted.key>`; `config set <dotted.key> <value>` (values that look like JSON, such as `4`, `true`, `["a","b"]`, `{"k":1}`, are parsed, everything else is a string); `config unset <dotted.key>`; `config path`. Restart the server after changing it, except for `projects`, which the server re-reads on its own.
@@ -173,6 +190,9 @@ skillhook jobs prune [--keep N]
 | `jobs.dedupe_window_seconds` | `86400` | Replay window. |
 | `jobs.dedupe_in_flight` | `true` | Fold a delivery identical to a queued or running job of the same skill into that job; skills override with `dedupe.in_flight`. |
 | `jobs.inline_payload_max_bytes` | `200000` | Payload size inlined in prompts. |
+| `deliveries.max` | `2000` | Records kept in the delivery log (`jobs/.delivery-log`). |
+| `deliveries.store_bodies` | `true` | Keep the body of refused deliveries (rejected, filtered) for inspection and replay. |
+| `deliveries.body_max_bytes` | `65536` | How much of such a body is kept. |
 | `env_passthrough` | `[]` | Extra env var names copied into every run. |
 | `projects` | `[]` | Linked repositories (absolute paths, `~` allowed; a directory holding `skillhook.yaml`, or the file itself). Written by `skillhook link` / `unlink`; re-read without a restart. See [projects.md](projects.md). |
 | `log_level` | `"info"` | `debug`, `info`, `warn`, `error`. |

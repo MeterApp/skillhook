@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { signRequest } from "./auth.js";
 import { loadConfig } from "./config.js";
+import { DeliveryLog } from "./delivery-log.js";
 import { Events } from "./events.js";
 import { JobStore } from "./jobs.js";
 import { silentLogger } from "./logger.js";
@@ -88,9 +89,10 @@ beforeAll(async () => {
   const { loadSecrets } = await import("./env.js");
   const secrets = () => loadSecrets(paths, {});
   events = new Events(silentLogger);
+  const deliveryLog = new DeliveryLog(paths.jobsDir, () => config.deliveries);
   queue = new JobQueue({ store, config, registry, secrets, fileSecrets: secrets, logger: silentLogger, events });
   const scheduler = new Scheduler({ registry, store, queue, config, logger: silentLogger, now: () => new Date("2026-09-23T10:00:00Z"), events });
-  server = createServer({ config, paths, store, queue, registry, secrets, logger: silentLogger, events, schedules: () => scheduler.status() });
+  server = createServer({ config, paths, store, queue, registry, secrets, logger: silentLogger, events, deliveryLog, schedules: () => scheduler.status() });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const address = server.address();
   base = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
@@ -404,6 +406,94 @@ describe("HTTP surface", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it("records every delivery with its outcome and serves the log to admins", async () => {
+    const auth = { authorization: `Bearer ${ADMIN}` };
+    const before = ((await json(await fetch(`${base}/health`))).deliveries as { total: number }).total;
+    await fetch(`${base}/hooks/hello`, { method: "POST", body: '{"marker":"dl-401"}', headers: { "content-type": "application/json" } });
+    await fetch(`${base}/hooks/unconfigured`, { method: "POST", body: "{}", headers: { authorization: "Bearer x" } });
+    await fetch(`${base}/hooks/nosuchskill`, { method: "POST", body: '{"marker":"dl-404"}', headers: { "content-type": "application/json" } });
+    await fetch(`${base}/hooks/hello`, { method: "POST", body: JSON.stringify({ big: "x".repeat(3000) }), headers: { authorization: "Bearer hello-secret" } });
+    await fetch(`${base}/hooks/filtered`, { method: "POST", body: '{"action":"deleted","marker":"dl-skip"}', headers: { authorization: "Bearer f", "content-type": "application/json" } });
+    const gh = new SkillRegistry(paths.skillsDir).get("gh")!;
+    const ghBody = Buffer.from(JSON.stringify({ action: "opened" }));
+    await fetch(`${base}/hooks/gh`, { method: "POST", body: ghBody, headers: { ...signRequest(gh.auth, "gh-secret", ghBody, { deliveryId: "delivery-1" }), "content-type": "application/json" } });
+    const accepted = await json(await fetch(`${base}/hooks/hello?wait=20`, { method: "POST", body: '{"name":"Log"}', headers: { authorization: "Bearer hello-secret", "content-type": "application/json", "x-marker": "dl-ok" } }));
+    const slack = new SkillRegistry(paths.skillsDir).get("slacky")!;
+    const challenge = Buffer.from(JSON.stringify({ type: "url_verification", challenge: "c2" }));
+    await fetch(`${base}/hooks/slacky`, { method: "POST", body: challenge, headers: { ...signRequest(slack.auth, "slack-secret", challenge), "content-type": "application/json" } });
+
+    expect((await fetch(`${base}/deliveries`, { headers: { "x-forwarded-for": "203.0.113.1" } })).status).toBe(401);
+    expect((await fetch(`${base}/deliveries?outcome=nope`, { headers: auth })).status).toBe(400);
+    expect((await fetch(`${base}/deliveries?since=yesterday`, { headers: auth })).status).toBe(400);
+    const page = (await json(await fetch(`${base}/deliveries?limit=50`, { headers: auth }))) as unknown as { deliveries: Record<string, unknown>[]; next_after: string | null };
+    const find = (skillName: string, outcome: string, code?: string) => page.deliveries.find((d) => d.skill === skillName && d.outcome === outcome && (code === undefined || d.code === code));
+    expect(find("hello", "rejected", "missing_token")).toMatchObject({ http_status: 401, body_stored: true, bytes: 19, ip: "127.0.0.1", method: "POST", path: "/hooks/hello" });
+    expect(find("unconfigured", "rejected", "skill_not_configured")).toMatchObject({ http_status: 503 });
+    expect(find("nosuchskill", "rejected", "unknown_skill")).toMatchObject({ http_status: 404, body_stored: true, bytes: 19 });
+    expect(find("hello", "rejected", "payload_too_large")).toMatchObject({ http_status: 413, body_stored: false });
+    const skipped = find("filtered", "skipped") as Record<string, unknown>;
+    expect(skipped).toMatchObject({ http_status: 200, code: "skipped", body_stored: true, body_kind: "json" });
+    expect(String(skipped.reason)).toContain("action");
+    expect(find("gh", "duplicate")).toMatchObject({ http_status: 200, code: "duplicate", delivery_id: "delivery-1" });
+    expect(typeof find("gh", "duplicate")?.job_id).toBe("string");
+    const ok = page.deliveries.find((d) => d.job_id === accepted.job_id) as Record<string, unknown>;
+    expect(ok).toMatchObject({ skill: "hello", outcome: "accepted", http_status: 202, body_stored: false, body_kind: "json", bytes: 14 });
+    expect((ok.headers as Record<string, string>)["x-marker"]).toBe("dl-ok");
+    expect((ok.headers as Record<string, string>).authorization).toBeUndefined();
+    expect(typeof ok.duration_ms).toBe("number");
+    expect(find("slacky", "challenge")).toMatchObject({ http_status: 200, code: "challenge" });
+    const rejected = (await json(await fetch(`${base}/deliveries?outcome=rejected&skill=hello`, { headers: auth }))) as unknown as { deliveries: { outcome: string; skill: string }[] };
+    expect(rejected.deliveries.length).toBeGreaterThan(0);
+    expect(rejected.deliveries.every((d) => d.outcome === "rejected" && d.skill === "hello")).toBe(true);
+    const firstPage = (await json(await fetch(`${base}/deliveries?limit=2`, { headers: auth }))) as unknown as { deliveries: { id: string }[]; next_after: string };
+    expect(firstPage.deliveries).toHaveLength(2);
+    const nextPage = (await json(await fetch(`${base}/deliveries?limit=2&after=${firstPage.next_after}`, { headers: auth }))) as unknown as { deliveries: { id: string }[] };
+    expect(nextPage.deliveries.map((d) => d.id)).not.toContain(firstPage.deliveries[0]?.id);
+    expect(nextPage.deliveries.map((d) => d.id)).not.toContain(firstPage.next_after);
+    const detail = await json(await fetch(`${base}/deliveries/${skipped.id}?include=body`, { headers: auth }));
+    expect((detail.delivery as { id: string }).id).toBe(skipped.id);
+    expect(detail.body).toMatchObject({ encoding: "utf8", truncated: false, source: "log" });
+    expect(JSON.parse((detail.body as { text: string }).text)).toEqual({ action: "deleted", marker: "dl-skip" });
+    const viaJob = await json(await fetch(`${base}/deliveries/${ok.id}?include=body`, { headers: auth }));
+    expect(viaJob.body).toMatchObject({ source: "job", encoding: "utf8" });
+    expect((await json(await fetch(`${base}/deliveries/${ok.id}`, { headers: auth }))).body).toBeUndefined();
+    const missing = await fetch(`${base}/deliveries/20200101T000000Z-aaaaaa`, { headers: auth });
+    expect(missing.status).toBe(404);
+    expect((await json(missing)).error).toBe("unknown_delivery");
+    const health = await json(await fetch(`${base}/health`));
+    expect((health.deliveries as { total: number }).total).toBeGreaterThan(before);
+    expect(typeof (health.deliveries as { last_received_at: string }).last_received_at).toBe("string");
+  });
+
+  it("publishes delivery.received on the event stream", async () => {
+    const stream = await fetch(`${base}/events?types=delivery.received`, { headers: { authorization: `Bearer ${ADMIN}` } });
+    await fetch(`${base}/hooks/filtered`, { method: "POST", body: '{"action":"deleted","marker":"dl-event"}', headers: { authorization: "Bearer f", "content-type": "application/json" } });
+    const got = await readSse(stream, (event) => (JSON.parse(event.data) as { data: { delivery: { skill: string } } }).data.delivery.skill === "filtered");
+    const last = JSON.parse(got.at(-1)!.data) as { type: string; data: { delivery: { outcome: string; code: string; body_stored: boolean } } };
+    expect(last.type).toBe("delivery.received");
+    expect(last.data.delivery).toMatchObject({ outcome: "skipped", code: "skipped", body_stored: true });
+  });
+
+  it("pages and filters jobs", async () => {
+    const auth = { authorization: `Bearer ${ADMIN}` };
+    const first = (await json(await fetch(`${base}/jobs?limit=2`, { headers: auth }))) as unknown as { jobs: { id: string }[]; next_after: string | null };
+    expect(first.jobs).toHaveLength(2);
+    expect(first.next_after).toBe(first.jobs[1]?.id);
+    const next = (await json(await fetch(`${base}/jobs?limit=2&after=${first.next_after}`, { headers: auth }))) as unknown as { jobs: { id: string }[] };
+    expect(next.jobs.map((j) => j.id)).not.toContain(first.jobs[0]?.id);
+    expect(next.jobs.every((j) => j.id < (first.next_after as string))).toBe(true);
+    const api = (await json(await fetch(`${base}/jobs?trigger=api`, { headers: auth }))) as unknown as { jobs: { trigger: string }[] };
+    expect(api.jobs.length).toBeGreaterThan(0);
+    expect(api.jobs.every((j) => j.trigger === "api")).toBe(true);
+    expect((await fetch(`${base}/jobs?status=nope`, { headers: auth })).status).toBe(400);
+    expect((await fetch(`${base}/jobs?trigger=nope`, { headers: auth })).status).toBe(400);
+    expect((await fetch(`${base}/jobs?since=nope`, { headers: auth })).status).toBe(400);
+    const future = (await json(await fetch(`${base}/jobs?since=2999-01-01T00:00:00Z`, { headers: auth }))) as unknown as { jobs: unknown[] };
+    expect(future.jobs).toEqual([]);
+    const defaulted = (await json(await fetch(`${base}/jobs?limit=abc`, { headers: auth }))) as unknown as { jobs: unknown[] };
+    expect(defaulted.jobs.length).toBeGreaterThan(0);
   });
 
   it("runs identical deliveries when in-flight de-duplication is off for the skill", async () => {

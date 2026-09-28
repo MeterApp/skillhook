@@ -85,6 +85,17 @@ export const ConfigSchema = z
       })
       .strict()
       .prefault({}),
+    deliveries: z
+      .object({
+        /** Records kept in `jobs/.delivery-log` (one per request to `/hooks/<skill>`, whatever its outcome). */
+        max: z.number().int().positive().default(2000),
+        /** Keep the body of a delivery that did not become a job (rejected, filtered), for inspection and replay. Accepted deliveries keep theirs in the job directory. */
+        store_bodies: z.boolean().default(true),
+        /** How much of such a body is kept, in bytes. */
+        body_max_bytes: z.number().int().positive().default(65_536),
+      })
+      .strict()
+      .prefault({}),
     /** Extra env var names copied into every agent run (on top of the runner auth vars). */
     env_passthrough: z.array(z.string()).default([]),
     /** Linked projects: directories whose `skillhook.yaml` (or the file itself) contributes hooks. Managed by `skillhook link` / `unlink`; re-read without a restart. */

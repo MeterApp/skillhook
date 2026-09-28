@@ -27,7 +27,9 @@ Related: [security.md](security.md) (authentication), [skills.md](skills.md) (fi
 | `POST` | `/jobs/<id>/cancel` | admin | Cancel a queued or running job. |
 | `GET` | `/jobs/<id>/artifacts/<name>` | admin | One artifact file as it is on disk (`?tail=<bytes>` for its end). |
 | `GET` | `/jobs/<id>/events` | admin | Server-sent events for one job: `status` snapshots, `stdout`/`stderr` as they are written, `end`. |
-| `GET` | `/events` | admin | Server-sent events for the whole server: `job.*`, `schedule.*`, `skill.changed`, `server.*` (`?types=` to filter). |
+| `GET` | `/events` | admin | Server-sent events for the whole server: `delivery.received`, `job.*`, `schedule.*`, `skill.changed`, `server.*` (`?types=` to filter). |
+| `GET` | `/deliveries` | admin | Every webhook received, newest first, whatever became of it. |
+| `GET` | `/deliveries/<id>` | admin | One delivery, optionally with its body. |
 
 Anything else is `404 not_found`; another method on `/hooks/<skill>` is `405 method_not_allowed`.
 
@@ -45,6 +47,8 @@ Processing order:
 8. `when` filters -> `200` with `skipped: true` when they do not match.
 9. In-flight check (`dedupe.in_flight`, default `jobs.dedupe_in_flight` = `true`): a payload and query string identical to a job of this skill that is still queued or running -> `200` with `duplicate: true`, `in_flight: true` and that job's `job_id`; with `?wait=` the response waits for that job instead.
 10. The job is written to disk and queued; the response is sent.
+
+Whatever the step it stopped at, every request to `/hooks/<skill>` is recorded in the delivery log with its outcome, the status it was answered with and the reason ([`GET /deliveries`](#get-deliveries)); a refused delivery keeps its body so it can be inspected and replayed.
 
 ### Responses
 
@@ -157,7 +161,7 @@ Admin routes accept `Authorization: Bearer <SKILLHOOK_ADMIN_TOKEN>`. Without a t
 
 ## `GET /health`
 
-Public: `{"ok": true, "version": "0.1.0"}`. Admin or direct local: adds `"uptime_seconds"`, `"queue": {"running": 0, "queued": 0, "running_ids": []}` and `"schedules"`, one entry per skill or hook with a `schedule:`:
+Public: `{"ok": true, "version": "0.1.0"}`. Admin or direct local: adds `"uptime_seconds"`, `"queue": {"running": 0, "queued": 0, "running_ids": []}`, `"deliveries": {"total": 412, "last_received_at": "2026-09-28T10:00:02.000Z"}` (the delivery log) and `"schedules"`, one entry per skill or hook with a `schedule:`:
 
 ```json
 { "skill": "weekly-review", "cron": "0 16 * * 5", "timezone": "America/New_York", "catch_up": "latest", "overlap": "skip", "enabled": true, "webhook": false, "next_due": "2026-09-25T20:00:00.000Z", "last_slot": "2026-09-18T20:00:00.000Z", "last_fired_at": "2026-09-18T20:00:09.120Z", "last_job": "20260918T200009Z-k3x9q2", "last_status": "succeeded", "skipped": 0 }
@@ -242,14 +246,17 @@ curl -sS -X POST http://127.0.0.1:8787/skills/hello/run \
 
 ## `GET /jobs`
 
-Query: `skill=<name>`, `status=<queued|running|succeeded|failed|timed_out|cancelled|interrupted>`, `limit=<n>` (default 50). Newest first.
+Query: `skill=<name>`, `status=<queued|running|succeeded|failed|timed_out|cancelled|interrupted>`, `trigger=<webhook|api|cli|mcp|schedule>`, `since=<ISO-8601>` (created at or after; whole seconds), `after=<job id>` (only older jobs: the `next_after` of the previous page), `limit=<n>` (default 50, at most 500). Newest first. An unknown `status`, `trigger` or `since` value is `400 bad_request`.
 
 ```json
 {
   "jobs": [ { "id": "20260916T025443Z-z1y3m4", "skill": "hello", "status": "succeeded", "…": "…" } ],
-  "queue": { "running": 0, "queued": 0, "running_ids": [] }
+  "queue": { "running": 0, "queued": 0, "running_ids": [] },
+  "next_after": "20260916T025443Z-z1y3m4"
 }
 ```
+
+`next_after` is the last id of a full page (pass it as `after` for the next one) and `null` when the page was not full.
 
 ## `GET /jobs/<id>`
 
@@ -312,6 +319,44 @@ A `text/event-stream` of the server's event bus. Each message carries `id` (the 
 curl -sN -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" "http://127.0.0.1:8787/events?types=job.finished,schedule.fired"
 ```
 
+## `GET /deliveries`
+
+The delivery log: one record per request to `/hooks/<skill>`, newest first, whatever became of it. Query: `skill=<name>`, `outcome=<accepted|duplicate|in_flight|skipped|rejected|challenge|error>`, `since=<ISO-8601>`, `after=<delivery id>` (the `next_after` of the previous page), `limit=<n>` (default 50, at most 500).
+
+```json
+{
+  "deliveries": [
+    { "id": "20260928T100002Z-q7m2ka", "skill": "gh", "received_at": "2026-09-28T10:00:02.418Z", "outcome": "rejected", "http_status": 401, "code": "invalid_signature", "reason": "signature mismatch", "ip": "140.82.115.6", "method": "POST", "path": "/hooks/gh", "query": {}, "headers": { "content-type": "application/json", "x-github-event": "pull_request", "x-github-delivery": "b3e4…" }, "user_agent": "GitHub-Hookshot/abc", "content_type": "application/json", "bytes": 9412, "body_stored": true, "duration_ms": 2 },
+    { "id": "20260928T095910Z-x1p0ll", "skill": "hello", "received_at": "2026-09-28T09:59:10.101Z", "outcome": "accepted", "http_status": 202, "delivery_id": null, "job_id": "20260928T095910Z-k3x9q2", "ip": "127.0.0.1", "method": "POST", "path": "/hooks/hello", "query": {}, "headers": { "content-type": "application/json", "user-agent": "skillhook-send" }, "user_agent": "skillhook-send", "content_type": "application/json", "bytes": 15, "body_kind": "json", "body_stored": false, "duration_ms": 4 }
+  ],
+  "next_after": null
+}
+```
+
+The log lives in `jobs/.delivery-log/` and keeps the newest `deliveries.max` (2000) records. It is the answer to "why did that webhook not run": a `rejected` record carries the error code and message the sender got, a `skipped` one the `when` condition that did not match, a `duplicate` or `in_flight` one the job it was folded into. Rate-limited requests to a hook are recorded too (`429 rate_limited`). CLI: `skillhook deliveries list|show`; MCP: `list_deliveries`, `get_delivery`.
+
+## `GET /deliveries/<id>`
+
+`{"delivery": {…}}`; `?include=body` adds `"body": {"encoding": "utf8" | "base64", "text": "…", "truncated": false, "source": "log" | "job"}`: the body the log kept for a refused delivery (`skipped`, `rejected`, `error`; at most `deliveries.body_max_bytes`, 64 KiB, and only while `deliveries.store_bodies` is on), or the payload of the job an accepted delivery created; `null` when neither exists. An unknown id is `404 unknown_delivery`.
+
+## Delivery record
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | Same format as job ids; the delivery log's own id, distinct from the provider's `delivery_id`. |
+| `skill` | string | The name in the URL, as requested, also when no such skill exists. |
+| `received_at` | ISO-8601 | |
+| `outcome` | string | `accepted` (a job was created), `duplicate` (delivery id seen before), `in_flight` (folded into a queued or running job), `skipped` (a `when` filter), `rejected` (any error answer: 401, 403, 404, 413, 429, 500, 503), `challenge` (Slack URL verification), `error` (unexpected server error). |
+| `http_status` | number | What the sender was answered at decision time; a `?wait=` request may have ended as `200` with the result instead of `202`. |
+| `code`, `reason` | string, optional | The error code and message of a rejected delivery; `duplicate`, `in_flight`, `skipped` (with the condition as `reason`), `challenge` or `internal_error` otherwise. Absent when accepted. |
+| `delivery_id` | string, optional | Provider delivery id or `dedupe` value, when one was found. |
+| `job_id` | string, optional | The job created, or the one the delivery was folded into. |
+| `ip`, `method`, `path`, `query` | | The request (`token` and `wait` removed from `query`). |
+| `headers` | object | Redacted like `event.json` (no authorization, signature, token or cookie headers); values over 512 characters are shortened. |
+| `user_agent`, `content_type`, `bytes`, `body_kind` | | The body as received (`body_kind` is only known once the body was parsed). |
+| `body_stored`, `body_truncated` | boolean | Whether the log kept the body, and whether it was cut at `deliveries.body_max_bytes`. |
+| `duration_ms` | number | From arrival to the decision (a `?wait=` is not counted). |
+
 ## Job record
 
 | Field | Type | Notes |
@@ -343,11 +388,11 @@ curl -sN -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" "http://127.0.0.1:878
 |---|---|---|
 | 200 | — | Result available, duplicate, skipped, Slack challenge, admin reads, successful cancel. |
 | 202 | — | Job queued (or still running after `wait`). |
-| 400 | `bad_request` | `/skills/<skill>/run` body is not a JSON object; unknown `?types=` (`/events`) or `?streams=` (`/jobs/<id>/events`) value. |
+| 400 | `bad_request` | `/skills/<skill>/run` body is not a JSON object; unknown `?types=` (`/events`), `?streams=` (`/jobs/<id>/events`), `?status=`/`?trigger=` (`/jobs`), `?outcome=` (`/deliveries`) or malformed `?since=` value. |
 | 401 | `missing_token`, `invalid_token`, `missing_credentials`, `invalid_credentials`, `missing_signature`, `invalid_signature`, `missing_timestamp`, `invalid_timestamp`, `stale_timestamp` | Webhook authentication failed. |
 | 401 | `unauthorized` | Admin route without a valid token. |
 | 403 | `ip_not_allowed` | Client IP not in the skill's `allow_ips`. |
-| 404 | `unknown_skill`, `unknown_job`, `unknown_artifact`, `not_found` | |
+| 404 | `unknown_skill`, `unknown_job`, `unknown_artifact`, `unknown_delivery`, `not_found` | |
 | 404 | `schedule_only` | The skill has `webhook: false`; it runs only on its `schedule:`. |
 | 405 | `method_not_allowed` | |
 | 409 | — (`ok: false`) | Cancel on a finished job. |
