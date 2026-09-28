@@ -103,7 +103,7 @@ jobs:
           const fs = require("node:fs");
           const [info] = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
           const files = new Set(info.files.map((f) => f.path));
-          const required = ["package.json", "README.md", "CHANGELOG.md", "LICENSE", "dist/cli.js", "dist/index.js", "dist/index.d.ts", "dist/update.js", "schema/skillhook.schema.json", "schema/skillhook.yaml.schema.json", "examples/skills/hello/SKILL.md", "examples/skills/sentry-triage/SKILL.md"];
+          const required = ["package.json", "README.md", "CHANGELOG.md", "LICENSE", "dist/cli.js", "dist/index.js", "dist/index.d.ts", "dist/update.js", "dist/cloud/protocol.js", "dist/cloud/protocol.d.ts", "schema/skillhook.schema.json", "schema/skillhook.yaml.schema.json", "examples/skills/hello/SKILL.md", "examples/skills/sentry-triage/SKILL.md"];
           const missing = required.filter((f) => !files.has(f));
           const unwanted = [...files].filter((f) => /^(src|test|scripts|docs|skills|\.github)\//.test(f) || /\.test\.|\.env|\.tgz$|\.map$/.test(f));
           if (missing.length || unwanted.length) {

@@ -41,6 +41,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./protocol": {
+      "types": "./dist/cloud/protocol.d.ts",
+      "default": "./dist/cloud/protocol.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

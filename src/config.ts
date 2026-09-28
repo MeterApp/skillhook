@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import { z } from "zod";
 import type { Events } from "./events.js";
+import { DEFAULT_CLOUD_URL } from "./cloud/config.js";
 import { FallbackSchema } from "./runners/failure.js";
 import { readFileSync } from "node:fs";
 import { exists, writeJsonFile } from "./util.js";
@@ -116,6 +117,32 @@ export const ConfigSchema = z
     env_passthrough: z.array(z.string()).default([]),
     /** Linked projects: directories whose `skillhook.yaml` (or the file itself) contributes hooks. Managed by `skillhook link` / `unlink`; re-read without a restart. */
     projects: z.array(z.string().min(1)).default([]),
+    /** The opt-in link to Skillhook Cloud (docs/cloud.md). Written by `skillhook cloud connect`; the token lives in `.env` as SKILLHOOK_CLOUD_TOKEN. Nothing leaves the machine while `enabled` is false. */
+    cloud: z
+      .object({
+        enabled: z.boolean().default(false),
+        url: z.url().default(DEFAULT_CLOUD_URL),
+        /** Assigned by the cloud at pairing. */
+        machine_id: z.string().max(200).optional(),
+        /** `observe`: the cloud may only read; `control`: it may also run skills, answer jobs, change config and restart. */
+        mode: z.enum(["observe", "control"]).default("observe"),
+        /** Command types (or `job.*`, `*`) allowed regardless of mode; the only way to allow `secret.set`. */
+        allow_commands: z.array(z.string().max(100)).default([]),
+        /** Command types (or patterns) the cloud may never run on this machine. */
+        deny_commands: z.array(z.string().max(100)).default([]),
+        /** Upload webhook payloads (redacted headers, bodies at most 256 KiB) with deliveries. */
+        upload_payloads: z.boolean().default(true),
+        /** Let the cloud ask for job artifacts (transcripts, results) and live output. */
+        upload_artifacts: z.boolean().default(true),
+        /** Accept hosted-ingress deliveries (webhooks the cloud received for this machine while it was asleep). */
+        ingress: z.boolean().default(true),
+        snapshot_interval_seconds: z.number().int().min(10).max(86_400).default(60),
+        health_interval_seconds: z.number().int().min(60).max(86_400).default(600),
+        /** Events kept on disk while the cloud is unreachable (oldest dropped beyond this). */
+        outbox_max_events: z.number().int().min(100).max(100_000).default(5000),
+      })
+      .strict()
+      .prefault({}),
     log_level: z.enum(["debug", "info", "warn", "error"]).default("info"),
     /** Ask the npm registry once a day whether a newer skillhook exists and say so in CLI output, `doctor` and the server log. `SKILLHOOK_NO_UPDATE_CHECK=1` and `CI` disable it too. */
     update_check: z.boolean().default(true),

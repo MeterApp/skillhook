@@ -30,6 +30,7 @@ is `skillhook`. User docs: `README.md`, `docs/`, `llms.txt`.
 | `src/events.ts` | The in-process event bus (`Events`, `EventMap`): the queue publishes `job.*`, the scheduler `schedule.*`, the registry `skill.changed`, `serve` `server.*`; `GET /events` and `GET /jobs/<id>/events` stream it (SSE, `openEventStream` in `src/server.ts`). The cloud link will subscribe to the same bus. |
 | `src/progress.ts`, `src/answer.ts`, `src/mcp-job.ts`, `src/commands/job.ts` | The job API for the running agent and the human loop. `progress.ts` is the file model in the job directory (`progress.jsonl`, `progress.json`, `question.json`, `answer.json`) that the queue watches; `mcp-job.ts` serves it as the per-run MCP server (`skillhook mcp --job`, injected by the runners) and `commands/job.ts` as `skillhook job progress\|ask\|outcome\|note\|context`; `answer.ts` (leaf, like `manual.ts`) delivers a person's answer live or as a `trigger: resume` job that reopens the session. |
 | `src/runners/` | `claude.ts`, `codex.ts`, `shell.ts`: build argv, parse output; `env.ts` is the env allow-list (`baseRunEnv` is also what probes run with); `failure.ts` classifies a failed run (`failure.kind`, from the CLIs' captured lines) and holds the `fallback` / `retry` schemas. |
+| `src/cloud/` | The Skillhook Cloud side of this machine. `protocol.ts` is the wire protocol as pure zod (no `node:` imports; exported as `@meterapp/skillhook/protocol`, the cloud repo imports it), with the vocabulary repeated as literals and a drift test; `config.ts` holds the URL rules, the kill switch and `commandAllowed`. The link (`link.ts`, outbox, commands, ingress) lands in 0.5.0. |
 | `src/stats.ts` | Pure aggregation over job records and delivery records (`computeStats`) and `collectStats` over the store and the log: `GET /stats`, `skillhook stats`, MCP `get_stats`. New numbers go here with a unit test on synthetic records. |
 | `src/readiness.ts` | Is a runner installed and logged in (`checkReadiness`, `ReadinessCache`): the queue's pre-flight before every job, `GET /runners`, `skillhook runners`, `runners.changed`. A not-ready runner fails the job fast or hands it to a `fallback:` runner; a failed run may be retried or handed over only before the agent produced anything. |
 | `src/ops.ts` | Shared operations (create skill, run locally, sign+send, resolve URLs). CLI and MCP both call this; do not duplicate logic in either. |
@@ -46,7 +47,7 @@ is `skillhook`. User docs: `README.md`, `docs/`, `llms.txt`.
 | `test/fixtures/` | `fake-claude.mjs` / `fake-codex.mjs` emulate the real CLIs' output formats. |
 
 Runtime state lives outside the repo in `~/.skillhook` (`SKILLHOOK_HOME`):
-`skillhook.json`, `.env` (mode 600), `skills/`, `jobs/` (including `.deliveries.json` and `.schedules.json`), `logs/`, `server.json`.
+`skillhook.json`, `.env` (mode 600), `skills/`, `jobs/` (including `.deliveries.json`, `.schedules.json`, `.delivery-log/`), `logs/`, `server.json`.
 
 ## Hard rules
 

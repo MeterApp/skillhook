@@ -4,6 +4,12 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- Groundwork for Skillhook Cloud: the `cloud.*` settings (`enabled: false`, `mode: observe`,
+  allow/deny lists, upload switches; [docs/cloud.md](docs/cloud.md)) and the wire protocol as zod
+  schemas, exported as `@meterapp/skillhook/protocol` for the cloud to validate against
+  ([docs/cloud-protocol.md](docs/cloud-protocol.md)). No link yet: nothing leaves the machine.
+  `SKILLHOOK_CLOUD_*` variables never reach a run's environment, even when a skill lists them.
+
 ## 0.4.0 (2026-09-28)
 
 - An event bus inside `skillhook serve` (`src/events.ts`): the queue publishes `job.queued`,

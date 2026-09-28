@@ -29,3 +29,5 @@ export * from "./examples.js";
 export * from "./update.js";
 export { createLogger, silentLogger, type Logger } from "./logger.js";
 export { buildMcpServer } from "./mcp.js";
+export * as protocol from "./cloud/protocol.js";
+export * from "./cloud/config.js";
