@@ -572,6 +572,36 @@ describe("HTTP surface", () => {
     expect(replays.jobs.every((j) => j.trigger === "replay")).toBe(true);
   });
 
+  it("runs a SKILL.md that is not installed through POST /skills/test", async () => {
+    const auth = { authorization: `Bearer ${ADMIN}`, "content-type": "application/json" };
+    const skillMd = "---\nname: scratch-test\ndescription: Ad-hoc.\nskillhook:\n  model: haiku\n  env: [FAKE_CLAUDE_RECORD]\n---\n\nTry {{payload.thing}} now.\n";
+    const res = await fetch(`${base}/skills/test`, { method: "POST", headers: auth, body: JSON.stringify({ skill_md: skillMd, payload: { thing: "adhoc" }, wait: 20 }) });
+    expect(res.status).toBe(200);
+    const body = await json(res);
+    expect(body).toMatchObject({ status: "succeeded", adhoc: true, outcome: "unknown" });
+    const job = store.get(String(body.job_id))!;
+    expect(job).toMatchObject({ trigger: "test", adhoc: true, skill: "scratch-test", model: "haiku", source: { method: "TEST" } });
+    const skillFile = path.join(store.pathsFor(job.id).skillDir, "scratch-test", "SKILL.md");
+    expect(job.skill_file).toBe(skillFile);
+    expect(readFileSync(skillFile, "utf8")).toBe(skillMd);
+    expect(readFileSync(store.pathsFor(job.id).prompt, "utf8")).toContain("Try adhoc now.");
+    const record = JSON.parse(readFileSync(recordFile, "utf8")) as { env: Record<string, string>; cwd: string; args: string[] };
+    expect(record.env.SKILLHOOK_SKILL_DIR).toBe(path.dirname(skillFile));
+    expect(record.env.SKILLHOOK_TRIGGER).toBe("test");
+    expect(record.cwd).toBe(path.dirname(skillFile));
+    expect(record.args).toContain("haiku");
+    const installed = (await json(await fetch(`${base}/skills`, { headers: auth }))) as unknown as { skills: { name: string }[] };
+    expect(installed.skills.map((s) => s.name)).not.toContain("scratch-test");
+    const invalid = await fetch(`${base}/skills/test`, { method: "POST", headers: auth, body: JSON.stringify({ skill_md: "---\nname: Bad Name\ndescription: x\n---\nx" }) });
+    expect(invalid.status).toBe(400);
+    expect((await json(invalid)).error).toBe("invalid_skill_document");
+    expect((await fetch(`${base}/skills/test`, { method: "POST", headers: auth, body: JSON.stringify({ payload: {} }) })).status).toBe(400);
+    expect((await fetch(`${base}/skills/test`, { method: "POST", headers: auth, body: JSON.stringify({ skill_md: skillMd, runner: "gemini" }) })).status).toBe(400);
+    expect((await fetch(`${base}/skills/test`, { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.1" }, body: "{}" })).status).toBe(401);
+    const tests = (await json(await fetch(`${base}/jobs?trigger=test`, { headers: auth }))) as unknown as { jobs: { id: string }[] };
+    expect(tests.jobs.map((j) => j.id)).toContain(job.id);
+  });
+
   it("pages and filters jobs", async () => {
     const auth = { authorization: `Bearer ${ADMIN}` };
     const first = (await json(await fetch(`${base}/jobs?limit=2`, { headers: auth }))) as unknown as { jobs: { id: string }[]; next_after: string | null };

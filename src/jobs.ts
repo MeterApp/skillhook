@@ -51,6 +51,10 @@ export interface JobRecord {
   response?: JobResponse;
   /** For `trigger: replay`: the delivery-log record and/or job this run repeats. */
   replay_of?: { delivery?: string; job?: string };
+  /** The SKILL.md came with the request (`POST /skills/test`, `skillhook run --file`) and lives in `jobs/<id>/skill/<name>/`. */
+  adhoc?: true;
+  /** The `SKILL.md` (or `skillhook.yaml`) the job ran from. */
+  skill_file?: string;
   delivery_id?: string;
   /** Hash of payload + query for in-flight de-duplication of webhook deliveries (see `deliveryFingerprint`). */
   fingerprint?: string;
@@ -70,6 +74,8 @@ export interface JobPaths {
   body: string;
   response: string;
   responseSchema: string;
+  /** `skill/`: where an ad-hoc SKILL.md is kept (`skill/<name>/SKILL.md`). */
+  skillDir: string;
 }
 
 export interface CreateJobInput {
@@ -79,10 +85,13 @@ export interface CreateJobInput {
   runner: RunnerName;
   model?: string;
   effort?: string;
+  cwd?: string;
   source: JobSource;
   delivery_id?: string;
   fingerprint?: string;
   replay_of?: { delivery?: string; job?: string };
+  adhoc?: true;
+  skill_file?: string;
   event: WebhookEvent;
   rawBody?: Buffer;
 }
@@ -145,6 +154,7 @@ export class JobStore {
       body: path.join(dir, "body.bin"),
       response: path.join(dir, "response.json"),
       responseSchema: path.join(dir, "response.schema.json"),
+      skillDir: path.join(dir, "skill"),
     };
   }
 
@@ -161,11 +171,15 @@ export class JobStore {
       model: input.model,
       effort: input.effort,
       created_at: nowIso(),
+      cwd: input.cwd,
       delivery_id: input.delivery_id,
       fingerprint: input.fingerprint,
       replay_of: input.replay_of,
+      adhoc: input.adhoc,
+      skill_file: input.skill_file,
       source: input.source,
     };
+    for (const key of Object.keys(record) as (keyof JobRecord)[]) if (record[key] === undefined) delete record[key];
     writeFileSync(paths.payload, `${payloadJson(input.event.payload)}\n`, { mode: 0o600 });
     writeJsonFile(paths.event, { ...input.event, id, skill: input.skill });
     if (input.rawBody && input.event.body_kind === "binary") writeFileSync(paths.body, input.rawBody, { mode: 0o600 });

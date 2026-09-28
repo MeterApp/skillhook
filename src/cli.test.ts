@@ -204,6 +204,35 @@ describe("cli", () => {
     expect(await main(["deliveries", "replay", ...dir, "--json"], noId.cli)).toBe(2);
   });
 
+  it("runs a SKILL.md that is not installed from a file or stdin, dry and for real", async () => {
+    const file = path.join(paths.home, "scratch.md");
+    writeFileSync(file, "---\nname: scratch-cli\ndescription: Scratch.\nskillhook:\n  model: haiku\n---\n\nScratch {{payload.x}}.\n");
+    const dry = io();
+    expect(await main(["run", "--file", file, ...dir, "--payload", '{"x":"one"}', "--dry-run", "--json"], dry.cli)).toBe(0);
+    expect(dry.json()).toMatchObject({ dry_run: true, skill: "scratch-cli", adhoc: true, model: "haiku" });
+    expect(String(dry.json().prompt)).toContain("Scratch one.");
+    expect(String(dry.json().cwd)).toContain(path.join("skill", "scratch-cli"));
+    const run = io();
+    expect(await main(["run", "--file", file, ...dir, "--payload", '{"x":"two"}', "--json"], run.cli)).toBe(0);
+    const job = run.json().job as { id: string; trigger: string; adhoc: boolean; skill: string; status: string; skill_file: string };
+    expect(job).toMatchObject({ trigger: "test", adhoc: true, skill: "scratch-cli", status: "succeeded" });
+    expect(job.skill_file).toBe(path.join(paths.jobsDir, job.id, "skill", "scratch-cli", "SKILL.md"));
+    expect(readFileSync(job.skill_file, "utf8")).toContain("name: scratch-cli");
+    const viaStdin = io();
+    viaStdin.cli.stdin = async () => readFileSync(file, "utf8");
+    expect(await main(["run", "--stdin", ...dir, "--payload", '{"x":"three"}', "--json"], viaStdin.cli)).toBe(0);
+    expect((viaStdin.json().job as { trigger: string }).trigger).toBe("test");
+    const both = io();
+    expect(await main(["run", "hello", "--file", file, ...dir, "--json"], both.cli)).toBe(2);
+    const none = io();
+    expect(await main(["run", ...dir, "--json"], none.cli)).toBe(2);
+    const gone = io();
+    expect(await main(["run", "--file", path.join(paths.home, "nope.md"), ...dir, "--json"], gone.cli)).toBe(1);
+    writeFileSync(file, "no frontmatter");
+    const invalid = io();
+    expect(await main(["run", "--file", file, ...dir, "--json"], invalid.cli)).toBe(1);
+  });
+
   it("links a repository's skillhook.yaml, lists and runs its hooks, and unlinks it", async () => {
     const repo = path.join(paths.home, "repo");
     const bare = path.join(paths.home, "bare");

@@ -247,7 +247,7 @@ The Markdown body is rendered with a minimal template engine before it is sent t
 | `{{received_at}}` | ISO-8601 timestamp of the delivery. |
 | `{{source_ip}}` | Client IP (taken from `X-Forwarded-For`, `X-Real-IP` or `CF-Connecting-IP` when the request came through a loopback proxy such as Tailscale). |
 | `{{delivery_id}}` | Delivery id (empty when none). |
-| `{{trigger}}` | `webhook`, `cli` (`skillhook run`), `mcp` (MCP `run_skill` without a server), `api` (`POST /skills/<name>/run`, including MCP runs through a running server), `schedule` (a `schedule:` slot fired; the payload is then skillhook's `{scheduled_for, schedule}` object, see [schedules.md](schedules.md)) or `replay` (an operator replayed an earlier delivery or job; the headers carry `x-skillhook-replay-of`). |
+| `{{trigger}}` | `webhook`, `cli` (`skillhook run`), `mcp` (MCP `run_skill` without a server), `api` (`POST /skills/<name>/run`, including MCP runs through a running server), `schedule` (a `schedule:` slot fired; the payload is then skillhook's `{scheduled_for, schedule}` object, see [schedules.md](schedules.md)) `replay` (an operator replayed an earlier delivery or job; the headers carry `x-skillhook-replay-of`) or `test` (a SKILL.md supplied with the request: `skillhook run --file`, `POST /skills/test`). |
 
 Unknown placeholders render as an empty string. Headers whose name matches `signature`, `token`, `secret`, `api-key`/`apikey`, `authorization`, `cookie` or `password` are removed before they reach `{{headers}}`, `event.json` or the agent.
 
@@ -364,6 +364,15 @@ skillhook run hello --payload '{"name":"world"}' --dry-run
 ```
 
 `--dry-run` prints the resolved runner command, the environment variable names, the guardrails and the exact prompt without starting the agent. Drop `--dry-run` to run it in-process (no HTTP, no authentication); the job is recorded under `jobs/` like any other. `--payload` accepts inline JSON, `@file`, a path, or `-` for stdin; `--header "Name: value"` simulates request headers for `when` filters and `{{headers.*}}`; `--runner`, `--model`, `--effort` and `--cwd` override the skill for this run.
+
+A SKILL.md does not have to be installed to be tried:
+
+```bash
+skillhook run --file drafts/sentry-triage/SKILL.md --payload @sample.json --dry-run
+cat SKILL.md | skillhook run --stdin --payload '{"name":"world"}'
+```
+
+The document is validated, copied to `jobs/<id>/skill/<name>/SKILL.md` and run from there (`trigger: test`, `adhoc: true` on the job; its default working directory is that copy's directory), so a draft can be iterated on without touching `~/.skillhook/skills`. The same is available over the admin API as `POST /skills/test` ([api.md](api.md#post-skillstest)) and to agents as the MCP tool `test_skill`.
 
 With the server running, exercise the real HTTP path (auth, filters, queue):
 

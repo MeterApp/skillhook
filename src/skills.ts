@@ -323,6 +323,11 @@ export type SkillSource =
       file: string;
       /** How the hook is implemented: a `SKILL.md` in the project, an inline `prompt`, or a shell command (`run`). */
       kind: "skill" | "prompt" | "run";
+    }
+  | {
+      /** A SKILL.md supplied with the request and kept in the job directory (`jobs/<job>/skill/<name>/`); never in the registry. */
+      type: "adhoc";
+      job: string;
     };
 
 export interface Skill {
@@ -413,6 +418,14 @@ export function loadSkill(dir: string): Skill {
   }
   const skill = parseSkillDocument(text, dir);
   skill.mtimeMs = mtimeMs;
+  return skill;
+}
+
+/** The SKILL.md an ad-hoc job keeps in its directory (`<skillDir>/<name>/SKILL.md`), loaded from there rather than from the registry. */
+export function loadAdhocSkill(skillDir: string, jobId: string, name: string): Skill {
+  if (!isValidSkillName(name)) throw new SkillError(`Invalid skill name "${name}"`, skillDir);
+  const skill = loadSkill(path.join(skillDir, name));
+  skill.source = { type: "adhoc", job: jobId };
   return skill;
 }
 

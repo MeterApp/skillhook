@@ -9,7 +9,7 @@ import { listExamples } from "./examples.js";
 import { JOB_ARTIFACTS, JOB_STATUSES, type JobArtifact, type JobStatus } from "./jobs.js";
 import { TRIGGERS, type Trigger } from "./payload.js";
 import { JOB_OUTCOMES, type JobOutcome } from "./response.js";
-import { addExampleSkill, createOps, createSkill, generateSecretFor, initProject, linkProject, listProjects, planReplay, postToServer, publicJob, resolveBaseUrl, runSkillLocally, sendSignedWebhook, setSecret, triggerViaServer, unlinkProject, webhookUrl, type LinkResult, type Ops } from "./ops.js";
+import { addExampleSkill, createOps, createSkill, generateSecretFor, initProject, linkProject, listProjects, planReplay, postToServer, publicJob, resolveBaseUrl, runAdhocLocally, runSkillLocally, sendSignedWebhook, setSecret, triggerViaServer, unlinkProject, webhookUrl, type LinkResult, type Ops } from "./ops.js";
 import type { Paths } from "./paths.js";
 import { listSchedules, scheduleStatus } from "./scheduler.js";
 import { skillSummary } from "./server.js";
@@ -197,6 +197,37 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
       }
       const job = await runSkillLocally(o, { skill, payload: input.payload ?? {}, headers: input.headers, trigger: "mcp", overrides, waitMs: wait * 1000 });
       return ok({ via: "local", job: publicJob(job), job_dir: o.store.pathsFor(job.id).dir }, `Job ${job.id}: ${job.status}${job.error ? ` (${job.error})` : ""}`);
+    }),
+  );
+
+  server.registerTool(
+    "test_skill",
+    {
+      title: "Test a SKILL.md that is not installed",
+      description: "Runs the complete text of a SKILL.md (frontmatter included) with a payload, exactly like run_skill, without installing it: the file is kept in the job directory (jobs/<id>/skill/<name>/SKILL.md) and the job has trigger `test`. Use it to try a draft before create_skill, or to see how a change would behave. Through the running server when there is one, otherwise in-process.",
+      inputSchema: z.object({
+        skill_md: z.string().describe("the whole SKILL.md text, frontmatter included; `name` must be a valid skill name"),
+        payload: z.unknown().optional(),
+        headers: z.record(z.string(), z.string()).optional(),
+        runner: z.enum(["claude", "codex", "shell"]).optional(),
+        model: z.string().optional(),
+        effort: z.string().optional(),
+        cwd: z.string().optional().describe("working directory for the run (default: the skill's `cwd`, else the copy's own directory inside the job)"),
+        wait_seconds: z.number().int().min(0).max(1800).optional().describe("default 120"),
+      }),
+    },
+    wrap(async (input) => {
+      const o = ops();
+      const wait = input.wait_seconds ?? 120;
+      const overrides = { runner: input.runner, model: input.model, effort: input.effort, cwd: input.cwd };
+      const viaServer = await postToServer(o, "/skills/test", { skill_md: input.skill_md, payload: input.payload ?? {}, headers: input.headers, ...overrides, wait });
+      if (viaServer) {
+        const body = viaServer.body as Record<string, unknown>;
+        if (viaServer.status >= 400) throw new Error(`${String(body.error)}: ${String(body.message)}`);
+        return ok({ via: "server", base_url: viaServer.baseUrl, http_status: viaServer.status, ...body }, body.status === "succeeded" ? `Job ${String(body.job_id)} succeeded${body.outcome ? ` (${String(body.outcome)})` : ""}.` : `Job ${String(body.job_id ?? "?")}: ${String(body.status ?? body.error)}`);
+      }
+      const job = await runAdhocLocally(o, { skillMd: input.skill_md, payload: input.payload ?? {}, headers: input.headers, overrides, waitMs: wait * 1000 });
+      return ok({ via: "local", job: publicJob(job), job_dir: o.store.pathsFor(job.id).dir, skill_file: job.skill_file }, `Job ${job.id}: ${job.status}${job.outcome ? ` (${job.outcome})` : ""}${job.error ? ` (${job.error})` : ""}`);
     }),
   );
 

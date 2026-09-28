@@ -9,7 +9,7 @@ import { describeCondition, evaluateConditions } from "./filters.js";
 import { newJobId } from "./ids.js";
 import { isTerminal, JOB_ARTIFACTS, JOB_STATUSES, type JobArtifact, type JobRecord, type JobStatus, type JobStore } from "./jobs.js";
 import type { Logger } from "./logger.js";
-import { createManualJob } from "./manual.js";
+import { createAdhocJob, createManualJob } from "./manual.js";
 import { deliveryFingerprint, parseBody, redactHeaders, TRIGGERS, type BodyKind, type Trigger, type WebhookEvent } from "./payload.js";
 import { planReplay, ReplayError, replayOfFor, type ReplayPlan } from "./replay.js";
 import { JOB_OUTCOMES, type JobOutcome } from "./response.js";
@@ -506,6 +506,7 @@ export function createServer(deps: ServerDeps): Server {
       source: { ip: args.ip, method: args.method, path: args.path, content_type: event.content_type, user_agent: args.headers["user-agent"] },
       delivery_id: args.deliveryId,
       fingerprint: args.fingerprint,
+      skill_file: args.skill.file,
       event,
       rawBody: args.rawBody,
     });
@@ -690,6 +691,25 @@ export function createServer(deps: ServerDeps): Server {
       if (segments.length === 1 && method === "GET") {
         const loaded = registry.list();
         return send(res, 200, { skills: loaded.skills.map((s) => skillSummary(s, config, deps.secrets())), errors: loaded.errors });
+      }
+      if (segments.length === 2 && segments[1] === "test" && method === "POST") {
+        // A SKILL.md that is not installed: validated, kept in the job directory, run from there.
+        const rawBody = await readBody(req, config.max_body_bytes);
+        const body = rawBody.length ? (parseBody(headers["content-type"], rawBody).payload as Record<string, unknown>) : {};
+        if (!isPlainObject(body) || typeof body.skill_md !== "string" || !body.skill_md.trim()) throw new HttpError(400, "bad_request", "expected a JSON object with a non-empty skill_md string (the SKILL.md text)");
+        if (body.runner !== undefined && !RunnerNameSchema.safeParse(body.runner).success) throw new HttpError(400, "bad_request", "runner must be claude, codex or shell");
+        const extraHeaders = isPlainObject(body.headers) ? Object.fromEntries(Object.entries(body.headers).map(([k, v]) => [k.toLowerCase(), String(v)])) : {};
+        let created: ReturnType<typeof createAdhocJob>;
+        try {
+          created = createAdhocJob({ config, store }, { skillMd: body.skill_md, payload: body.payload ?? {}, headers: { ...extraHeaders, "user-agent": headers["user-agent"] ?? "skillhook-api" }, overrides: { runner: body.runner as RunnerName | undefined, model: body.model as string | undefined, effort: body.effort as string | undefined, cwd: typeof body.cwd === "string" ? body.cwd : undefined } });
+        } catch (error) {
+          if (error instanceof SkillError) throw new HttpError(400, "invalid_skill_document", error.message);
+          throw error;
+        }
+        logger.info("test run accepted", { skill: created.job.skill, job: created.job.id, file: created.skill.file, ip });
+        queue.enqueue(created.job);
+        const wait = Math.min(Number(body.wait ?? 0) || parseWait(url, headers, config.max_wait_seconds), config.max_wait_seconds);
+        return respondWithJob(res, created.job, wait, { adhoc: true });
       }
       if (segments.length === 3 && segments[2] === "run" && method === "POST") {
         const skill = loadSkill(decodeURIComponent(segments[1] as string));

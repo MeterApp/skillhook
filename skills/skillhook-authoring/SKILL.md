@@ -170,6 +170,8 @@ Guardrails are added for you: the agent already knows it runs unattended with no
 3. `skillhook run <name> --payload @references/sample-payload.json --dry-run` — prints the runner command, cwd, environment names and the rendered prompt. Read the prompt as the agent will: are the placeholders filled, is the payload where you expect it?
 4. `skillhook run <name> --payload @references/sample-payload.json` — a real run without HTTP: no auth, no `when` filter. The result line shows the outcome the skill reported (`succeeded (completed)`); `skillhook jobs show <id> --stdout` has the transcript, `--response` the reported `response.json`; `skillhook jobs resume <id>` reopens the session so you can ask the agent what happened. MCP: `run_skill` with `wait_seconds`.
 5. `skillhook send <name> --payload @references/sample-payload.json --header "X-GitHub-Event: issues" --wait 60` — through the running server with a correct signature; this proves auth, filters and dedupe (MCP: `send_test_webhook`). Add whatever headers your filter needs.
+
+To iterate on a draft before installing it, or to try a change without touching the installed file: `skillhook run --file drafts/<name>/SKILL.md --payload @references/sample-payload.json [--dry-run]` (MCP: `test_skill` with the document text). The copy that ran is kept with the job (`jobs/<id>/skill/<name>/SKILL.md`).
 6. Configure the sender (`skillhook url <name>` plus the secret), trigger one real event, and watch `skillhook jobs list`. Read `result.md` of the first few jobs and tighten the body wherever the agent guessed.
 
 Keep SKILL.md under about 150 lines; move API shapes, field lists and long procedures into `references/*.md` and tell the agent when to read them.

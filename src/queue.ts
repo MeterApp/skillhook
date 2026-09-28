@@ -10,7 +10,7 @@ import { deriveOutcome, resolveJobResponse } from "./response.js";
 import { prepareRun } from "./run.js";
 import type { RunnerOutcome, StreamState } from "./runners/index.js";
 import type { SkillRegistry } from "./registry.js";
-import type { Skill } from "./skills.js";
+import { loadAdhocSkill, type Skill } from "./skills.js";
 import { errorMessage, nowIso, tail, writeJsonFile } from "./util.js";
 
 export interface QueueDeps {
@@ -172,7 +172,8 @@ export class JobQueue extends EventEmitter {
 
     let skill: Skill | undefined;
     try {
-      skill = registry.get(job.skill);
+      // An ad-hoc job carries its own SKILL.md; everything else is looked up as it is now.
+      skill = job.adhoc ? loadAdhocSkill(store.pathsFor(job.id).skillDir, job.id, job.skill) : registry.get(job.skill);
       if (!skill) throw new Error(`skill "${job.skill}" no longer exists`);
     } catch (error) {
       this.finish(job, { status: "failed", started_at: nowIso(), error: errorMessage(error) });
@@ -181,7 +182,7 @@ export class JobQueue extends EventEmitter {
 
     let prepared: ReturnType<typeof prepareRun>;
     try {
-      prepared = prepareRun({ skill, config, secrets: this.deps.secrets(), fileSecrets: this.deps.fileSecrets?.(), store, job, event: store.readEvent(job.id) });
+      prepared = prepareRun({ skill, config, secrets: this.deps.secrets(), fileSecrets: this.deps.fileSecrets?.(), store, job, event: store.readEvent(job.id), cwd: job.cwd });
     } catch (error) {
       this.finish(job, { status: "failed", started_at: nowIso(), error: errorMessage(error) });
       return;

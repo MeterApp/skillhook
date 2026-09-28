@@ -51,6 +51,12 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
   the running server when there is one, in the CLI process otherwise. The guardrails tell the agent it
   is replaying. `src/manual.ts` (manual runs) and `src/replay.ts` (the planner) are new leaf modules,
   re-exported from `src/ops.ts`.
+- Ad-hoc runs. `skillhook run --file SKILL.md` (or `--stdin`), `POST /skills/test` and the MCP tool
+  `test_skill` run a SKILL.md that is not installed: the document is validated, kept at
+  `jobs/<id>/skill/<name>/SKILL.md` and run from there, as a job with `trigger: test`, `adhoc: true`,
+  `skill_file` and `source.method: TEST`; nothing is added to `<home>/skills`. `--dry-run` works with
+  `--file` too. Every job now records `skill_file` (the SKILL.md or skillhook.yaml it ran from), and
+  `skillhook run --cwd` applies to real runs, not only to `--dry-run`.
 
 ## 0.3.0 (2026-09-23)
 

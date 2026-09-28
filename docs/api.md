@@ -22,6 +22,7 @@ Related: [security.md](security.md) (authentication), [skills.md](skills.md) (fi
 | `POST`, `PUT` | `/hooks/<skill>` | the skill's `auth` | Deliver a webhook. `404 schedule_only` for a skill with `webhook: false`. |
 | `GET` | `/skills` | admin | Every skill with its effective settings. |
 | `POST` | `/skills/<skill>/run` | admin | Run a skill with an arbitrary payload, bypassing webhook auth. |
+| `POST` | `/skills/test` | admin | Run a SKILL.md that is not installed (the document travels in the body). |
 | `GET` | `/jobs` | admin | Recent jobs. |
 | `GET` | `/jobs/<id>` | admin | One job, optionally with artifacts. |
 | `POST` | `/jobs/<id>/cancel` | admin | Cancel a queued or running job. |
@@ -246,6 +247,23 @@ curl -sS -X POST http://127.0.0.1:8787/skills/hello/run \
   -d '{"payload":{"name":"Dee"},"wait":60,"model":"sonnet"}'
 ```
 
+## `POST /skills/test`
+
+Runs a SKILL.md that is not installed: the document is validated like any skill file, written to `jobs/<id>/skill/<name>/SKILL.md` (the server writes nothing outside the jobs directory) and run from there, with `trigger: "test"`, `adhoc: true`, `skill_file` pointing at that copy and `source.method: "TEST"`. Nothing is added to `<home>/skills`, and the job's default working directory is the copy's own directory unless the document or `cwd` says otherwise.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `skill_md` | string | The whole SKILL.md text, frontmatter included. Its `name` must be a valid skill name; the frontmatter and `skillhook:` block are validated as usual. |
+| `payload`, `headers`, `runner`, `model`, `effort`, `wait` | | As in `POST /skills/<skill>/run`. |
+| `cwd` | string | Working directory for the run. |
+
+Responses are the webhook shapes plus `adhoc: true`. An invalid document is `400 invalid_skill_document` with the validation message; a missing `skill_md` is `400 bad_request`. This is what `skillhook run --file` / `--stdin` and the MCP `test_skill` tool use when a server is running.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d "$(jq -n --rawfile md draft/SKILL.md '{skill_md: $md, payload: {name: "Dee"}, wait: 120}')" http://127.0.0.1:8787/skills/test
+```
+
 ## `GET /jobs`
 
 Query: `skill=<name>`, `status=<queued|running|succeeded|failed|timed_out|cancelled|interrupted>`, `outcome=<completed|partial|needs_human|nothing_to_do|failed|unknown>` (derived for jobs recorded before outcomes existed; queued and running jobs never match), `trigger=<webhook|api|cli|mcp|schedule>`, `since=<ISO-8601>` (created at or after; whole seconds), `after=<job id>` (only older jobs: the `next_after` of the previous page), `limit=<n>` (default 50, at most 500). Newest first. An unknown `status`, `outcome`, `trigger` or `since` value is `400 bad_request`.
@@ -390,7 +408,7 @@ The same for an earlier job, whatever its trigger: its `event.json` (payload, re
 | `id` | string | `YYYYMMDDTHHMMSSZ-<6 chars>`, UTC, sortable; also the directory name under `jobs/`. |
 | `skill` | string | |
 | `status` | string | `queued`, `running`, `succeeded`, `failed`, `timed_out`, `cancelled`, `interrupted`. |
-| `trigger` | string | `webhook`, `api`, `cli`, `mcp`, `schedule` (fired by a `schedule:`), `replay` (an operator replayed a delivery or job). |
+| `trigger` | string | `webhook`, `api`, `cli`, `mcp`, `schedule` (fired by a `schedule:`), `replay` (an operator replayed a delivery or job), `test` (a SKILL.md supplied with the request). |
 | `runner` | string | `claude`, `codex`, `shell`. |
 | `model`, `effort` | string, optional | Resolved values when set. |
 | `created_at`, `started_at`, `finished_at` | ISO-8601 | |
@@ -405,9 +423,11 @@ The same for an earlier job, whatever its trigger: its `event.json` (payload, re
 | `outcome` | string, optional | Whether the task was done, set when the job ends: `completed`, `partial`, `needs_human`, `nothing_to_do`, `failed` (also every status other than `succeeded`) or `unknown` (the agent reported nothing). See [skills.md](skills.md#reporting-the-outcome). |
 | `response` | object, optional | What the agent reported: `{"outcome", "summary", "links"?, "data"?}` (`data` is capped at 64 KiB here; complete in `response.json`). |
 | `replay_of` | object, optional | For `trigger: replay`: `{"delivery"?: "<delivery-log id>", "job"?: "<original job id>"}`. |
+| `adhoc` | `true`, optional | The SKILL.md came with the request (`POST /skills/test`, `skillhook run --file`) and lives in `jobs/<id>/skill/<name>/`. |
+| `skill_file` | string, optional | The `SKILL.md` (or `skillhook.yaml`) the job ran from. |
 | `delivery_id` | string, optional | Provider delivery id when known; `schedule:<wall-clock slot>` for scheduled runs. |
 | `fingerprint` | string, optional | SHA-256 of the payload and query string of a webhook delivery; what the in-flight duplicate check compares. |
-| `source` | object | `ip`, `method` (`POST`, `PUT`, `LOCAL` for CLI/MCP runs, `SCHEDULE` for scheduled runs, `REPLAY` for replays, whose `ip` is the original sender's), `path`, `content_type`, `user_agent`. |
+| `source` | object | `ip`, `method` (`POST`, `PUT`, `LOCAL` for CLI/MCP runs, `SCHEDULE` for scheduled runs, `REPLAY` for replays, whose `ip` is the original sender's, `TEST` for ad-hoc runs), `path`, `content_type`, `user_agent`. |
 
 `job.json` on disk also contains `command` (the exact argv); API responses omit it.
 
@@ -417,7 +437,8 @@ The same for an earlier job, whatever its trigger: its `event.json` (payload, re
 |---|---|---|
 | 200 | — | Result available, duplicate, skipped, Slack challenge, admin reads, successful cancel. |
 | 202 | — | Job queued (or still running after `wait`). |
-| 400 | `bad_request` | `/skills/<skill>/run` body is not a JSON object; unknown `?types=` (`/events`), `?streams=` (`/jobs/<id>/events`), `?status=`/`?trigger=` (`/jobs`), `?outcome=` (`/deliveries`) or malformed `?since=` value. |
+| 400 | `bad_request` | `/skills/<skill>/run` body is not a JSON object; unknown `?types=` (`/events`), `?streams=` (`/jobs/<id>/events`), `?status=`/`?trigger=` (`/jobs`), `?outcome=` (`/deliveries`) or malformed `?since=` value; `/skills/test` without `skill_md`. |
+| 400 | `invalid_skill_document` | `/skills/test`: the SKILL.md does not validate (the message says why). |
 | 401 | `missing_token`, `invalid_token`, `missing_credentials`, `invalid_credentials`, `missing_signature`, `invalid_signature`, `missing_timestamp`, `invalid_timestamp`, `stale_timestamp` | Webhook authentication failed. |
 | 401 | `unauthorized` | Admin route without a valid token. |
 | 403 | `ip_not_allowed` | Client IP not in the skill's `allow_ips`. |

@@ -12,7 +12,7 @@ import { JobStore, type JobRecord } from "./jobs.js";
 import { silentLogger, type Logger } from "./logger.js";
 import type { Paths } from "./paths.js";
 import { JobQueue } from "./queue.js";
-import { createManualJob, type ManualRunInput } from "./manual.js";
+import { createAdhocJob, createManualJob, type AdhocRunInput, type ManualRunInput } from "./manual.js";
 import { resolveRunSettings } from "./run.js";
 import { publicJob } from "./server.js";
 import { loadProject, PROJECT_FILE_NAMES, renderProjectTemplate, resolveProject, type LoadedProject } from "./projects.js";
@@ -281,17 +281,27 @@ export function describeProject(project: LoadedProject): string {
 // Running skills
 // ---------------------------------------------------------------------------
 
-/** Runs one job in this process (a private queue) and resolves when it finishes or `waitMs` elapses. */
-export async function runSkillLocally(ops: Ops, input: ManualRunInput & { waitMs?: number; onStart?: (job: JobRecord) => void }): Promise<JobRecord> {
+/** Runs an already created job in this process (a private queue) and resolves when it finishes or `waitMs` elapses. */
+export async function runJobLocally(ops: Ops, job: JobRecord, options: { waitMs?: number; timeoutSeconds: number }): Promise<JobRecord> {
   const config = { ...ops.config, concurrency: 1 };
   const queue = new JobQueue({ store: ops.store, config, registry: ops.registry, secrets: ops.secrets, fileSecrets: ops.fileSecrets, logger: ops.logger });
+  queue.enqueue(job);
+  const finished = await queue.waitFor(job.id, options.waitMs ?? (options.timeoutSeconds + 30) * 1000);
+  return finished ?? ops.store.require(job.id);
+}
+
+/** Creates and runs one job in this process and resolves when it finishes or `waitMs` elapses. */
+export async function runSkillLocally(ops: Ops, input: ManualRunInput & { waitMs?: number; onStart?: (job: JobRecord) => void }): Promise<JobRecord> {
   const job = createManualJob(ops, input);
   input.onStart?.(job);
-  queue.enqueue(job);
-  const settings = resolveRunSettings(input.skill, ops.config, input.overrides);
-  const waitMs = input.waitMs ?? (settings.timeoutSeconds + 30) * 1000;
-  const finished = await queue.waitFor(job.id, waitMs);
-  return finished ?? ops.store.require(job.id);
+  return runJobLocally(ops, job, { waitMs: input.waitMs, timeoutSeconds: resolveRunSettings(input.skill, ops.config, input.overrides).timeoutSeconds });
+}
+
+/** `skillhook run --file`: runs a SKILL.md that is not installed, in this process. */
+export async function runAdhocLocally(ops: Ops, input: AdhocRunInput & { waitMs?: number; onStart?: (job: JobRecord, skill: Skill) => void }): Promise<JobRecord> {
+  const { job, skill } = createAdhocJob(ops, input);
+  input.onStart?.(job, skill);
+  return runJobLocally(ops, job, { waitMs: input.waitMs, timeoutSeconds: resolveRunSettings(skill, ops.config, input.overrides).timeoutSeconds });
 }
 
 export interface ServerRunResult {

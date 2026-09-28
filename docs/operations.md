@@ -108,6 +108,7 @@ Lifecycle: `queued` → `running` → one of `succeeded`, `failed`, `timed_out`,
 | `response.schema.json` | The JSON Schema handed to the runner for `response: { mode: structured }`. |
 | `last-message.md` | Codex only, written by `codex exec -o`. |
 | `body.bin` | The raw request body when it was binary. |
+| `skill/<name>/SKILL.md` | Ad-hoc runs only (`skillhook run --file`, `POST /skills/test`, MCP `test_skill`): the document that was run, kept with the job. |
 
 All files are mode 600. Job ids are `YYYYMMDDTHHMMSSZ-<6 random chars>` (UTC), so `ls jobs/` sorts chronologically.
 
