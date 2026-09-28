@@ -1,10 +1,11 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { readEnvFile } from "./env.js";
+import { loadSecrets, readEnvFile } from "./env.js";
 import { setConfigValue } from "./config.js";
 import { DELIVERY_OUTCOMES, readDeliveryBody, type DeliveryOutcome } from "./delivery-log.js";
 import { formatDoctor, runDoctor } from "./doctor.js";
+import { formatHealth, runHealth, type HealthReport } from "./health.js";
 import { listExamples } from "./examples.js";
 import { JOB_ARTIFACTS, JOB_STATUSES, type JobArtifact, type JobStatus } from "./jobs.js";
 import { TRIGGERS, type Trigger } from "./payload.js";
@@ -18,7 +19,7 @@ import { skillSummary } from "./server.js";
 import { installService, readServiceLog, restartService, serviceStatus, uninstallService } from "./service.js";
 import { AUTH_TYPES, parseSkillDocument, type AuthType } from "./skills.js";
 import { currentExposures, disableExposure, enableExposure, tailscaleStatus } from "./tailscale.js";
-import { findRunningServer } from "./client.js";
+import { adminRequest, findRunningServer } from "./client.js";
 import { updateStatusFromCache } from "./update.js";
 import { errorMessage } from "./util.js";
 import { VERSION } from "./version.js";
@@ -441,6 +442,22 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
     wrap(async () => {
       const report = await runDoctor(paths);
       return ok({ ...report }, formatDoctor(report));
+    }),
+  );
+
+  server.registerTool(
+    "get_health",
+    { title: "Health report", description: "Everything doctor checks plus, with deep (default), every MCP server Claude Code and Codex know (connected, needs authentication, failed), installed plugins, `codex doctor`, disk space and each skill's last run, grouped (system, skillhook, runners, tools, skills, exposure). Through the running server's cached report when there is one (`refresh` probes again); otherwise probed now.", inputSchema: z.object({ deep: z.boolean().optional(), refresh: z.boolean().optional(), network: z.boolean().optional().describe("ask the npm registry and probe the public URL (default false through the server, true locally)") }) },
+    wrap(async ({ deep, refresh, network }) => {
+      const running = await findRunningServer(paths);
+      if (running) {
+        const params = new URLSearchParams({ deep: deep === false ? "0" : "1", network: network ? "1" : "0", ...(refresh ? { refresh: "1" } : {}) });
+        const response = await adminRequest<HealthReport & { cached?: boolean; error?: string; message?: string }>(running.baseUrl, loadSecrets(paths, env), `/health/checks?${params.toString()}`, { timeoutMs: 180_000 });
+        if (response.status >= 400) throw new Error(`${String(response.body.error)}: ${String(response.body.message)}`);
+        return ok({ via: "server", base_url: running.baseUrl, ...response.body }, formatHealth(response.body));
+      }
+      const report = await runHealth(paths, { env, deep: deep ?? true, network: network ?? true });
+      return ok({ via: "local", ...report }, formatHealth(report));
     }),
   );
 

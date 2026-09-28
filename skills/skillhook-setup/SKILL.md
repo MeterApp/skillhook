@@ -41,6 +41,7 @@ skillhook init                       # add --runner codex, --model <name>, --por
 
 ```bash
 skillhook doctor                  # add --json for the same report as data
+skillhook health                  # the doctor plus every MCP server, plugin and `codex doctor` the agents depend on (MCP: get_health)
 ```
 
 One line per check — `✓` fine, `!` warning, `✗` must be fixed — each with a `→ hint` naming the command that fixes it. In order: `node`; `home` / `config`; `secrets` (file mode 600); `admin token`; `skills` (every SKILL.md parses); one `skill <name>` line per skill (secret present unless it is schedule-only, `cwd` exists); `schedules` and, on a Mac with schedules, `sleep` (warns when the machine may sleep: `sudo pmset -a sleep 0`); `claude` / `codex` (installed and logged in, or API key set); `tailscale` (installed, running, port exposed); `server` (running, and where); `service` (installed and running). Fix every `✗` before exposing anything. The tailscale, server and service warnings disappear in steps 5 and 6.

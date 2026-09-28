@@ -5,6 +5,7 @@ import { signRequest } from "./auth.js";
 import { loadConfig } from "./config.js";
 import { DeliveryLog } from "./delivery-log.js";
 import { Events } from "./events.js";
+import { HealthCache } from "./health.js";
 import { JobStore } from "./jobs.js";
 import { silentLogger } from "./logger.js";
 import { JobQueue } from "./queue.js";
@@ -108,7 +109,8 @@ beforeAll(async () => {
   const deliveryLog = new DeliveryLog(paths.jobsDir, () => config.deliveries);
   queue = new JobQueue({ store, config, registry, secrets, fileSecrets: secrets, logger: silentLogger, events, processEnv: { ...process.env, SKILLHOOK_BIN: "skillhook-test-bin" }, progressPollMs: 100 });
   const scheduler = new Scheduler({ registry, store, queue, config, logger: silentLogger, now: () => new Date("2026-09-23T10:00:00Z"), events });
-  server = createServer({ config, paths, store, queue, registry, secrets, logger: silentLogger, events, deliveryLog, schedules: () => scheduler.status() });
+  const health = new HealthCache(paths, { ttlMs: () => 60_000, options: () => ({ env: { SKILLHOOK_NO_UPDATE_CHECK: "1" }, exposure: false, service: false, live: () => ({ started_at: new Date().toISOString(), queue: queue.stats() }) }), events });
+  server = createServer({ config, paths, store, queue, registry, secrets, logger: silentLogger, events, deliveryLog, health, schedules: () => scheduler.status() });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const address = server.address();
   base = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
@@ -696,6 +698,42 @@ describe("HTTP surface", () => {
     expect(last.jobs.map((j) => j.id)).not.toContain(stId);
     expect((await fetch(`${base}/jobs/${stId}/answer`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ answer: "x", resume: "maybe" }) })).status).toBe(400);
     expect((await fetch(`${base}/jobs/20200101T000000Z-zzzzzz/answer`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ answer: "x" }) })).status).toBe(404);
+  });
+
+  it("serves the cached health report and the quick doctor to admins", async () => {
+    const auth = { authorization: `Bearer ${ADMIN}` };
+    expect((await fetch(`${base}/health/checks`, { headers: { "x-forwarded-for": "203.0.113.1" } })).status).toBe(401);
+    expect((await fetch(`${base}/health/checks`, { method: "POST", headers: auth })).status).toBe(405);
+    const stream = await fetch(`${base}/events?types=health.changed`, { headers: auth });
+    const quick = await json(await fetch(`${base}/health/checks?deep=0`, { headers: auth }));
+    expect(quick).toMatchObject({ deep: false, network: false, cached: false, ok: expect.any(Boolean) });
+    const quickChecks = quick.checks as { name: string; status: string; detail: string; group: string }[];
+    expect(quickChecks.find((c) => c.name === "server")).toMatchObject({ status: "ok", group: "skillhook", detail: expect.stringContaining("this server") });
+    expect(quickChecks.find((c) => c.name === "claude")).toMatchObject({ status: "ok", group: "runners", detail: expect.stringContaining("2.1.270") });
+    expect(quickChecks.some((c) => c.group === "tools")).toBe(false);
+    expect(quickChecks.some((c) => c.name === "tailscale" || c.name === "service")).toBe(false);
+    const again = await json(await fetch(`${base}/health/checks?deep=0`, { headers: auth }));
+    expect(again.cached).toBe(true);
+    expect(again.generated_at).toBe(quick.generated_at);
+    const fresh = await json(await fetch(`${base}/health/checks?deep=0&refresh=1`, { headers: auth }));
+    expect(fresh.cached).toBe(false);
+    const deep = await json(await fetch(`${base}/health/checks`, { headers: auth }));
+    expect(deep).toMatchObject({ deep: true, cached: false });
+    const deepChecks = deep.checks as { name: string; status: string; detail: string; hint?: string; group: string }[];
+    expect(deepChecks.find((c) => c.name === "claude mcp stitch")).toMatchObject({ status: "ok", group: "tools" });
+    expect(deepChecks.find((c) => c.name === "claude mcp sentry")).toMatchObject({ status: "warn" });
+    expect(deepChecks.find((c) => c.name === "claude mcp slack")).toMatchObject({ status: "fail", detail: expect.stringContaining("CONNECTION_CLOSED") });
+    expect(deepChecks.find((c) => c.name === "claude plugins")).toMatchObject({ status: "ok", detail: expect.stringContaining("supabase@claude-plugins-official@0.1.15") });
+    expect(deepChecks.find((c) => c.name === "codex doctor")).toMatchObject({ status: "warn", hint: expect.stringContaining("codex mcp login linear") });
+    expect(deepChecks.find((c) => c.name === "skill hello")?.detail).toContain("last run succeeded");
+    expect(deep.groups).toMatchObject({ tools: { fail: 1 } });
+    const doctor = await json(await fetch(`${base}/doctor`, { headers: auth }));
+    expect(doctor).toMatchObject({ deep: false, network: true });
+    expect((doctor.checks as { name: string }[]).some((c) => c.name.startsWith("claude mcp"))).toBe(false);
+    const got = await readSse(stream, (event) => event.event === "health.changed", 10_000);
+    const first = JSON.parse(got[0]!.data) as { data: { report: { deep: boolean }; changed: { name: string; from: string | null; to: string }[] } };
+    expect(first.data.report.deep).toBe(false);
+    expect(first.data.changed.find((c) => c.name === "node")).toEqual({ name: "node", from: null, to: "ok" });
   });
 
   it("pages and filters jobs", async () => {

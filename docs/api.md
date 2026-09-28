@@ -18,6 +18,8 @@ Related: [security.md](security.md) (authentication), [skills.md](skills.md) (fi
 |---|---|---|---|
 | `GET` | `/` | none | Banner: `skillhook <version>` plus a hint. |
 | `GET` | `/health` | none; admin for details | Liveness. Public callers get `{ok, version}`; admin callers also get `uptime_seconds`, `queue` and `schedules`. |
+| `GET` | `/health/checks` | admin | The grouped health report (`skillhook health`), cached; `?deep=0`, `?network=1`, `?refresh=1`. |
+| `GET` | `/doctor` | admin | The quick report (`skillhook doctor`), cached; `?network=0`, `?refresh=1`. |
 | `GET`, `HEAD` | `/hooks/<skill>` | none | `200` text when the skill exists, is enabled and has a webhook, `404` otherwise (`schedule_only` for a `webhook: false` skill). Lets providers "test" the URL. |
 | `POST`, `PUT` | `/hooks/<skill>` | the skill's `auth` | Deliver a webhook. `404 schedule_only` for a skill with `webhook: false`. |
 | `GET` | `/skills` | admin | Every skill with its effective settings. |
@@ -173,6 +175,14 @@ Public: `{"ok": true, "version": "0.1.0"}`. Admin or direct local: adds `"uptime
 ```
 
 The CLI and MCP server use this route to detect a running server, and `skillhook schedules list` prefers its live `schedules` over the state file.
+
+## `GET /health/checks`
+
+The report of [`skillhook health`](operations.md#health): `{checks, ok, summary, groups, generated_at, duration_ms, deep, network, cached, public_url?, server?}`. Each check is `{name, status: ok|warn|fail|skip, detail, hint?, group: system|skillhook|runners|tools|skills|exposure, data?}`. The server keeps one report per flavour for `health.cache_seconds` (60) and answers from it (`cached: true`); `?refresh=1` probes again, `?deep=0` leaves out the slow probes (MCP servers, plugins, `codex doctor`, last runs), and `?network=1` also asks the npm registry for a newer version and probes the public URL (off by default: the server makes no outbound request unless asked). The `server` check describes this very process (uptime, queue). Concurrent callers share one probe run.
+
+## `GET /doctor`
+
+The quick flavour, as `skillhook doctor` prints it: `GET /health/checks?deep=0` with `network` on by default (`?network=0` to turn it off).
 
 ## `GET /skills`
 
@@ -363,6 +373,7 @@ A `text/event-stream` of the server's event bus. Each message carries `id` (the 
 | `schedule.fired` | `{skill, slot, job, caught_up}` |
 | `schedule.skipped` | `{skill, slot, reason}`: `in_flight`, `caught_up`, `too_old` or `duplicate` |
 | `skill.changed` | `{name, action, source}` with `action` `added`, `changed` or `removed`, noticed when a lookup or listing reads the changed file |
+| `health.changed` | `{report, changed}`: a fresh health report whose checks differ from the previous one of the same flavour (`changed` lists `{name, from, to}`; the first report of a flavour has `from: null`) |
 
 ```bash
 curl -sN -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" "http://127.0.0.1:8787/events?types=job.finished,schedule.fired"

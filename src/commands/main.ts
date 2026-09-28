@@ -9,6 +9,7 @@ import { skillsCommand } from "./skills.js";
 import { secretCommand } from "./secret.js";
 import { runCommand } from "./run.js";
 import { sendCommand } from "./send.js";
+import { healthCommand } from "./health.js";
 import { jobCommand } from "./job.js";
 import { jobsCommand } from "./jobs.js";
 import { deliveriesCommand } from "./deliveries.js";
@@ -30,6 +31,7 @@ Usage: skillhook <command> [options]
 Setup
   init [--runner claude|codex|shell] [--model M] [--port N] [--force]   Create ~/.skillhook: config, secrets, hello skill
   doctor                                                   Check node, config, secrets, skills, claude/codex login, Tailscale, server, service
+  health [--quick] [--refresh] [--no-network] [--local]     Doctor plus MCP servers, plugins, codex doctor, disk and last runs, grouped; via the running server when there is one
   serve [--port N] [--host H] [--log-level L] [--pretty]   Run the webhook server in the foreground
   service install|uninstall|status|restart|logs [--lines N] [--follow]   Run the server at login (launchd / systemd --user)
   expose tailscale [--serve] [--port N] | status | off     Permanent HTTPS URL via Tailscale Funnel (or tailnet-only Serve)
@@ -87,6 +89,7 @@ const COMMANDS: Record<string, Command> = {
   urls: urlCommand,
   service: serviceCommand,
   doctor: doctorCommand,
+  health: healthCommand,
   config: configCommand,
   mcp: mcpCommand,
   update: updateCommand,

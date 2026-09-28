@@ -5,6 +5,7 @@ import type { Config } from "./config.js";
 import { DELIVERY_OUTCOMES, readDeliveryBody, type DeliveryLog, type DeliveryOutcome } from "./delivery-log.js";
 import { ADMIN_TOKEN_ENV, type Secrets } from "./env.js";
 import { EVENT_TYPES, type Events } from "./events.js";
+import type { HealthCache } from "./health.js";
 import { describeCondition, evaluateConditions } from "./filters.js";
 import { newJobId } from "./ids.js";
 import { AnswerError, answerJob, type AnswerJobResult } from "./answer.js";
@@ -37,6 +38,8 @@ export interface ServerDeps {
   logger: Logger;
   /** Live schedule state for `/health` (admin); absent when the server runs without a scheduler. */
   schedules?: () => ScheduleStatus[];
+  /** The cached health report behind `GET /health/checks` and `GET /doctor` (built by `serve`; absent means 404). */
+  health?: HealthCache;
   /** The process-wide event bus: `GET /events` streams it and `GET /jobs/<id>/events` follows one job on it. */
   events?: Events;
   /** Where every `/hooks/<skill>` request is recorded; `GET /deliveries` reads it. Absent: nothing is recorded. */
@@ -640,6 +643,17 @@ export function createServer(deps: ServerDeps): Server {
     if (segments[0] === "health" && segments.length === 1) {
       // Public callers learn only that the server is up; queue details need admin access.
       return send(res, 200, isAdmin(headers, req, viaProxy) ? { ok: true, version: VERSION, uptime_seconds: Math.round((Date.now() - startedAt) / 1000), queue: queue.stats(), ...(deps.schedules ? { schedules: deps.schedules() } : {}), ...(deps.deliveryLog ? { deliveries: deps.deliveryLog.stats() } : {}) } : { ok: true, version: VERSION });
+    }
+    if ((segments[0] === "health" && segments.length === 2 && segments[1] === "checks") || (segments[0] === "doctor" && segments.length === 1)) {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (method !== "GET") throw new HttpError(405, "method_not_allowed", "use GET");
+      if (!deps.health) throw new HttpError(404, "not_found", "this server has no health checks");
+      const quick = segments[0] === "doctor";
+      const deep = quick ? false : url.searchParams.get("deep") !== "0";
+      // The server never asks the registry or probes the public URL unless told to: doctor by default, health on request.
+      const network = quick ? url.searchParams.get("network") !== "0" : url.searchParams.get("network") === "1";
+      const { report, cached } = await deps.health.get({ deep, network, refresh: url.searchParams.get("refresh") === "1" });
+      return send(res, 200, { ...report, cached });
     }
     if (segments[0] === "events" && segments.length === 1) {
       requireAdmin(headers, req, viaProxy, ip);

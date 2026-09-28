@@ -2,6 +2,7 @@
 // `GET /events` (SSE), `GET /jobs/<id>/events` and, later, the cloud link subscribe. A listener that throws
 // is logged and never breaks the publisher, and there is no listener cap (every `?wait=` request adds one).
 import type { DeliveryRecord } from "./delivery-log.js";
+import type { HealthChange, HealthReport } from "./health.js";
 import type { JobRecord } from "./jobs.js";
 import type { Logger } from "./logger.js";
 import type { JobAnswer, JobQuestion, ProgressEntry } from "./progress.js";
@@ -33,11 +34,13 @@ export interface EventMap {
   "schedule.skipped": { skill: string; slot: string; reason: SkipReason };
   /** Noticed by the registry on `get()` / `list()` once it has been primed by a first `list()`. */
   "skill.changed": { name: string; action: "added" | "changed" | "removed"; source: SkillSource };
+  /** A fresh health report whose checks differ from the previous one (or the first report of that flavour). */
+  "health.changed": { report: HealthReport; changed: HealthChange[] };
 }
 
 export type EventType = keyof EventMap;
 
-export const EVENT_TYPES: EventType[] = ["server.started", "server.stopping", "delivery.received", "job.queued", "job.started", "job.updated", "job.cancelled", "job.finished", "job.progress", "job.waiting_human", "job.answered", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed"];
+export const EVENT_TYPES: EventType[] = ["server.started", "server.stopping", "delivery.received", "job.queued", "job.started", "job.updated", "job.cancelled", "job.finished", "job.progress", "job.waiting_human", "job.answered", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed", "health.changed"];
 
 export interface SkillhookEvent<K extends EventType = EventType> {
   /** Increases by one per event in this process; `GET /events` sends it as the SSE id. */

@@ -5,9 +5,60 @@
 //   FAKE_CODEX_RECORD=<file>  -> write argv/prompt/cwd as JSON
 //   FAKE_CODEX_OUTCOME=<o>    -> the `outcome` of the JSON answer emitted when --output-schema is present
 import { randomBytes } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
+// Like the real CLI, state lives under CODEX_HOME (a pass-through variable): `logged-out`, `mcp-list.json`, `doctor.json`.
+const codexHome = process.env.CODEX_HOME;
+const stateFile = (name) => (codexHome && existsSync(`${codexHome}/${name}`) ? readFileSync(`${codexHome}/${name}`, "utf8") : undefined);
+
+// Diagnostic subcommands (what `skillhook health` / `doctor` run) answer before anything is read from stdin.
+//   FAKE_CODEX_AUTH=out        -> `login status` says not logged in (exit 1)
+//   FAKE_CODEX_MCP_LIST=<json> -> what `mcp list --json` prints
+//   FAKE_CODEX_DOCTOR=<json>   -> what `doctor --json` prints
+if (args[0] === "--version") {
+  process.stdout.write("codex-cli 0.153.4\n");
+  process.exit(0);
+}
+if (args[0] === "login" && args[1] === "status") {
+  if (process.env.FAKE_CODEX_AUTH === "out" || stateFile("logged-out") !== undefined) {
+    process.stderr.write("Not logged in\n");
+    process.exit(1);
+  }
+  process.stdout.write("Logged in using ChatGPT\n");
+  process.exit(0);
+}
+if (args[0] === "mcp" && args[1] === "list") {
+  process.stdout.write(
+    process.env.FAKE_CODEX_MCP_LIST ??
+      stateFile("mcp-list.json") ??
+      `${JSON.stringify([
+        { name: "analytics-mcp", enabled: true, disabled_reason: null, transport: { type: "stdio", command: "/opt/homebrew/bin/pipx", args: ["run", "analytics-mcp"], env: {}, env_vars: [], cwd: null }, startup_timeout_sec: null, tool_timeout_sec: null, auth_status: "unsupported" },
+        { name: "codex_app", enabled: false, disabled_reason: "disabled in config", transport: { type: "stdio", command: "./launch", args: [], env: {}, env_vars: [], cwd: "." }, startup_timeout_sec: 10, tool_timeout_sec: 3600, auth_status: "unsupported" },
+        { name: "linear", enabled: true, disabled_reason: null, transport: { type: "streamable_http", url: "https://mcp.linear.example/mcp", bearer_token_env_var: null, http_headers: null }, startup_timeout_sec: null, tool_timeout_sec: null, auth_status: "not_logged_in" },
+      ])}\n`,
+  );
+  process.exit(0);
+}
+if (args[0] === "doctor") {
+  process.stdout.write(
+    process.env.FAKE_CODEX_DOCTOR ??
+      stateFile("doctor.json") ??
+      `${JSON.stringify({
+        schemaVersion: 1,
+        generatedAt: "1790625927s since unix epoch",
+        overallStatus: "warning",
+        codexVersion: "0.153.4",
+        checks: {
+          "auth.credentials": { id: "auth.credentials", category: "auth", status: "ok", summary: "auth is configured", details: { "stored auth mode": "chatgpt" }, remediation: null, durationMs: 0 },
+          "config.load": { id: "config.load", category: "config", status: "ok", summary: "config loaded", details: { "mcp servers": "3" }, remediation: null, durationMs: 0 },
+          "mcp.servers": { id: "mcp.servers", category: "mcp", status: "warning", summary: "1 MCP server needs login", details: {}, remediation: "run `codex mcp login linear`", durationMs: 12 },
+        },
+      })}\n`,
+  );
+  process.exit(0);
+}
+
 const prompt = readFileSync(0, "utf8");
 const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
 const model = flag("-m");

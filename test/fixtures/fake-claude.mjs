@@ -10,9 +10,63 @@
 //                                  (question.json / progress.jsonl), wait up to FAKE_CLAUDE_ASK_WAIT_MS (default 8000)
 //                                  for answer.json, and quote the answer (or "no answer") in the result
 import { randomBytes } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
+// Like the real CLI, state lives under CLAUDE_CONFIG_DIR (a pass-through variable): `logged-out` marks a logged-out
+// install, `mcp-list.txt` and `plugins.json` replace the canned listings.
+const configDir = process.env.CLAUDE_CONFIG_DIR;
+const stateFile = (name) => (configDir && existsSync(`${configDir}/${name}`) ? readFileSync(`${configDir}/${name}`, "utf8") : undefined);
+
+// Diagnostic subcommands (what `skillhook health` / `doctor` run) answer before anything is read from stdin.
+//   FAKE_CLAUDE_AUTH=out        -> `auth status` says logged out
+//   FAKE_CLAUDE_MCP_LIST=<text> -> the text `mcp list` prints (default: a canned list with every state)
+//   FAKE_CLAUDE_PLUGINS=<json>  -> what `plugin list --json` prints
+if (args[0] === "--version") {
+  process.stdout.write("2.1.270 (Claude Code)\n");
+  process.exit(0);
+}
+if (args[0] === "auth" && args[1] === "status") {
+  const loggedIn = process.env.FAKE_CLAUDE_AUTH !== "out" && stateFile("logged-out") === undefined;
+  process.stdout.write(`${JSON.stringify({ loggedIn, authMethod: loggedIn ? "claude.ai" : "none", apiProvider: "firstParty", analyticsDisabled: false }, null, 2)}\n`);
+  process.exit(0); // the real CLI exits 0 either way
+}
+if (args[0] === "mcp" && args[1] === "list") {
+  process.stdout.write(
+    process.env.FAKE_CLAUDE_MCP_LIST ??
+      stateFile("mcp-list.txt") ??
+      [
+        "Checking MCP server health…",
+        "",
+        "stitch: https://stitch.example/mcp (HTTP) - ✔ Connected",
+        "sentry: https://mcp.sentry.example/mcp (HTTP) - ! Needs authentication",
+        "slack: npx mcp-remote https://slack.example/mcp - ✘ Failed to connect — CONNECTION_CLOSED: Connection closed",
+        "skillhook: skillhook mcp - ✔ Connected",
+        "",
+        "MCP config diagnostics ⚠",
+        "",
+        "For help configuring MCP servers, see: https://docs.example/mcp",
+        "",
+        "[Contains warnings] User config (available in all your projects)",
+        "Location: /Users/me/.claude.json",
+        " └ [Warning] [crowdin] mcpServers.crowdin: Missing environment variables: CROWDIN_API_TOKEN",
+        "",
+      ].join("\n"),
+  );
+  process.exit(0);
+}
+if (args[0] === "plugin" && args[1] === "list") {
+  process.stdout.write(
+    process.env.FAKE_CLAUDE_PLUGINS ??
+      stateFile("plugins.json") ??
+      `${JSON.stringify([
+        { id: "supabase@claude-plugins-official", version: "0.1.15", scope: "user", enabled: true, installPath: "/Users/me/.claude/plugins/cache/claude-plugins-official/supabase/0.1.15", installedAt: "2026-08-04T21:13:57.407Z", lastUpdated: "2026-09-14T20:22:36.145Z", mcpServers: { supabase: { type: "http", url: "https://mcp.supabase.example/mcp" } } },
+        { id: "car-image@meterapp", version: "1.0.0", scope: "user", enabled: false, installPath: "/Users/me/.claude/plugins/cache/meterapp/car-image/1.0.0", installedAt: "2026-09-11T15:57:30.056Z", lastUpdated: "2026-09-11T15:57:30.056Z", mcpServers: {} },
+      ])}\n`,
+  );
+  process.exit(0);
+}
+
 const prompt = readFileSync(0, "utf8");
 const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
 const model = flag("--model");

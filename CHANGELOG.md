@@ -71,6 +71,17 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
   question, or outcome `needs_human`); a run that ends with its question unanswered counts as
   `needs_human`. New block fields `agent_api` (`mcp` | `cli` | `none`) and `human_wait_seconds`; new
   job variables `SKILLHOOK_BIN`, `SKILLHOOK_HOME`, `SKILLHOOK_HUMAN_WAIT_SECONDS`.
+- Deep health. `skillhook health` (`GET /health/checks`, MCP `get_health`) is the doctor plus what the
+  agents actually depend on, grouped (`system`, `skillhook`, `runners`, `tools`, `skills`, `exposure`):
+  `claude` / `codex` versions and logins, one check per MCP server Claude Code and Codex know
+  (connected, needs authentication, failed to connect, with the CLI's reason), Claude's MCP config
+  diagnostics and installed plugins, `codex doctor`, free disk space, and per skill the last run and
+  any `env:` name that is not set. The probes run with the same environment as a job, so
+  `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or an API key in `.env` apply to the diagnosis. The server keeps
+  one report per flavour for `health.cache_seconds` (60; `health.probe_timeout_seconds`, 20, bounds
+  `claude mcp list`), answers `GET /doctor` and `GET /health/checks` from it (`?refresh=1`,
+  `?deep=0`, `?network=1`) and publishes `health.changed` when a check changes status. `doctor`
+  gained `disk` and shows the CLI versions; every check now carries `group` and `data`.
 - Ad-hoc runs. `skillhook run --file SKILL.md` (or `--stdin`), `POST /skills/test` and the MCP tool
   `test_skill` run a SKILL.md that is not installed: the document is validated, kept at
   `jobs/<id>/skill/<name>/SKILL.md` and run from there, as a job with `trigger: test`, `adhoc: true`,

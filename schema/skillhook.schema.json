@@ -244,6 +244,25 @@
       },
       "additionalProperties": false
     },
+    "health": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "cache_seconds": {
+          "default": 60,
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "probe_timeout_seconds": {
+          "default": 20,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "additionalProperties": false
+    },
     "env_passthrough": {
       "default": [],
       "type": "array",

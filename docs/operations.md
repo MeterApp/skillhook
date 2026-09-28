@@ -211,6 +211,8 @@ Once the cause is fixed (a secret pasted, a filter corrected, a skill installed)
 | `jobs.dedupe_window_seconds` | `86400` | Replay window. |
 | `jobs.dedupe_in_flight` | `true` | Fold a delivery identical to a queued or running job of the same skill into that job; skills override with `dedupe.in_flight`. |
 | `jobs.inline_payload_max_bytes` | `200000` | Payload size inlined in prompts. |
+| `health.cache_seconds` | `60` | How long the running server reuses a health report (`GET /health/checks`, `skillhook health`, MCP `get_health`) before probing again; `refresh` bypasses it. |
+| `health.probe_timeout_seconds` | `20` | How long one slow probe may take (`claude mcp list` connects to every server; `codex doctor`). |
 | `deliveries.max` | `2000` | Records kept in the delivery log (`jobs/.delivery-log`). |
 | `deliveries.store_bodies` | `true` | Keep the body of refused deliveries (rejected, filtered) for inspection and replay. |
 | `deliveries.body_max_bytes` | `65536` | How much of such a body is kept. |
@@ -240,20 +242,42 @@ skillhook config set defaults.model sonnet
 | Check | ok | warn | fail |
 |---|---|---|---|
 | `node` | Node >= 22 | | older Node |
+| `disk` | more than 2 GiB free where the home lives | less than 2 GiB | less than 512 MiB (`skip` when it cannot be read) |
 | `version` | this is the latest skillhook | a newer version is on npm (hint: `skillhook update --install`) | (`skip` when the check is disabled or the registry does not answer) |
 | `home` / `config` | home exists and `skillhook.json` parses (or defaults apply) | | home missing; invalid config |
 | `secrets` | `.env` has mode 600 | `.env` missing or another mode | |
 | `admin token` | `SKILLHOOK_ADMIN_TOKEN` set | unset (admin API localhost-only) | |
 | `skills` | all `SKILL.md` files parse | no skills yet | one or more invalid |
-| `skill <name>` | runner, model, auth type, schedule and cwd (and the `skillhook.yaml` it comes from); a `webhook: false` skill needs no secret | `auth: none` | secret missing (`webhooks will get 503`); cwd does not exist |
+| `skill <name>` | runner, model, auth type, schedule and cwd (and the `skillhook.yaml` it comes from); a `webhook: false` skill needs no secret | `auth: none`; a name in `env:` that is not set | secret missing (`webhooks will get 503`); cwd does not exist; a shell command whose binary is not on PATH |
 | `schedules` | every enabled `schedule:` with its next run | | (`skip` when there is none) |
 | `sleep` (macOS, when schedules exist) | `pmset` reports `sleep 0` | the Mac may sleep; schedules only fire while it is awake | (`skip` when `pmset` is unavailable) |
 | `project <dir>` | the linked repository's `skillhook.yaml` parses; hooks listed | | file missing or invalid; a hook that does not compile (`skip` when nothing is linked) |
-| `claude` / `codex` | CLI found and logged in, or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` present | | not on PATH; not logged in (checked only for runners a skill or the default uses) |
+| `claude` / `codex` | CLI found (version shown) and logged in, or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` present | | not on PATH; not logged in (checked only for runners a skill or the default uses; probed with the same environment the jobs get, so `CLAUDE_CONFIG_DIR` / `CODEX_HOME` in `.env` apply) |
 | `tailscale` | the configured port is exposed via Funnel or Serve (URL shown) | CLI missing; not running; port not exposed | |
 | `public url` | `<public_url>/health` answers | did not answer (certificate still provisioning, or the server is down) | |
 | `server` | running (version, queue) | not running | |
 | `service` | running (pid) | installed but not running | (`skip` when not installed or unsupported platform) |
+
+Every check carries a `group` (`system`, `skillhook`, `runners`, `tools`, `skills`, `exposure`) and, where useful, `data` with the facts behind the line (versions, paths, the last job).
+
+## Health
+
+`skillhook health` is the doctor plus the slow probes, grouped: it is what answers "is everything this machine's agents depend on working". Through the running server when there is one (its cached report; `--refresh` probes again), otherwise in-process; `--quick` leaves the deep checks out (the doctor's set), `--no-network` skips the npm registry and the public URL, `--local` never asks the server. `--json` returns `{checks, ok, summary, groups, generated_at, duration_ms, deep, network, public_url, server}`. The same report is `GET /health/checks` ([api.md](api.md#get-healthchecks)) and the MCP tool `get_health`.
+
+The deep checks, in the `tools` and `skills` groups:
+
+| Check | ok | warn | fail |
+|---|---|---|---|
+| `claude mcp <name>` (one per server `claude mcp list` knows) | connected | needs authentication (hint: authenticate in an interactive session; unattended runs cannot) | failed to connect, with the CLI's reason |
+| `claude mcp config` | | the CLI's own diagnostics: missing environment variables, conflicting scopes | |
+| `claude plugins` | installed plugins with versions; disabled ones marked | `claude plugin list` failed | (`skip` when none) |
+| `codex mcp <name>` (from `codex mcp list --json`) | configured (Codex does not connect at list time; `auth_status` shown) | not logged in (hint: `codex mcp login <name>`) | (`skip` when disabled) |
+| `codex doctor` | every check of `codex doctor --json` ok | it reports warnings (each listed, first remediation as the hint) | it reports errors |
+| `skill <name>` | as in the doctor, plus the last run (`status (outcome) finished_at`) | | |
+
+Probes run with the job environment (`baseRunEnv`): a `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or API key in `.env` applies exactly as it does to runs. `claude mcp list` connects to every server and is the slow one; `health.probe_timeout_seconds` (20) bounds it, and a listing that timed out is reported as incomplete rather than wrong.
+
+The server keeps one report per flavour for `health.cache_seconds` (60) and publishes `health.changed` on the event stream when a check changes status (or on the first report), so a dashboard can watch logins expire and MCP servers fail without polling.
 
 ## Keeping a Mac awake
 

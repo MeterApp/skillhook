@@ -32,7 +32,8 @@ is `skillhook`. User docs: `README.md`, `docs/`, `llms.txt`.
 | `src/runners/` | `claude.ts`, `codex.ts`, `shell.ts`: build argv, parse output; `env.ts` is the env allow-list. |
 | `src/ops.ts` | Shared operations (create skill, run locally, sign+send, resolve URLs). CLI and MCP both call this; do not duplicate logic in either. |
 | `src/mcp.ts` | MCP server (`@modelcontextprotocol/server` v2, stdio). Tools wrap `ops.ts`. |
-| `src/tailscale.ts`, `src/service.ts`, `src/doctor.ts` | Funnel/Serve, launchd/systemd, diagnostics. |
+| `src/tailscale.ts`, `src/service.ts` | Funnel/Serve, launchd/systemd. |
+| `src/health.ts`, `src/doctor.ts`, `src/tools.ts` | The grouped health report (`runHealth`, `HealthCache` behind `GET /health/checks`, `health.changed`); `doctor.ts` is its quick flavour printed flat; `tools.ts` probes `claude` / `codex` (version, login, `mcp list`, `plugin list`, `codex doctor`) with the job environment (`baseRunEnv`) and holds the pure parsers of their output. New checks: add them in `runHealth` with a group, a fixture answer in `test/fixtures/` when a CLI is involved, a row in `docs/operations.md`. |
 | `src/update.ts`, `src/commands/update.ts` | The daily update check (registry lookup, 24 h cache in `<home>/update-check.json`, install-method detection, background refresh) and `skillhook update`. |
 | `scripts/release.ts` | Version bump / consistency check / release notes across `package.json`, the lockfile, the plugin manifests and `CHANGELOG.md`. |
 | `.github/workflows/` | `ci.yml` (PRs and main: checks + packed-tarball install), `release.yml` (tags merged version bumps), `publish.yml` (npm publish with provenance, GitHub release, verification). |

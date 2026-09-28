@@ -112,7 +112,8 @@ Every tool returns a text block (a one-line summary followed by JSON) and the sa
 | `get_webhook_urls` | optional `skill` | Webhook URL per skill, using the public URL (config or an active Tailscale mapping) when one exists; `public: false` means only the local address is known. |
 | `expose` | `mode`: `funnel`, `serve`, `off`, `status` | `funnel`: public HTTPS URL via Tailscale Funnel; `serve`: tailnet-only URL; `status`: Tailscale state and current mappings; `off`: disable Funnel and Serve on :443 and clear `public_url`. On success `public_url` is written and per-skill webhook URLs are returned; when Funnel needs its one-time approval the response carries `approval_url`. |
 | `service` | `action`: `install`, `uninstall`, `status`, `restart`, `logs`; optional `lines` | Manage the launchd / systemd service that keeps the server running at login. |
-| `doctor` | none | The same checks as `skillhook doctor` (Node, config, secrets, skills, Claude/Codex login, Tailscale, public URL, server, service), as structured checks plus the formatted report. |
+| `doctor` | none | The same checks as `skillhook doctor` (Node, disk, config, secrets, skills, Claude/Codex login, Tailscale, public URL, server, service), as structured checks plus the formatted report. |
+| `get_health` | optional `deep` (default true), `refresh`, `network` | The grouped health report of `skillhook health`: the doctor's checks plus every MCP server Claude Code and Codex know (connected, needs authentication, failed), installed plugins, `codex doctor`, disk and each skill's last run. Through the running server's cached report when there is one (`refresh: true` probes again), otherwise probed now. Use it to answer "why does the agent's MCP tool not work" before touching a skill. |
 
 ## The job API: `skillhook mcp --job`
 

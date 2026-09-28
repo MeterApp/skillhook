@@ -435,6 +435,22 @@ describe("cli", () => {
     expect(usage.err()).toContain("Unknown skills subcommand");
   });
 
+  it("prints the grouped health report, quick and deep", async () => {
+    const quick = io({ SKILLHOOK_NO_UPDATE_CHECK: "1" });
+    expect([0, 1]).toContain(await main(["health", "--quick", "--local", ...dir, "--json"], quick.cli));
+    const report = quick.json() as { deep: boolean; network: boolean; groups: Record<string, { ok: number }>; checks: { name: string; group: string; status: string; detail: string }[] };
+    expect(report).toMatchObject({ deep: false, network: true });
+    expect(Object.keys(report.groups)).toEqual(["system", "skillhook", "runners", "tools", "skills", "exposure"]);
+    expect(report.checks.find((c) => c.name === "disk")).toMatchObject({ group: "system" });
+    expect(report.checks.find((c) => c.name === "version")).toMatchObject({ status: "skip" });
+    expect(report.checks.some((c) => c.group === "tools")).toBe(false);
+    const deep = io({ SKILLHOOK_NO_UPDATE_CHECK: "1" });
+    expect([0, 1]).toContain(await main(["health", "--local", ...dir], deep.cli));
+    expect(deep.out()).toContain("tools\n");
+    expect(deep.out()).toContain("claude mcp stitch");
+    expect(deep.out()).toMatch(/\d+ ok, \d+ warnings, \d+ failures, \d+ skipped \(deep/);
+  });
+
   it("runs doctor, url and expose status without crashing", async () => {
     const d = io({ SKILLHOOK_NO_UPDATE_CHECK: "1" });
     const code = await main(["doctor", ...dir, "--json"], d.cli);

@@ -318,7 +318,8 @@ Agents reading this repository should start with [`AGENTS.md`](AGENTS.md) (layou
 | Command | Purpose |
 |---|---|
 | `skillhook init [--runner claude\|codex\|shell] [--model M] [--port N] [--force]` | Create `~/.skillhook` with config, secrets and the `hello` skill. |
-| `skillhook doctor` | Check Node, config, secrets, skills, Claude/Codex login, Tailscale, public URL, server and service; exit 1 on failures. |
+| `skillhook doctor` | Check Node, disk, config, secrets, skills, Claude/Codex login, Tailscale, public URL, server and service; exit 1 on failures. |
+| `skillhook health [--quick] [--refresh] [--no-network] [--local]` | The doctor plus every MCP server Claude Code and Codex know, plugins, `codex doctor` and each skill's last run, grouped; via the running server's cached report when there is one. |
 | `skillhook serve [--port N] [--host H] [--pretty] [--log-level L]` | Run the webhook server in the foreground. |
 | `skillhook service install\|uninstall\|status\|restart\|logs [--lines N] [-f]` | Run the server at login (launchd on macOS, systemd `--user` on Linux). |
 | `skillhook expose tailscale [--serve] [--port N]` · `expose status` · `expose off` · `expose cloudflare\|ngrok` | Get a permanent HTTPS URL via Tailscale Funnel or Serve; print recipes for other tunnels. |

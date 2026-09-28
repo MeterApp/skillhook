@@ -139,12 +139,12 @@ export async function openAdminEventStream(baseUrl: string, secrets: Secrets, pa
   return { status: response.status };
 }
 
-export async function adminRequest<T = unknown>(baseUrl: string, secrets: Secrets, path: string, init: { method?: string; body?: unknown } = {}): Promise<AdminResponse<T>> {
+export async function adminRequest<T = unknown>(baseUrl: string, secrets: Secrets, path: string, init: { method?: string; body?: unknown; timeoutMs?: number } = {}): Promise<AdminResponse<T>> {
   const headers: Record<string, string> = { accept: "application/json" };
   const token = secrets[ADMIN_TOKEN_ENV];
   if (token) headers.authorization = `Bearer ${token}`;
   if (init.body !== undefined) headers["content-type"] = "application/json";
-  const response = await fetch(`${baseUrl}${path}`, { method: init.method ?? "GET", headers, body: init.body === undefined ? undefined : JSON.stringify(init.body) });
+  const response = await fetch(`${baseUrl}${path}`, { method: init.method ?? "GET", headers, body: init.body === undefined ? undefined : JSON.stringify(init.body), ...(init.timeoutMs ? { signal: AbortSignal.timeout(init.timeoutMs) } : {}) });
   const text = await response.text();
   let body: unknown = text;
   try {

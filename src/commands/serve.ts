@@ -1,6 +1,7 @@
 import { DeliveryLog } from "../delivery-log.js";
 import { ADMIN_TOKEN_ENV, readEnvFile } from "../env.js";
 import { Events } from "../events.js";
+import { HealthCache } from "../health.js";
 import { JobQueue } from "../queue.js";
 import { createLogger } from "../logger.js";
 import { Scheduler } from "../scheduler.js";
@@ -22,7 +23,9 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   const secrets = () => ctx.secrets();
   const queue = new JobQueue({ store, config, registry, secrets, fileSecrets: () => readEnvFile(ctx.paths.envFile), logger, events });
   const scheduler = new Scheduler({ registry, store, queue, config, logger, events });
-  const server = createServer({ config, paths: ctx.paths, store, queue, registry, secrets, logger, events, deliveryLog, schedules: () => scheduler.status() });
+  const startedAt = new Date().toISOString();
+  const health = new HealthCache(ctx.paths, { ttlMs: () => config.health.cache_seconds * 1000, options: () => ({ env: ctx.io.env, timeoutMs: config.health.probe_timeout_seconds * 1000, live: () => ({ started_at: startedAt, queue: queue.stats() }) }), events });
+  const server = createServer({ config, paths: ctx.paths, store, queue, registry, secrets, logger, events, deliveryLog, health, schedules: () => scheduler.status() });
 
   const loaded = registry.list();
   for (const error of loaded.errors) logger.error("skill failed to load", { skill: error.name, error: error.error });
@@ -46,7 +49,7 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   });
   const address = server.address();
   const boundPort = typeof address === "object" && address ? address.port : port;
-  const state = { pid: process.pid, host, port: boundPort, started_at: new Date().toISOString(), version: VERSION, public_url: config.public_url };
+  const state = { pid: process.pid, host, port: boundPort, started_at: startedAt, version: VERSION, public_url: config.public_url };
   writeServerState(ctx.paths, state);
   events.emit("server.started", { state });
   logger.info("skillhook listening", { url: `http://${host}:${boundPort}`, public_url: config.public_url, skills: loaded.skills.map((s) => s.name), concurrency: config.concurrency, home: ctx.paths.home, version: VERSION });

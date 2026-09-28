@@ -96,6 +96,15 @@ export const ConfigSchema = z
       })
       .strict()
       .prefault({}),
+    health: z
+      .object({
+        /** How long `GET /health/checks` (and `skillhook health` through the server) reuse a report before probing again. */
+        cache_seconds: z.number().int().min(0).default(60),
+        /** How long one slow probe (`claude mcp list`, which connects to every server; `codex doctor`) may take. */
+        probe_timeout_seconds: z.number().int().positive().default(20),
+      })
+      .strict()
+      .prefault({}),
     /** Extra env var names copied into every agent run (on top of the runner auth vars). */
     env_passthrough: z.array(z.string()).default([]),
     /** Linked projects: directories whose `skillhook.yaml` (or the file itself) contributes hooks. Managed by `skillhook link` / `unlink`; re-read without a restart. */

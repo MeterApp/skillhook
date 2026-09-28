@@ -48,7 +48,12 @@ export interface RunEnvInput {
   processEnv?: NodeJS.ProcessEnv;
 }
 
-export function buildRunEnv(input: RunEnvInput): Record<string, string> {
+/**
+ * The environment every run starts from, before a skill's own `env:` names and the job variables: session basics, the
+ * merged PATH and the runner credentials. Also what the health probes run `claude`/`codex` with, so `CLAUDE_CONFIG_DIR`,
+ * `CODEX_HOME` or an API key in `.env` apply to the diagnosis exactly as to the jobs.
+ */
+export function baseRunEnv(input: Pick<RunEnvInput, "secrets" | "fileSecrets" | "processEnv">): Record<string, string> {
   const processEnv = input.processEnv ?? process.env;
   const env: Record<string, string> = {};
   for (const key of BASE_KEYS) {
@@ -64,6 +69,11 @@ export function buildRunEnv(input: RunEnvInput): Record<string, string> {
     const value = processEnv[key];
     if (typeof value === "string" && env[key] === undefined) env[key] = value;
   }
+  return env;
+}
+
+export function buildRunEnv(input: RunEnvInput): Record<string, string> {
+  const env = baseRunEnv(input);
   const explicit = [...input.config.env_passthrough, ...(input.skill.config.env ?? [])];
   for (const key of explicit) {
     const value = input.secrets[key];
