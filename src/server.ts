@@ -6,6 +6,8 @@ import { ConfigError, configExists, HOT_CONFIG_KEYS, RESTART_CONFIG_KEYS, update
 import { DELIVERY_OUTCOMES, readDeliveryBody, type DeliveryLog, type DeliveryOutcome } from "./delivery-log.js";
 import { ADMIN_TOKEN_ENV, type Secrets } from "./env.js";
 import { EVENT_TYPES, type Events } from "./events.js";
+import type { LinkStatusView } from "./cloud/link.js";
+import { INGRESS_ID_HEADER } from "./cloud/ingress.js";
 import type { HealthCache } from "./health.js";
 import type { ReadinessCache } from "./readiness.js";
 import { readServiceLog, serviceStatus as readServiceStatus, type ServiceStatus } from "./service.js";
@@ -52,6 +54,8 @@ export interface ServerDeps {
   configRef?: ConfigRef;
   /** `POST /control/restart` (built by `serve`; absent means 404). */
   control?: ServerControl;
+  /** The cloud link's status for `GET /health` (admin), when `serve` runs one. */
+  cloud?: () => LinkStatusView | undefined;
   /** Injectable for tests: the launchd / systemd status and the service log behind `GET /service` and `GET /logs`. */
   serviceStatus?: () => Promise<ServiceStatus>;
   serviceLog?: (lines: number) => string;
@@ -369,6 +373,9 @@ export function createServer(deps: ServerDeps): Server {
     bytes: number;
     body_kind?: BodyKind;
     rawBody?: Buffer;
+    /** Set when the cloud link handed the delivery over from a hosted URL. */
+    via?: "http" | "ingress";
+    ingress_id?: string;
   }
 
   type RecordDelivery = (outcome: DeliveryOutcome, httpStatus: number, extra?: { code?: string; reason?: string; job_id?: string; delivery_id?: string }) => void;
@@ -382,7 +389,10 @@ export function createServer(deps: ServerDeps): Server {
     const query = Object.fromEntries(url.searchParams);
     delete query.token;
     delete query.wait;
-    const draft: DeliveryDraft = { skill: skillName.slice(0, 200), received_at: nowIso(), ip, method: req.method ?? "POST", path: url.pathname, query, headers: redactHeaders(headers), user_agent: headers["user-agent"], content_type: headers["content-type"] ?? null, bytes: Number(headers["content-length"] ?? 0) || 0 };
+    // A hosted-ingress delivery is handed over by the link through the loopback address with the cloud's id; only a loopback peer may claim that.
+    const peer = req.socket.remoteAddress ?? "";
+    const ingressId = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1" ? headers[INGRESS_ID_HEADER]?.slice(0, 200) : undefined;
+    const draft: DeliveryDraft = { skill: skillName.slice(0, 200), received_at: nowIso(), ip, method: req.method ?? "POST", path: url.pathname, query, headers: redactHeaders(headers), user_agent: headers["user-agent"], content_type: headers["content-type"] ?? null, bytes: Number(headers["content-length"] ?? 0) || 0, ...(ingressId ? { via: "ingress" as const, ingress_id: ingressId } : {}) };
     let recorded = false;
     const record: RecordDelivery = (outcome, httpStatus, extra = {}) => {
       if (recorded || !deps.deliveryLog) return;
@@ -407,6 +417,7 @@ export function createServer(deps: ServerDeps): Server {
         body_kind: draft.body_kind,
         duration_ms: Date.now() - started,
         rawBody: draft.rawBody,
+        ...(draft.via ? { via: draft.via, ingress_id: draft.ingress_id } : {}),
       });
       deps.events?.emit("delivery.received", { delivery: saved });
     };
@@ -669,7 +680,7 @@ export function createServer(deps: ServerDeps): Server {
     }
     if (segments[0] === "health" && segments.length === 1) {
       // Public callers learn only that the server is up; queue details need admin access.
-      return send(res, 200, isAdmin(headers, req, viaProxy) ? { ok: true, version: VERSION, uptime_seconds: Math.round((Date.now() - startedAt) / 1000), queue: queue.stats(), ...(deps.schedules ? { schedules: deps.schedules() } : {}), ...(deps.deliveryLog ? { deliveries: deps.deliveryLog.stats() } : {}) } : { ok: true, version: VERSION });
+      return send(res, 200, isAdmin(headers, req, viaProxy) ? { ok: true, version: VERSION, uptime_seconds: Math.round((Date.now() - startedAt) / 1000), queue: queue.stats(), ...(deps.schedules ? { schedules: deps.schedules() } : {}), ...(deps.deliveryLog ? { deliveries: deps.deliveryLog.stats() } : {}), cloud: deps.cloud?.() ?? null } : { ok: true, version: VERSION });
     }
     if ((segments[0] === "health" && segments.length === 2 && segments[1] === "checks") || (segments[0] === "doctor" && segments.length === 1)) {
       requireAdmin(headers, req, viaProxy, ip);

@@ -4,6 +4,8 @@
 // per flavour for the server (`GET /health/checks`), coalesces concurrent calls and emits `health.changed`.
 import { statfsSync } from "node:fs";
 import { findRunningServer, localBaseUrl, probeServer } from "./client.js";
+import { CLOUD_TOKEN_ENV, cloudDisabledByEnv, isSecureCloudUrl, resolveCloudUrl } from "./cloud/config.js";
+import type { LinkStatusView } from "./cloud/link.js";
 import { configExists, loadConfig, type Config } from "./config.js";
 import { ADMIN_TOKEN_ENV, loadSecrets, readEnvFile, secretFileMode, type Secrets } from "./env.js";
 import type { Events } from "./events.js";
@@ -74,6 +76,8 @@ export interface HealthOptions {
   live?: () => { started_at: string; queue: { running: number; queued: number } };
   /** For the slow probes (`claude mcp list` connects to every server, `codex doctor`). Default 20 s. */
   timeoutMs?: number;
+  /** The cloud link of the server this runs inside. */
+  cloud?: () => LinkStatusView | undefined;
 }
 
 function summarize(checks: Check[]): HealthSummary {
@@ -340,18 +344,39 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
     } else if (publicUrl) check("exposure", "public url", "skip", `${publicUrl} (not probed)`, undefined, { url: publicUrl });
   }
 
-  // skillhook: server, service
+  // skillhook: server, service, cloud link
   let server: HealthReport["server"];
+  let linkStatus: LinkStatusView | null | undefined;
+  let serverRunning = false;
   if (config && options.live) {
     const live = options.live();
     const baseUrl = localBaseUrl({ host: config.host, port: config.port });
     server = { base_url: baseUrl, running: true, version: VERSION };
+    serverRunning = true;
+    linkStatus = options.cloud?.() ?? null;
     check("skillhook", "server", "ok", `this server (v${VERSION}), up ${formatUptime((Date.now() - Date.parse(live.started_at)) / 1000)}, ${live.queue.running} running / ${live.queue.queued} queued`, undefined, { base_url: baseUrl, started_at: live.started_at, queue: live.queue });
   } else if (config) {
     const running = await findRunningServer(paths);
     const baseUrl = running?.baseUrl ?? localBaseUrl({ host: config.host, port: config.port });
     server = { base_url: baseUrl, running: Boolean(running), version: running?.health.version };
+    serverRunning = Boolean(running);
+    linkStatus = running?.health.cloud;
     check("skillhook", "server", running ? "ok" : "warn", running ? `running at ${baseUrl} (v${running.health.version}${running.health.queue ? `, ${running.health.queue.running} running / ${running.health.queue.queued} queued` : ""})` : `not running at ${baseUrl}`, running ? undefined : "run: skillhook serve   (or: skillhook service install)", { base_url: baseUrl, running: Boolean(running), version: running?.health.version ?? null });
+  }
+  if (config) {
+    const cloud = config.cloud;
+    const url = resolveCloudUrl(env, cloud);
+    if (cloudDisabledByEnv(env)) check("skillhook", "cloud link", "skip", "SKILLHOOK_NO_CLOUD is set; the link never runs", undefined, { enabled: cloud.enabled, url });
+    else if (!cloud.enabled) check("skillhook", "cloud link", "skip", "not connected to Skillhook Cloud", "skillhook cloud connect --code <code from the dashboard>", { enabled: false, url });
+    else if (!fileSecrets[CLOUD_TOKEN_ENV]) check("skillhook", "cloud link", "fail", `cloud.enabled but ${CLOUD_TOKEN_ENV} is not in .env`, "run: skillhook cloud connect --force   (or: skillhook cloud disconnect)", { enabled: true, url, token: false });
+    else if (!isSecureCloudUrl(url, env)) check("skillhook", "cloud link", "fail", `${url} is not https`, "set cloud.url to an https URL", { enabled: true, url });
+    else if (!serverRunning) check("skillhook", "cloud link", "warn", `configured for ${url} (machine ${cloud.machine_id ?? "unpaired"}, mode ${cloud.mode}); no running server keeps the link`, "run: skillhook serve   (or: skillhook service install)", { enabled: true, url, machine_id: cloud.machine_id ?? null, mode: cloud.mode });
+    else if (!linkStatus) check("skillhook", "cloud link", "warn", `configured for ${url}; the running server reports no link state (older server?)`, "restart the server", { enabled: true, url });
+    else {
+      const detail = `${linkStatus.state}${linkStatus.reason ? ` (${linkStatus.reason})` : ""} · ${url} · machine ${linkStatus.machine_id ?? "?"} · mode ${linkStatus.mode}${linkStatus.last_sync_at ? ` · last sync ${linkStatus.last_sync_at}` : ""}${linkStatus.outbox_depth ? ` · ${linkStatus.outbox_depth} event(s) waiting` : ""}${linkStatus.dropped_total ? ` · ${linkStatus.dropped_total} dropped` : ""}`;
+      const status: CheckStatus = linkStatus.state === "connected" ? (linkStatus.dropped_total ? "warn" : "ok") : linkStatus.state === "degraded" || linkStatus.state === "connecting" ? "warn" : "fail";
+      check("skillhook", "cloud link", status, detail, status === "ok" ? undefined : (linkStatus.last_error ?? "see the server log; skillhook cloud status"), { ...linkStatus });
+    }
   }
   if (options.service !== false) {
     const service = await serviceStatus(paths);

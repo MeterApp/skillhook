@@ -4,11 +4,23 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
-- Groundwork for Skillhook Cloud: the `cloud.*` settings (`enabled: false`, `mode: observe`,
-  allow/deny lists, upload switches; [docs/cloud.md](docs/cloud.md)) and the wire protocol as zod
-  schemas, exported as `@meterapp/skillhook/protocol` for the cloud to validate against
-  ([docs/cloud-protocol.md](docs/cloud-protocol.md)). No link yet: nothing leaves the machine.
-  `SKILLHOOK_CLOUD_*` variables never reach a run's environment, even when a skill lists them.
+- The Skillhook Cloud link, opt-in. `skillhook cloud connect --code XXXX-XXXX [--control]` pairs the
+  machine (the token goes to `.env` as `SKILLHOOK_CLOUD_TOKEN`, `cloud.*` to skillhook.json; observe
+  mode unless `--control`), `cloud status` and `cloud disconnect` (which revokes the token) complete
+  it. The running server then keeps one outbound HTTPS connection to `cloud.url`: it uploads
+  deliveries, jobs, progress, schedule, config and health changes (headers redacted, command lines
+  dropped, every string scrubbed of every `.env` value; bodies only with `cloud.upload_payloads` and
+  at most 256 KiB), snapshots and periodic health reports; runs read commands (health, jobs,
+  deliveries, stats, logs, skills) and refuses control commands unless `cloud.mode: control` (which
+  this version does not implement yet); and replays webhooks that arrived at the machine's hosted
+  URLs to the local server, where the signature is checked with the local secret (`via: "ingress"`
+  and `ingress_id` on the delivery record). Events wait in `jobs/.cloud/` while the cloud is
+  unreachable. `GET /health` (admin) reports the link as `cloud`, and doctor/health gain a
+  `cloud link` check. Kill switches: `cloud.enabled: false`, `SKILLHOOK_NO_CLOUD=1`,
+  `cloud disconnect`. The settings and the wire protocol, exported as `@meterapp/skillhook/protocol`
+  for the cloud to validate against, are documented in [docs/cloud.md](docs/cloud.md) and
+  [docs/cloud-protocol.md](docs/cloud-protocol.md). `SKILLHOOK_CLOUD_*` variables never reach a run's
+  environment, even when a skill lists them.
 
 ## 0.4.0 (2026-09-28)
 

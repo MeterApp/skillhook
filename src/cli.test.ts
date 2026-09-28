@@ -506,6 +506,61 @@ describe("cli", () => {
     expect(await main(["stats", "--since", "lately", ...dir, "--json"], bad.cli)).toBe(2);
   });
 
+  it("pairs with Skillhook Cloud, reports the link and disconnects, never printing the token", async () => {
+    const { FakeCloud } = await import("./test-support/fake-cloud.js");
+    const fake = await FakeCloud.start();
+    try {
+      const env = { SKILLHOOK_CLOUD_URL: fake.url, SKILLHOOK_NO_UPDATE_CHECK: "1" };
+      const before = io(env);
+      expect(await main(["cloud", "status", ...dir, "--json"], before.cli)).toBe(0);
+      expect(before.json()).toMatchObject({ enabled: false, token_present: false, url: fake.url, server_running: false });
+      const usage = io(env);
+      expect(await main(["cloud", "connect", ...dir, "--json"], usage.cli)).toBe(2);
+      const unknown = io(env);
+      expect(await main(["cloud", "connect", "--code", "ZZZZ-ZZZZ", ...dir, "--json"], unknown.cli)).toBe(1);
+      expect(String(unknown.json().error)).toContain("unknown_code");
+      const insecure = io({ ...env, SKILLHOOK_CLOUD_URL: "http://cloud.example.invalid" });
+      expect(await main(["cloud", "connect", "--code", fake.code, ...dir, "--json"], insecure.cli)).toBe(1);
+      expect(String(insecure.json().error)).toContain("https");
+      expect(fake.pairs).toHaveLength(1);
+
+      const connect = io(env);
+      expect(await main(["cloud", "connect", "--code", fake.code.toLowerCase(), "--control", ...dir, "--json"], connect.cli)).toBe(0);
+      expect(connect.json()).toMatchObject({ ok: true, machine_id: fake.machineId, mode: "control", url: fake.url, server_running: false });
+      expect(connect.out()).not.toContain(fake.token);
+      expect(fake.pairs[1]).toMatchObject({ code: fake.code, requested_mode: "control", machine: { os: process.platform } });
+      expect(readFileSync(paths.envFile, "utf8")).toContain(`SKILLHOOK_CLOUD_TOKEN=${fake.token}`);
+      expect((JSON.parse(readFileSync(paths.configFile, "utf8")) as { cloud: unknown }).cloud).toMatchObject({ enabled: true, machine_id: fake.machineId, mode: "control", url: fake.url });
+      const again = io(env);
+      expect(await main(["cloud", "connect", "--code", fake.code, ...dir, "--json"], again.cli)).toBe(1);
+      expect(String(again.json().error)).toContain("Already connected");
+
+      const status = io(env);
+      expect(await main(["cloud", "status", ...dir, "--json"], status.cli)).toBe(0);
+      expect(status.json()).toMatchObject({ enabled: true, token_present: true, machine_id: fake.machineId, mode: "control", link: null });
+      expect(status.out()).not.toContain(fake.token);
+      const human = io(env);
+      expect(await main(["cloud", "status", ...dir], human.cli)).toBe(0);
+      expect(human.out()).toContain(`machine ${fake.machineId}`);
+      expect(human.out()).toContain("link: no running server");
+      const doctor = io(env);
+      await main(["doctor", ...dir, "--json"], doctor.cli);
+      expect((doctor.json().checks as { name: string; status: string }[]).find((c) => c.name === "cloud link")).toMatchObject({ status: "warn" });
+
+      const off = io(env);
+      expect(await main(["cloud", "disconnect", ...dir, "--json"], off.cli)).toBe(0);
+      expect(off.json()).toMatchObject({ ok: true, was_enabled: true, token_removed: true, revoked: true });
+      expect(fake.disconnects).toBe(1);
+      expect(readFileSync(paths.envFile, "utf8")).not.toContain("SKILLHOOK_CLOUD_TOKEN");
+      expect((JSON.parse(readFileSync(paths.configFile, "utf8")) as { cloud: { enabled: boolean; machine_id?: string } }).cloud).toMatchObject({ enabled: false });
+      const after = io(env);
+      await main(["doctor", ...dir, "--json"], after.cli);
+      expect((after.json().checks as { name: string; status: string }[]).find((c) => c.name === "cloud link")).toMatchObject({ status: "skip" });
+    } finally {
+      await fake.close();
+    }
+  });
+
   it("runs doctor, url and expose status without crashing", async () => {
     const d = io({ SKILLHOOK_NO_UPDATE_CHECK: "1" });
     const code = await main(["doctor", ...dir, "--json"], d.cli);

@@ -1,3 +1,5 @@
+import { CloudLink } from "../cloud/link.js";
+import { localBaseUrl } from "../client.js";
 import { ConfigRef } from "../config.js";
 import { DeliveryLog } from "../delivery-log.js";
 import { ADMIN_TOKEN_ENV, readEnvFile } from "../env.js";
@@ -39,7 +41,8 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   const queue = new JobQueue({ store, config, registry, secrets, fileSecrets: () => readEnvFile(ctx.paths.envFile), logger, events, readiness });
   const scheduler = new Scheduler({ registry, store, queue, config, logger, events });
   const startedAt = new Date().toISOString();
-  const health = new HealthCache(ctx.paths, { ttlMs: () => config.health.cache_seconds * 1000, options: () => ({ env: ctx.io.env, timeoutMs: config.health.probe_timeout_seconds * 1000, live: () => ({ started_at: startedAt, queue: queue.stats() }) }), events });
+  let link: CloudLink | undefined;
+  const health = new HealthCache(ctx.paths, { ttlMs: () => config.health.cache_seconds * 1000, options: () => ({ env: ctx.io.env, timeoutMs: config.health.probe_timeout_seconds * 1000, live: () => ({ started_at: startedAt, queue: queue.stats() }), cloud: () => link?.status() }), events });
   let shuttingDown = false;
   const stop = async (reason: string, options: { force: boolean; waitSeconds: number }) => {
     if (shuttingDown) return;
@@ -53,6 +56,7 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
       logger.warn("jobs still running after the wait; terminating them", { running: queue.stats().running });
       await queue.shutdown();
     }
+    await link?.stop(reason);
     clearServerState(ctx.paths);
     process.exit(0);
   };
@@ -63,7 +67,7 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
     },
     restart: (options) => void stop("restart", options),
   };
-  const server = createServer({ config, paths: ctx.paths, store, queue, registry, secrets, logger, events, deliveryLog, health, readiness, configRef, control, schedules: () => scheduler.status() });
+  const server = createServer({ config, paths: ctx.paths, store, queue, registry, secrets, logger, events, deliveryLog, health, readiness, configRef, control, cloud: () => link?.status(), schedules: () => scheduler.status() });
 
   const loaded = registry.list();
   for (const error of loaded.errors) logger.error("skill failed to load", { skill: error.name, error: error.error });
@@ -90,6 +94,9 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   const state = { pid: process.pid, host, port: boundPort, started_at: startedAt, version: VERSION, public_url: config.public_url };
   writeServerState(ctx.paths, state);
   events.emit("server.started", { state });
+  // The cloud link idles until `skillhook cloud connect` enabled it (docs/cloud.md); it re-reads the config every few seconds.
+  link = new CloudLink({ paths: ctx.paths, config, secrets, fileSecrets: () => readEnvFile(ctx.paths.envFile), events, logger, registry, store, deliveryLog, schedules: () => scheduler.status(), health, readiness, serverState: () => state, localBaseUrl: () => localBaseUrl({ host, port: boundPort }), env: ctx.io.env, queueStats: () => queue.stats(), runningJobs: () => queue.stats().running_ids });
+  link.start();
   logger.info("skillhook listening", { url: `http://${host}:${boundPort}`, public_url: config.public_url, skills: loaded.skills.map((s) => s.name), concurrency: config.concurrency, home: ctx.paths.home, version: VERSION });
   if (config.public_url) for (const skill of loaded.skills) logger.info("webhook url", { skill: skill.name, url: `${config.public_url}/hooks/${skill.name}` });
 

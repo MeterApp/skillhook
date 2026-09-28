@@ -18,6 +18,7 @@ import { deliveriesCommand } from "./deliveries.js";
 import { exposeCommand, urlCommand } from "./expose.js";
 import { serviceCommand } from "./service.js";
 import { doctorCommand } from "./doctor.js";
+import { cloudCommand } from "./cloud.js";
 import { configCommand } from "./config.js";
 import { mcpCommand } from "./mcp.js";
 import { updateCommand } from "./update.js";
@@ -68,6 +69,7 @@ Agents
   job progress "<msg>" [--state working|blocked] [--percent N] | ask "<question>" [--option A]... [--wait S] | outcome <o> [--summary S] | note "<text>" | context
                                                            Inside a run: report progress, ask a person (waits for the answer), report the outcome
   config show | get <key> | set <key> <value> | unset <key> | reload | path   set/unset tell the running server; most keys apply live, host/port at the next start
+  cloud connect --code XXXX-XXXX [--control] | disconnect | status   Pair this machine with Skillhook Cloud (opt-in; docs/cloud.md)
 
 Global options: --dir <path> (default $SKILLHOOK_HOME or ~/.skillhook), --json, --help, --version
 Each subcommand prints its own usage on a mistake. Docs: https://github.com/MeterApp/skillhook
@@ -97,6 +99,7 @@ const COMMANDS: Record<string, Command> = {
   runners: runnersCommand,
   stats: statsCommand,
   config: configCommand,
+  cloud: cloudCommand,
   mcp: mcpCommand,
   update: updateCommand,
   upgrade: updateCommand,

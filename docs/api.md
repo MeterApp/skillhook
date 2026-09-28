@@ -176,7 +176,7 @@ Admin routes accept `Authorization: Bearer <SKILLHOOK_ADMIN_TOKEN>`. Without a t
 
 ## `GET /health`
 
-Public: `{"ok": true, "version": "0.1.0"}`. Admin or direct local: adds `"uptime_seconds"`, `"queue": {"running": 0, "queued": 0, "running_ids": []}`, `"deliveries": {"total": 412, "last_received_at": "2026-09-28T10:00:02.000Z"}` (the delivery log) and `"schedules"`, one entry per skill or hook with a `schedule:`:
+Public: `{"ok": true, "version": "0.1.0"}`. Admin or direct local: adds `"cloud"` (the Skillhook Cloud link: `{state, reason?, mode, enabled, url, machine_id, last_sync_at, last_error, connected_since, syncs, outbox_depth, dropped_total, ingress_urls, …}`, or `null` for a server without one), `"uptime_seconds"`, `"queue": {"running": 0, "queued": 0, "running_ids": []}`, `"deliveries": {"total": 412, "last_received_at": "2026-09-28T10:00:02.000Z"}` (the delivery log) and `"schedules"`, one entry per skill or hook with a `schedule:`:
 
 ```json
 { "skill": "weekly-review", "cron": "0 16 * * 5", "timezone": "America/New_York", "catch_up": "latest", "overlap": "skip", "enabled": true, "webhook": false, "next_due": "2026-09-25T20:00:00.000Z", "last_slot": "2026-09-18T20:00:00.000Z", "last_fired_at": "2026-09-18T20:00:09.120Z", "last_job": "20260918T200009Z-k3x9q2", "last_status": "succeeded", "skipped": 0 }
@@ -492,6 +492,7 @@ Query: `since=<24h|7d|2w|ISO-8601>` (default: everything on disk, newest 5000 jo
 | `job_id` | string, optional | The job created, or the one the delivery was folded into. |
 | `ip`, `method`, `path`, `query` | | The request (`token` and `wait` removed from `query`). |
 | `headers` | object | Redacted like `event.json` (no authorization, signature, token or cookie headers); values over 512 characters are shortened. |
+| `via`, `ingress_id` | string, optional | `via: "ingress"` and the cloud's id for a webhook that arrived at a hosted URL and was handed over by the cloud link ([cloud.md](cloud.md#hosted-urls)). |
 | `user_agent`, `content_type`, `bytes`, `body_kind` | | The body as received (`body_kind` is only known once the body was parsed). |
 | `body_stored`, `body_truncated` | boolean | Whether the log kept the body, and whether it was cut at `deliveries.body_max_bytes`. |
 | `duration_ms` | number | From arrival to the decision (a `?wait=` is not counted). |

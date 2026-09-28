@@ -20,6 +20,7 @@ Related: [exposure.md](exposure.md) (public URL), [security.md](security.md) (se
 │   ├── .deliveries.json    delivery-id index for replay protection (also the slots the scheduler fired)
 │   ├── .delivery-log/      every webhook received (deliveries.jsonl) and the bodies of refused ones (bodies/), see Delivery log
 │   ├── .schedules.json     per schedule: last slot handled, last job and its status
+│   ├── .cloud/             the Skillhook Cloud link's spool: outbox.jsonl + state.json (events not yet acknowledged), commands.json, ingress.json
 │   └── <job id>/           one directory per job (see Jobs)
 └── logs/
     └── service.log         server output when run by launchd / systemd
@@ -220,7 +221,7 @@ Once the cause is fixed (a secret pasted, a filter corrected, a skill installed)
 | `deliveries.body_max_bytes` | `65536` | How much of such a body is kept. |
 | `env_passthrough` | `[]` | Extra env var names copied into every run. |
 | `projects` | `[]` | Linked repositories (absolute paths, `~` allowed; a directory holding `skillhook.yaml`, or the file itself). Written by `skillhook link` / `unlink`; re-read without a restart. See [projects.md](projects.md). |
-| `cloud.*` | `enabled: false`, `mode: observe`, … | The opt-in link to Skillhook Cloud: [cloud.md](cloud.md). Nothing leaves the machine while `cloud.enabled` is false (and the link itself is not in this version yet). |
+| `cloud.*` | `enabled: false`, `mode: observe`, … | The opt-in link to Skillhook Cloud, written by `skillhook cloud connect`: [cloud.md](cloud.md). Nothing leaves the machine while `cloud.enabled` is false. |
 | `log_level` | `"info"` | `debug`, `info`, `warn`, `error`. |
 | `update_check` | `true` | Daily check of the npm registry for a newer skillhook (`SKILLHOOK_NO_UPDATE_CHECK=1` and `CI` disable it as well). |
 
@@ -268,6 +269,7 @@ skillhook config set defaults.model sonnet
 | `public url` | `<public_url>/health` answers | did not answer (certificate still provisioning, or the server is down) | |
 | `server` | running (version, queue) | not running | |
 | `service` | running (pid) | installed but not running | (`skip` when not installed or unsupported platform) |
+| `cloud link` | connected (URL, machine, mode, last sync) | no running server keeps it; degraded; events dropped | enabled without `SKILLHOOK_CLOUD_TOKEN`; not https; token revoked or machine disabled (`skip` when not connected or `SKILLHOOK_NO_CLOUD` is set) |
 
 Every check carries a `group` (`system`, `skillhook`, `runners`, `tools`, `skills`, `exposure`) and, where useful, `data` with the facts behind the line (versions, paths, the last job).
 
@@ -389,6 +391,10 @@ The agent exceeded `timeout_seconds` (skill, else `defaults.timeout_seconds`, de
 ### Public URL does not answer
 
 Right after `expose`, Tailscale may still be issuing the certificate: wait a minute and run `skillhook expose status` or `skillhook doctor` (the `public url` check). Otherwise confirm the server is running and the mapping targets the right port.
+
+### `cloud link` is `disconnected (token_revoked)` or `(machine_disabled)`
+
+The cloud refused the machine token: it was revoked on the dashboard, or the machine was disabled there. The link waits for the configuration or the token to change; pair again with a new code (`skillhook cloud connect --code … --force`) or stop it (`skillhook cloud disconnect`). `upgrade_required` means the cloud needs a newer skillhook (`skillhook update --install`). `skillhook cloud status` shows the last error.
 
 ### A job says `WAITING FOR A PERSON`
 

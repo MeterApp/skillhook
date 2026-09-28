@@ -29,11 +29,17 @@ What it does not defend against:
 
 ### Outbound connections
 
-skillhook itself makes one request you did not ask for: the daily update check, `GET https://registry.npmjs.org/@meterapp%2Fskillhook/latest` (no identifiers beyond a `skillhook/<version>` user agent), cached for 24 hours in `<home>/update-check.json` and run only from interactive commands, `doctor` and `serve`. Disable it with `SKILLHOOK_NO_UPDATE_CHECK=1`, `CI=1` or `"update_check": false`; `SKILLHOOK_NPM_REGISTRY` redirects it to a mirror. `skillhook update --install` runs your package manager only when you ask. Everything else that leaves the machine is a request you configured: the runners talking to Anthropic/OpenAI, `skillhook send`, `expose`, and `doctor`'s probe of your own public URL.
+By default skillhook makes one request you did not ask for: the daily update check, `GET https://registry.npmjs.org/@meterapp%2Fskillhook/latest` (no identifiers beyond a `skillhook/<version>` user agent), cached for 24 hours in `<home>/update-check.json` and run only from interactive commands, `doctor` and `serve`. Disable it with `SKILLHOOK_NO_UPDATE_CHECK=1`, `CI=1` or `"update_check": false`; `SKILLHOOK_NPM_REGISTRY` redirects it to a mirror. `skillhook update --install` runs your package manager only when you ask.
+
+The only other connection skillhook opens by itself is the Skillhook Cloud link, and only after you paired the machine with `skillhook cloud connect` (below). Everything else that leaves the machine is a request you configured: the runners talking to Anthropic/OpenAI, `skillhook send`, `expose`, and `doctor`'s probe of your own public URL.
 
 ### Skillhook Cloud
 
-`cloud.*` settings and the wire protocol exist in this version ([cloud.md](cloud.md), [cloud-protocol.md](cloud-protocol.md)); the link that would use them does not, so they change nothing about what leaves the machine yet. Two rules already hold: `SKILLHOOK_CLOUD_*` variables never reach a run's environment, even when a skill lists them, and the default mode is `observe`.
+The link ([cloud.md](cloud.md), [cloud-protocol.md](cloud-protocol.md)) is opt-in and outbound: the running server opens HTTPS requests to `cloud.url` after `skillhook cloud connect` wrote `cloud.enabled: true` and `SKILLHOOK_CLOUD_TOKEN`, and never listens for the cloud. What it sends is listed in cloud.md; before anything leaves, headers are redacted, command lines and environments are dropped, and every string is scrubbed of every value in `.env`. `SKILLHOOK_CLOUD_*` variables never reach a run's environment, even when a skill lists them.
+
+What the cloud may make the machine do is decided on the machine: `cloud.mode` (`observe` by default: read commands only), `cloud.allow_commands` and `cloud.deny_commands`. The cloud cannot change those (`config.patch` refuses `cloud.*`), and its hints can only make the machine send less. Hosted-ingress deliveries go through the same signature check as a direct webhook, with the secret that stays on this machine; for `bearer` and `basic` skills the sender's credential does travel through the cloud (sealed at rest there until collected), so prefer a signature scheme for a hosted URL.
+
+The kill switches: `cloud.enabled: false`, `SKILLHOOK_NO_CLOUD=1` in the server's environment, `skillhook cloud disconnect` (which also revokes the token). Treat the machine token like the admin token: it identifies the machine to the cloud, and whoever holds it can read what the link uploads.
 
 ## Authentication schemes
 

@@ -46,6 +46,10 @@ export interface DeliveryRecord {
   body_truncated?: boolean;
   /** Milliseconds from arrival to the decision (a `?wait=` is not counted). */
   duration_ms: number;
+  /** `ingress`: handed over by the cloud link from a hosted URL (docs/cloud.md); `http` (or absent) otherwise. */
+  via?: "http" | "ingress";
+  /** The cloud's id of a hosted-ingress delivery. */
+  ingress_id?: string;
 }
 
 export type DeliveryInput = Omit<DeliveryRecord, "id" | "body_stored" | "body_truncated"> & { rawBody?: Buffer };

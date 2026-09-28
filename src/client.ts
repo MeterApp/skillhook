@@ -19,6 +19,8 @@ export interface HealthResponse {
   uptime_seconds?: number;
   /** Only present for admin/local callers. */
   queue?: { running: number; queued: number; running_ids: string[] };
+  /** The cloud link's status (admin/local callers of a server that runs one); null when the server has no link. */
+  cloud?: import("./cloud/link.js").LinkStatusView | null;
   /** Only present for admin/local callers, and only when the server runs the scheduler. */
   schedules?: ScheduleStatus[];
 }

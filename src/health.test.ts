@@ -119,6 +119,28 @@ describe("runHealth", () => {
   });
 });
 
+describe("cloud link check", () => {
+  it("is skipped until the machine is paired, fails on a missing token and names what the server reports", async () => {
+    const paths = home();
+    const skipped = await runHealth(paths, { ...OFFLINE, deep: false });
+    expect(byName(skipped, "cloud link")).toMatchObject({ group: "skillhook", status: "skip", hint: expect.stringContaining("skillhook cloud connect") });
+    writeConfigFile(paths, { runners: { claude: { command: FAKE_CLAUDE }, codex: { command: FAKE_CODEX } }, cloud: { enabled: true, url: "https://cloud.example", machine_id: "m_1" } });
+    const noToken = await runHealth(paths, { ...OFFLINE, deep: false });
+    expect(byName(noToken, "cloud link")).toMatchObject({ status: "fail", detail: expect.stringContaining("SKILLHOOK_CLOUD_TOKEN") });
+    writeEnv(paths, { SKILLHOOK_ADMIN_TOKEN: "t", SKILLHOOK_SECRET_BETA: "b", SKILLHOOK_SECRET_ALPHA: "a", SKILLHOOK_SECRET_CODY: "c", SKILLHOOK_SECRET_SHELLY: "s", SKILLHOOK_CLOUD_TOKEN: "placeholder-cloud-token" });
+    const noServer = await runHealth(paths, { ...OFFLINE, deep: false });
+    expect(byName(noServer, "cloud link")).toMatchObject({ status: "warn", detail: expect.stringContaining("no running server") });
+    const live = { started_at: new Date().toISOString(), queue: { running: 0, queued: 0 } };
+    const view = { state: "connected" as const, mode: "observe" as const, outbox_depth: 0, dropped_total: 0, watched_jobs: 0, enabled: true, url: "https://cloud.example", machine_id: "m_1", last_sync_at: "2026-09-28T12:00:00.000Z", last_error: null, connected_since: "2026-09-28T11:00:00.000Z", syncs: 12, ingress_urls: {}, events_seq: 40 };
+    const connected = await runHealth(paths, { ...OFFLINE, deep: false, live: () => live, cloud: () => view });
+    expect(byName(connected, "cloud link")).toMatchObject({ status: "ok", detail: expect.stringContaining("connected · https://cloud.example · machine m_1") });
+    const revoked = await runHealth(paths, { ...OFFLINE, deep: false, live: () => live, cloud: () => ({ ...view, state: "disconnected", reason: "token_revoked", last_error: "token revoked" }) });
+    expect(byName(revoked, "cloud link")).toMatchObject({ status: "fail", hint: "token revoked" });
+    const killed = await runHealth(paths, { ...OFFLINE, env: { ...NO_NET, SKILLHOOK_NO_CLOUD: "1" }, deep: false });
+    expect(byName(killed, "cloud link")).toMatchObject({ status: "skip", detail: expect.stringContaining("SKILLHOOK_NO_CLOUD") });
+  });
+});
+
 describe("HealthCache", () => {
   it("reuses a report within the TTL, shares one run between concurrent callers and emits health.changed on changes", async () => {
     const paths = home();
