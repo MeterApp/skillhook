@@ -4,6 +4,8 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.5.0 (2026-09-28)
+
 - MCP tools `cloud_status` and `cloud_disconnect`. There is deliberately no `cloud_connect`: pairing hands
   the machine to an account, so the person runs `skillhook cloud connect --code …` themselves. The setup
   skill gains a Skillhook Cloud step that says so.
