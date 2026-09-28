@@ -6,6 +6,10 @@ export interface RunPaths {
   eventPath: string;
   promptPath: string;
   lastMessagePath: string;
+  /** Where the agent may write its `{outcome, summary, links, data}` (also `SKILLHOOK_RESPONSE_PATH`). */
+  responsePath: string;
+  /** The JSON Schema written for `response: { mode: structured }` runs (Codex reads it from disk). */
+  responseSchemaPath: string;
 }
 
 export interface RunContext {
@@ -38,6 +42,7 @@ export interface StreamState {
   failed?: string;
   usage?: unknown;
   resultEvent?: Record<string, unknown>;
+  structuredOutput?: unknown;
 }
 
 export interface RunnerOutcome {
@@ -48,6 +53,8 @@ export interface RunnerOutcome {
   usage?: unknown;
   numTurns?: number;
   error?: string;
+  /** The JSON answer of a `response: { mode: structured }` run, as the runner returned it. */
+  structuredOutput?: unknown;
 }
 
 export interface RunnerIO {

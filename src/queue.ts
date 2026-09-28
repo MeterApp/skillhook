@@ -1,16 +1,17 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, existsSync } from "node:fs";
 import type { Config } from "./config.js";
 import type { Secrets } from "./env.js";
 import { Events } from "./events.js";
 import { isTerminal, type JobRecord, type JobStore } from "./jobs.js";
 import type { Logger } from "./logger.js";
+import { deriveOutcome, resolveJobResponse } from "./response.js";
 import { prepareRun } from "./run.js";
 import type { RunnerOutcome, StreamState } from "./runners/index.js";
 import type { SkillRegistry } from "./registry.js";
 import type { Skill } from "./skills.js";
-import { errorMessage, nowIso, tail } from "./util.js";
+import { errorMessage, nowIso, tail, writeJsonFile } from "./util.js";
 
 export interface QueueDeps {
   store: JobStore;
@@ -83,7 +84,7 @@ export class JobQueue extends EventEmitter {
     const queuedIndex = this.queued.findIndex((j) => j.id === id);
     if (queuedIndex >= 0) {
       const [job] = this.queued.splice(queuedIndex, 1);
-      const updated = this.deps.store.update(id, { status: "cancelled", finished_at: nowIso(), error: "cancelled before it started" });
+      const updated = this.deps.store.update(id, { status: "cancelled", finished_at: nowIso(), error: "cancelled before it started", outcome: "failed" });
       this.deps.logger.info("job cancelled", { job: id, skill: job?.skill });
       this.events.emit("job.cancelled", { job: updated, state: "queued" });
       this.emit("finished", updated);
@@ -156,7 +157,8 @@ export class JobQueue extends EventEmitter {
     this.running.delete(job.id);
     const finished_at = nowIso();
     const started = job.started_at ? Date.parse(job.started_at) : Date.parse(job.created_at);
-    const updated = this.deps.store.update(job.id, { finished_at, duration_ms: Date.now() - started, pid: undefined, ...patch });
+    const outcome = patch.outcome ?? deriveOutcome(patch.status ?? job.status, job.runner, patch.response ?? job.response);
+    const updated = this.deps.store.update(job.id, { finished_at, duration_ms: Date.now() - started, pid: undefined, outcome, ...patch });
     this.deps.logger.info("job finished", { job: job.id, skill: job.skill, status: updated.status, duration_ms: updated.duration_ms, cost_usd: updated.cost_usd, error: updated.error });
     this.emit("finished", updated);
     this.events.emit("job.finished", { job: updated });
@@ -284,6 +286,15 @@ export class JobQueue extends EventEmitter {
     const error =
       status === "timed_out" ? `timed out after ${ctx.timeoutSeconds}s` : status === "cancelled" ? "cancelled" : status === "interrupted" ? "server shut down while the job was running" : outcome.error;
     const sessionId = outcome.sessionId ?? state.sessionId ?? running.job.session_id;
+    // A structured answer becomes response.json too, so the artifact exists whichever way the agent reported.
+    if (outcome.structuredOutput !== undefined && !existsSync(paths.response)) {
+      try {
+        writeJsonFile(paths.response, outcome.structuredOutput);
+      } catch (error) {
+        logger.warn("could not write response.json", { job: job.id, error: errorMessage(error) });
+      }
+    }
+    const response = resolveJobResponse({ jobDir: paths.dir, structured: outcome.structuredOutput, ok: outcome.ok, result: outcome.result });
     this.finish(running.job, {
       status,
       exit_code: exit.code,
@@ -295,6 +306,7 @@ export class JobQueue extends EventEmitter {
       num_turns: outcome.numTurns,
       result: outcome.result,
       error,
+      response,
     });
   }
 }

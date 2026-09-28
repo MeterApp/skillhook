@@ -3,6 +3,7 @@
 // and writes the last message to the -o file.
 //   FAKE_CODEX_FAIL=<message> -> emit error + turn.failed and exit 1
 //   FAKE_CODEX_RECORD=<file>  -> write argv/prompt/cwd as JSON
+//   FAKE_CODEX_OUTCOME=<o>    -> the `outcome` of the JSON answer emitted when --output-schema is present
 import { randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 
@@ -22,7 +23,8 @@ if (process.env.FAKE_CODEX_FAIL) {
   out({ type: "turn.failed", error: { message: process.env.FAKE_CODEX_FAIL } });
   process.exit(1);
 }
-const text = `FAKE CODEX OK model=${model ?? "default"} prompt_chars=${prompt.length}`;
+// With --output-schema the real CLI's final message is the JSON object the schema asks for.
+const text = args.includes("--output-schema") ? JSON.stringify({ outcome: process.env.FAKE_CODEX_OUTCOME ?? "completed", summary: `structured codex model=${model ?? "default"}` }) : `FAKE CODEX OK model=${model ?? "default"} prompt_chars=${prompt.length}`;
 out({ type: "item.completed", item: { id: "item_0", type: "agent_message", text } });
 out({ type: "turn.completed", usage: { input_tokens: 12, cached_input_tokens: 0, output_tokens: 6 } });
 if (outFile) writeFileSync(outFile, text);

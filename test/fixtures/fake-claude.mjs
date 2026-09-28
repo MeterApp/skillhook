@@ -4,6 +4,8 @@
 //   FAKE_CLAUDE_FAIL=<message>  -> emit an is_error result and exit 1
 //   FAKE_CLAUDE_SLEEP_MS=<ms>   -> delay before answering (timeout/cancel tests)
 //   FAKE_CLAUDE_RECORD=<file>   -> write argv, prompt, env and cwd as JSON for assertions
+//   FAKE_CLAUDE_OUTCOME=<o>     -> the `outcome` of the structured_output emitted when --json-schema is present
+//   FAKE_CLAUDE_WRITE_RESPONSE=<json> -> write it to $SKILLHOOK_JOB_DIR/response.json before answering
 import { randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 
@@ -26,6 +28,10 @@ if (process.env.FAKE_CLAUDE_FAIL) {
   out({ type: "result", subtype: "error", is_error: true, result: process.env.FAKE_CLAUDE_FAIL, session_id: sessionId, total_cost_usd: 0, num_turns: 1, duration_ms: 5 });
   process.exit(1);
 }
+if (process.env.FAKE_CLAUDE_WRITE_RESPONSE && process.env.SKILLHOOK_JOB_DIR) writeFileSync(`${process.env.SKILLHOOK_JOB_DIR}/response.json`, process.env.FAKE_CLAUDE_WRITE_RESPONSE);
 const summary = `FAKE OK model=${model ?? "default"} prompt_chars=${prompt.length} cwd=${process.cwd()}`;
 out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: summary }] }, session_id: sessionId });
-out({ type: "result", subtype: "success", is_error: false, result: summary, session_id: sessionId, total_cost_usd: 0.0123, num_turns: 1, duration_ms: 5, usage: { input_tokens: 10, output_tokens: 5 } });
+const result = { type: "result", subtype: "success", is_error: false, result: summary, session_id: sessionId, total_cost_usd: 0.0123, num_turns: 1, duration_ms: 5, usage: { input_tokens: 10, output_tokens: 5 } };
+// With --json-schema the real CLI adds the validated answer as `structured_output`.
+if (args.includes("--json-schema")) result.structured_output = { outcome: process.env.FAKE_CLAUDE_OUTCOME ?? "completed", summary: `structured ${summary}`, links: ["https://example.com/pr/1"] };
+out(result);

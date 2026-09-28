@@ -10,6 +10,7 @@ import { newJobId } from "./ids.js";
 import { isTerminal, JOB_ARTIFACTS, JOB_STATUSES, type JobArtifact, type JobRecord, type JobStatus, type JobStore } from "./jobs.js";
 import type { Logger } from "./logger.js";
 import { deliveryFingerprint, parseBody, redactHeaders, TRIGGERS, type BodyKind, type Trigger, type WebhookEvent } from "./payload.js";
+import { JOB_OUTCOMES, type JobOutcome } from "./response.js";
 import type { JobQueue } from "./queue.js";
 import { resolveRunSettings } from "./run.js";
 import type { SkillRegistry } from "./registry.js";
@@ -582,7 +583,7 @@ export function createServer(deps: ServerDeps): Server {
     if (wait > 0) {
       const finished = await queue.waitFor(job.id, wait * 1000);
       if (finished && finished.status !== "queued" && finished.status !== "running") {
-        return send(res, 200, { ok: finished.status === "succeeded", ...extra, job_id: finished.id, status: finished.status, result: finished.result ?? null, error: finished.error ?? null, job: publicJob(finished) });
+        return send(res, 200, { ok: finished.status === "succeeded", ...extra, job_id: finished.id, status: finished.status, outcome: finished.outcome ?? null, result: finished.result ?? null, error: finished.error ?? null, response: finished.response ?? null, job: publicJob(finished) });
       }
       const current = finished ?? job;
       return send(res, 202, { ok: true, ...extra, job_id: current.id, status: current.status, status_url: `/jobs/${current.id}`, note: `still ${current.status} after ${wait}s` });
@@ -683,9 +684,11 @@ export function createServer(deps: ServerDeps): Server {
         if (status && !(JOB_STATUSES as string[]).includes(status)) throw new HttpError(400, "bad_request", `unknown status "${status}" (${JOB_STATUSES.join(", ")})`);
         const trigger = url.searchParams.get("trigger") ?? undefined;
         if (trigger && !(TRIGGERS as string[]).includes(trigger)) throw new HttpError(400, "bad_request", `unknown trigger "${trigger}" (${TRIGGERS.join(", ")})`);
+        const outcome = url.searchParams.get("outcome") ?? undefined;
+        if (outcome && !(JOB_OUTCOMES as string[]).includes(outcome)) throw new HttpError(400, "bad_request", `unknown outcome "${outcome}" (${JOB_OUTCOMES.join(", ")})`);
         const since = url.searchParams.get("since") ?? undefined;
         if (since && Number.isNaN(Date.parse(since))) throw new HttpError(400, "bad_request", "since must be an ISO-8601 instant");
-        const page = store.listPage({ skill: url.searchParams.get("skill") ?? undefined, status: status as JobStatus | undefined, trigger: trigger as Trigger | undefined, since, after: url.searchParams.get("after") ?? undefined, limit: pageLimit(url) });
+        const page = store.listPage({ skill: url.searchParams.get("skill") ?? undefined, status: status as JobStatus | undefined, trigger: trigger as Trigger | undefined, outcome: outcome as JobOutcome | undefined, since, after: url.searchParams.get("after") ?? undefined, limit: pageLimit(url) });
         return send(res, 200, { jobs: page.jobs.map(publicJob), queue: queue.stats(), next_after: page.next_after });
       }
       const id = segments[1] as string;

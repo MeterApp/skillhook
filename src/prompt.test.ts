@@ -9,7 +9,7 @@ function event(payload: unknown): WebhookEvent {
 
 function input(body: string, payload: unknown, inlineMaxBytes = 200_000) {
   const skill = parseSkillDocument(`---\nname: demo\ndescription: d\n---\n${body}`, "/skills/demo");
-  return { skill, event: event(payload), jobId: "j1", jobDir: "/jobs/j1", payloadPath: "/jobs/j1/payload.json", eventPath: "/jobs/j1/event.json", inlineMaxBytes };
+  return { skill, event: event(payload), jobId: "j1", jobDir: "/jobs/j1", payloadPath: "/jobs/j1/payload.json", eventPath: "/jobs/j1/event.json", responsePath: "/jobs/j1/response.json", inlineMaxBytes };
 }
 
 describe("renderTemplate", () => {
@@ -44,5 +44,15 @@ describe("buildPrompt", () => {
     expect(built.prompt).toContain("payload truncated");
     expect(built.prompt).toContain("/jobs/j1/payload.json");
     expect(built.prompt.length).toBeLessThan(3000);
+  });
+
+  it("tells the agent how to report the outcome, per response.mode", () => {
+    expect(buildPrompt(input("Go.", {})).guardrails).toContain("write /jobs/j1/response.json as JSON");
+    expect(buildPrompt(input("Go.", {})).guardrails).toContain('"needs_human"');
+    const structured = parseSkillDocument(`---\nname: demo\ndescription: d\nskillhook:\n  response:\n    mode: structured\n---\nGo.`, "/skills/demo");
+    expect(buildPrompt({ ...input("Go.", {}), skill: structured }).guardrails).toContain("must be the JSON object the schema asks for");
+    const file = parseSkillDocument(`---\nname: demo\ndescription: d\nskillhook:\n  response:\n    mode: file\n---\nGo.`, "/skills/demo");
+    expect(buildPrompt({ ...input("Go.", {}), skill: file }).guardrails).toContain("Before you finish, write /jobs/j1/response.json");
+    expect(renderTemplate("{{response_path}}", { response_path: "/r.json" }, {}).text).toBe("/r.json");
   });
 });

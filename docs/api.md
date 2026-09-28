@@ -64,7 +64,7 @@ Asynchronous (default): `202 Accepted`
 }
 ```
 
-Synchronous: add `?wait=<seconds>` or send a `Prefer: wait=<seconds>` header (clamped to `max_wait_seconds`, default 120). When the job finishes in time the answer is `200`; `ok` reflects the job outcome:
+Synchronous: add `?wait=<seconds>` or send a `Prefer: wait=<seconds>` header (clamped to `max_wait_seconds`, default 120). When the job finishes in time the answer is `200`; `ok` reflects the job status, and the body also carries `outcome` and `response` (whether the task was done and what the agent reported, `null` when it reported nothing; see [skills.md](skills.md#reporting-the-outcome)):
 
 ```json
 {
@@ -246,7 +246,7 @@ curl -sS -X POST http://127.0.0.1:8787/skills/hello/run \
 
 ## `GET /jobs`
 
-Query: `skill=<name>`, `status=<queued|running|succeeded|failed|timed_out|cancelled|interrupted>`, `trigger=<webhook|api|cli|mcp|schedule>`, `since=<ISO-8601>` (created at or after; whole seconds), `after=<job id>` (only older jobs: the `next_after` of the previous page), `limit=<n>` (default 50, at most 500). Newest first. An unknown `status`, `trigger` or `since` value is `400 bad_request`.
+Query: `skill=<name>`, `status=<queued|running|succeeded|failed|timed_out|cancelled|interrupted>`, `outcome=<completed|partial|needs_human|nothing_to_do|failed|unknown>` (derived for jobs recorded before outcomes existed; queued and running jobs never match), `trigger=<webhook|api|cli|mcp|schedule>`, `since=<ISO-8601>` (created at or after; whole seconds), `after=<job id>` (only older jobs: the `next_after` of the previous page), `limit=<n>` (default 50, at most 500). Newest first. An unknown `status`, `outcome`, `trigger` or `since` value is `400 bad_request`.
 
 ```json
 {
@@ -260,7 +260,7 @@ Query: `skill=<name>`, `status=<queued|running|succeeded|failed|timed_out|cancel
 
 ## `GET /jobs/<id>`
 
-`?include=result,stdout,stderr,prompt,payload,event` adds an `artifacts` object with file contents (each capped to its last 512 KiB and prefixed with `… [N bytes omitted]` when truncated; a missing file is `null`).
+`?include=result,stdout,stderr,prompt,payload,event,response` adds an `artifacts` object with file contents (each capped to its last 512 KiB and prefixed with `… [N bytes omitted]` when truncated; a file the job did not write is left out).
 
 ```bash
 curl -sS "http://127.0.0.1:8787/jobs/20260916T025442Z-r1wn6g?include=result,prompt"
@@ -284,7 +284,7 @@ Ids that do not exist (or do not look like `YYYYMMDDTHHMMSSZ-xxxxxx`) are `404 u
 
 ## `GET /jobs/<id>/artifacts/<name>`
 
-`<name>` is one of `stdout`, `stderr`, `prompt`, `result`, `payload`, `event`. The body is the file as written, with no JSON envelope: `application/json` for `event` and for a `payload` that was parsed as JSON, `text/plain` otherwise. `x-artifact-bytes` carries the file's full size. `?tail=<bytes>` returns only the last `<bytes>` bytes and adds `x-artifact-truncated: true`. A name outside the list, or a file the job has not written yet, is `404 unknown_artifact`.
+`<name>` is one of `stdout`, `stderr`, `prompt`, `result`, `payload`, `event`, `response`. The body is the file as written, with no JSON envelope: `application/json` for `event` and for a `payload` that was parsed as JSON, `text/plain` otherwise. `x-artifact-bytes` carries the file's full size. `?tail=<bytes>` returns only the last `<bytes>` bytes and adds `x-artifact-truncated: true`. A name outside the list, or a file the job has not written yet, is `404 unknown_artifact`.
 
 ```bash
 curl -sS -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" "http://127.0.0.1:8787/jobs/20260916T025442Z-r1wn6g/artifacts/result"
@@ -376,6 +376,8 @@ The log lives in `jobs/.delivery-log/` and keeps the newest `deliveries.max` (20
 | `cost_usd`, `usage`, `num_turns` | optional | As reported by the runner (Claude reports all three, Codex `usage` only). |
 | `result` | string, optional | Final agent message, truncated to 20 000 characters here; complete in `result.md`. |
 | `error` | string, optional | Failure reason. |
+| `outcome` | string, optional | Whether the task was done, set when the job ends: `completed`, `partial`, `needs_human`, `nothing_to_do`, `failed` (also every status other than `succeeded`) or `unknown` (the agent reported nothing). See [skills.md](skills.md#reporting-the-outcome). |
+| `response` | object, optional | What the agent reported: `{"outcome", "summary", "links"?, "data"?}` (`data` is capped at 64 KiB here; complete in `response.json`). |
 | `delivery_id` | string, optional | Provider delivery id when known; `schedule:<wall-clock slot>` for scheduled runs. |
 | `fingerprint` | string, optional | SHA-256 of the payload and query string of a webhook delivery; what the in-flight duplicate check compares. |
 | `source` | object | `ip`, `method` (`POST`, `PUT`, `LOCAL` for CLI/MCP runs, `SCHEDULE` for scheduled runs), `path`, `content_type`, `user_agent`. |

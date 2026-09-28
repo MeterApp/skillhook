@@ -104,6 +104,8 @@ Lifecycle: `queued` → `running` → one of `succeeded`, `failed`, `timed_out`,
 | `prompt.md` | The exact prompt sent to the runner (not written by `--dry-run`). |
 | `stdout.log`, `stderr.log` | Raw runner output (`stream-json` / JSONL for the agent runners). |
 | `result.md` | The final agent message, complete. |
+| `response.json` | The outcome the agent reported (`{outcome, summary, links, data}`), written by the agent, or by skillhook from a structured answer. See [skills.md](skills.md#reporting-the-outcome). |
+| `response.schema.json` | The JSON Schema handed to the runner for `response: { mode: structured }`. |
 | `last-message.md` | Codex only, written by `codex exec -o`. |
 | `body.bin` | The raw request body when it was binary. |
 
@@ -141,7 +143,7 @@ skillhook jobs prune [--keep N]
 
 `jobs cancel` needs the server that owns the job; a job started by `skillhook run` belongs to that CLI process (stop it with Ctrl-C).
 
-`jobs list` also takes `--trigger webhook|api|cli|mcp|schedule`, `--since <ISO-8601>` and `--after <id>` (the `next_after` printed under a full page).
+`jobs list` also takes `--outcome completed|partial|needs_human|nothing_to_do|failed|unknown` (whether the task was done, as the agent reported; `needs_human` lists the jobs waiting for a person), `--trigger webhook|api|cli|mcp|schedule`, `--since <ISO-8601>` and `--after <id>` (the `next_after` printed under a full page). `jobs show <id> --response` prints the reported `response.json`.
 
 ### Delivery log
 

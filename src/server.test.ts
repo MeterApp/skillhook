@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { signRequest } from "./auth.js";
@@ -62,10 +62,19 @@ beforeAll(async () => {
     SKILLHOOK_SECRET_TWIN: "tw",
     SKILLHOOK_SECRET_TWINOFF: "two",
     SLACK_SECRET: "slack-secret",
+    SKILLHOOK_SECRET_STRUCTURED: "st",
+    SKILLHOOK_SECRET_FILER: "fi",
+    SKILLHOOK_SECRET_CODEXST: "cs",
     FAKE_CLAUDE_RECORD: recordFile,
     FAKE_CLAUDE_FAIL: "simulated failure",
     FAKE_CLAUDE_SLEEP_MS: "4000",
+    FAKE_CLAUDE_OUTCOME: "needs_human",
+    FAKE_CLAUDE_WRITE_RESPONSE: '{"outcome":"nothing_to_do","summary":"Nothing to do here","links":["https://example.com/x"]}',
+    FAKE_CODEX_OUTCOME: "partial",
   });
+  writeSkill(paths, "structured", "description: st\nskillhook:\n  response:\n    mode: structured\n  env: [FAKE_CLAUDE_OUTCOME]");
+  writeSkill(paths, "filer", "description: fi\nskillhook:\n  env: [FAKE_CLAUDE_WRITE_RESPONSE]");
+  writeSkill(paths, "codexst", "description: cs\nskillhook:\n  runner: codex\n  response:\n    mode: structured\n  env: [FAKE_CODEX_OUTCOME]");
   writeSkill(paths, "hello", "description: hello\nskillhook:\n  model: haiku\n  env: [FAKE_CLAUDE_RECORD]", "Say hi to {{payload.name}}.\n\n{{payload}}\n");
   writeSkill(paths, "gh", "description: gh\nskillhook:\n  auth:\n    type: github\n    secret_env: GH_SECRET");
   writeSkill(paths, "filtered", "description: f\nskillhook:\n  when:\n    - path: action\n      equals: created");
@@ -474,6 +483,39 @@ describe("HTTP surface", () => {
     const last = JSON.parse(got.at(-1)!.data) as { type: string; data: { delivery: { outcome: string; code: string; body_stored: boolean } } };
     expect(last.type).toBe("delivery.received");
     expect(last.data.delivery).toMatchObject({ outcome: "skipped", code: "skipped", body_stored: true });
+  });
+
+  it("records the task outcome from structured output or response.json and filters jobs by it", async () => {
+    const auth = { authorization: `Bearer ${ADMIN}` };
+    const st = await json(await fetch(`${base}/hooks/structured?wait=20`, { method: "POST", body: "{}", headers: { authorization: "Bearer st" } }));
+    expect(st).toMatchObject({ status: "succeeded", outcome: "needs_human", response: { outcome: "needs_human", links: ["https://example.com/pr/1"] } });
+    expect(String((st.response as { summary: string }).summary)).toContain("structured");
+    const stJob = store.get(String(st.job_id))!;
+    expect(stJob.outcome).toBe("needs_human");
+    expect(stJob.command?.join(" ")).toContain("--json-schema");
+    expect(existsSync(store.pathsFor(stJob.id).response)).toBe(true);
+    expect(existsSync(store.pathsFor(stJob.id).responseSchema)).toBe(true);
+    const detail = await json(await fetch(`${base}/jobs/${stJob.id}?include=response`, { headers: auth }));
+    expect(JSON.parse(String((detail.artifacts as Record<string, string>).response))).toMatchObject({ outcome: "needs_human" });
+    const fi = await json(await fetch(`${base}/hooks/filer?wait=20`, { method: "POST", body: "{}", headers: { authorization: "Bearer fi" } }));
+    expect(fi).toMatchObject({ status: "succeeded", outcome: "nothing_to_do", response: { outcome: "nothing_to_do", summary: "Nothing to do here", links: ["https://example.com/x"] } });
+    const cs = await json(await fetch(`${base}/hooks/codexst?wait=20`, { method: "POST", body: "{}", headers: { authorization: "Bearer cs" } }));
+    expect(cs).toMatchObject({ status: "succeeded", outcome: "partial", response: { outcome: "partial" } });
+    expect(String(cs.result)).toContain("structured codex");
+    expect(store.get(String(cs.job_id))?.command?.join(" ")).toContain("--output-schema");
+    const plain = await json(await fetch(`${base}/hooks/hello?wait=20`, { method: "POST", body: '{"name":"Outcome"}', headers: { authorization: "Bearer hello-secret", "content-type": "application/json" } }));
+    expect(plain).toMatchObject({ status: "succeeded", outcome: "unknown", response: null });
+    // `hello` lists FAKE_CLAUDE_RECORD, so the record file holds this run's environment.
+    const record = JSON.parse(readFileSync(recordFile, "utf8")) as { env: Record<string, string> };
+    expect(record.env.SKILLHOOK_RESPONSE_PATH).toBe(store.pathsFor(String(plain.job_id)).response);
+    const failed = await json(await fetch(`${base}/hooks/failing?wait=20`, { method: "POST", body: '{"o":1}', headers: { authorization: "Bearer x", "content-type": "application/json" } }));
+    expect(failed).toMatchObject({ status: "failed", outcome: "failed" });
+    const shell = await json(await fetch(`${base}/hooks/where-am-i?wait=20`, { method: "POST", body: JSON.stringify({ action: "closed", o: 2 }), headers: { authorization: "Bearer hello-secret", "content-type": "application/json" } }));
+    expect(shell).toMatchObject({ status: "succeeded", outcome: "completed" });
+    const needs = (await json(await fetch(`${base}/jobs?outcome=needs_human`, { headers: auth }))) as unknown as { jobs: { id: string; outcome: string }[] };
+    expect(needs.jobs.map((j) => j.id)).toContain(stJob.id);
+    expect(needs.jobs.every((j) => j.outcome === "needs_human")).toBe(true);
+    expect((await fetch(`${base}/jobs?outcome=nope`, { headers: auth })).status).toBe(400);
   });
 
   it("pages and filters jobs", async () => {

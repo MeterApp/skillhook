@@ -4,6 +4,7 @@ import type { RunnerName } from "./config.js";
 import { idToDate, isJobId, newJobId } from "./ids.js";
 import type { Trigger, WebhookEvent } from "./payload.js";
 import { payloadJson } from "./prompt.js";
+import { jobOutcome, type JobOutcome, type JobResponse } from "./response.js";
 import { ensureDir, nowIso, readJsonFileOr, truncate, writeJsonFile } from "./util.js";
 
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "timed_out" | "cancelled" | "interrupted";
@@ -44,6 +45,10 @@ export interface JobRecord {
   /** Final agent message (truncated in job.json; complete in result.md). */
   result?: string;
   error?: string;
+  /** Whether the task was done, set when the job ends: `completed`, `partial`, `needs_human`, `nothing_to_do`, `failed` or `unknown` (see response.ts). */
+  outcome?: JobOutcome;
+  /** What the agent reported (structured output or `response.json`): outcome, summary, links, data. */
+  response?: JobResponse;
   delivery_id?: string;
   /** Hash of payload + query for in-flight de-duplication of webhook deliveries (see `deliveryFingerprint`). */
   fingerprint?: string;
@@ -61,6 +66,8 @@ export interface JobPaths {
   result: string;
   lastMessage: string;
   body: string;
+  response: string;
+  responseSchema: string;
 }
 
 export interface CreateJobInput {
@@ -81,6 +88,8 @@ export interface JobFilter {
   skill?: string;
   status?: JobStatus | JobStatus[];
   trigger?: Trigger | Trigger[];
+  /** Task outcome (derived for records written before outcomes existed); queued and running jobs never match. */
+  outcome?: JobOutcome | JobOutcome[];
   /** Only jobs created at or after this instant (ISO-8601); the store stops reading once it is past it. */
   since?: string;
   /** Only jobs created at or before this instant. */
@@ -96,8 +105,8 @@ export interface JobPage {
   next_after: string | null;
 }
 
-export type JobArtifact = "stdout" | "stderr" | "prompt" | "result" | "payload" | "event";
-export const JOB_ARTIFACTS: JobArtifact[] = ["stdout", "stderr", "prompt", "result", "payload", "event"];
+export type JobArtifact = "stdout" | "stderr" | "prompt" | "result" | "payload" | "event" | "response";
+export const JOB_ARTIFACTS: JobArtifact[] = ["stdout", "stderr", "prompt", "result", "payload", "event", "response"];
 
 const RESULT_INLINE_MAX = 20_000;
 
@@ -131,6 +140,8 @@ export class JobStore {
       result: path.join(dir, "result.md"),
       lastMessage: path.join(dir, "last-message.md"),
       body: path.join(dir, "body.bin"),
+      response: path.join(dir, "response.json"),
+      responseSchema: path.join(dir, "response.schema.json"),
     };
   }
 
@@ -212,6 +223,7 @@ export class JobStore {
   listPage(filter: JobFilter = {}): JobPage {
     const statuses = filter.status ? (Array.isArray(filter.status) ? filter.status : [filter.status]) : undefined;
     const triggers = filter.trigger ? (Array.isArray(filter.trigger) ? filter.trigger : [filter.trigger]) : undefined;
+    const outcomes = filter.outcome ? (Array.isArray(filter.outcome) ? filter.outcome : [filter.outcome]) : undefined;
     // Ids encode whole seconds, so the bounds are compared at that resolution.
     const since = wholeSecond(filter.since);
     const until = wholeSecond(filter.until);
@@ -229,6 +241,10 @@ export class JobStore {
       if (filter.skill && job.skill !== filter.skill) continue;
       if (statuses && !statuses.includes(job.status)) continue;
       if (triggers && !triggers.includes(job.trigger)) continue;
+      if (outcomes) {
+        const outcome = jobOutcome(job);
+        if (!outcome || !outcomes.includes(outcome)) continue;
+      }
       out.push(job);
       if (out.length >= limit) break;
     }
@@ -242,7 +258,7 @@ export class JobStore {
     for (const id of this.ids()) {
       const job = this.get(id);
       if (!job) continue;
-      if (job.status === "running") interrupted.push(this.update(id, { status: "interrupted", finished_at: nowIso(), error: "server restarted while the job was running" }));
+      if (job.status === "running") interrupted.push(this.update(id, { status: "interrupted", finished_at: nowIso(), error: "server restarted while the job was running", outcome: "failed" }));
       else if (job.status === "queued") queued.push(job);
     }
     return { interrupted, queued: queued.reverse() };

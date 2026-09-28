@@ -35,11 +35,13 @@ claude -p --output-format stream-json --verbose \
   [--allowedTools <allowed-tools + claude.allowed_tools, comma-joined>] \
   [--disallowedTools <claude.disallowed_tools>] \
   [--max-budget-usd <claude.max_budget_usd>] \
+  [--json-schema <response schema>]                # response.mode: structured
   --append-system-prompt "<guardrails>\n\n<claude.append_system_prompt>" \
   <runners.claude.args…> <claude.args…>
 ```
 
 - The prompt (`# Skill: <name>` + rendered body [+ event block]) is written to the process's stdin, so payload size is not limited by argv.
+- `response: { mode: structured }` adds `--json-schema` with the skill's schema (default `{outcome, summary, links, data}`); the result event's `structured_output` becomes `job.response` and `response.json` ([skills.md](skills.md#reporting-the-outcome)).
 - `--add-dir` is skipped for a directory that is already the cwd.
 - Default permission mode is `bypassPermissions` so unattended runs never stall. `--permission-prompts none` is always set; with `acceptEdits`, `dontAsk` or `plan` a tool that would have prompted is denied instead, which is how `allowed_tools` becomes an allow-list.
 - Model: aliases (`opus`, `sonnet`, `haiku`) or full ids. Effort: passed verbatim to `--effort`.
@@ -82,10 +84,12 @@ codex exec --json --skip-git-repo-check \
   [-m <model>] [-c model_reasoning_effort="<effort>"] \
   [-p <codex.profile>] \
   --add-dir <skill dir> --add-dir <job dir> [--add-dir <codex.add_dirs…>] \
+  [--output-schema <job dir>/response.schema.json]   # response.mode: structured
   <runners.codex.args…> <codex.args…> -
 ```
 
 - The trailing `-` makes Codex read the prompt from stdin. Codex has no system-prompt flag, so the guardrails are prepended to the prompt, separated by a blank line.
+- `response: { mode: structured }` writes the skill's schema to `response.schema.json` in the job directory and passes `--output-schema`; the final agent message is then parsed as JSON into `job.response` (its `summary` becomes `job.result`) and written to `response.json` ([skills.md](skills.md#reporting-the-outcome)).
 - Defaults: sandbox `workspace-write`, `network_access: true` (webhook automations usually need to call APIs; Codex's own default is no network in that sandbox), `approval_policy: never`.
 - `-o <file>` makes Codex write its final message to `last-message.md`; skillhook reads it when the JSON stream did not contain an `agent_message`.
 
@@ -140,7 +144,7 @@ Every runner gets a freshly built environment:
 | `PATH` | The server's `PATH` followed by `~/.local/bin`, `~/.npm-global/bin`, `~/.bun/bin`, `~/.cargo/bin`, `/opt/homebrew/bin`, `/opt/homebrew/sbin`, `/usr/local/bin`, `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`, so launchd's minimal PATH still finds `claude`, `codex`, `gh`, `node`. |
 | Runner credentials | Every variable whose name starts with `ANTHROPIC_`, `CLAUDE_`, `OPENAI_` or `CODEX_`, plus `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `https_proxy`, `http_proxy`, `no_proxy`. Values come from `.env` merged with the server environment. |
 | Explicit | Names listed in `env_passthrough` (config) and the skill's `env:`. |
-| Job | `SKILLHOOK_JOB_ID`, `SKILLHOOK_JOB_DIR`, `SKILLHOOK_SKILL`, `SKILLHOOK_SKILL_DIR`, `SKILLHOOK_PAYLOAD_PATH`, `SKILLHOOK_EVENT_PATH`, `SKILLHOOK_PROMPT_PATH`, `SKILLHOOK_TRIGGER` (`webhook`/`cli`/`mcp`/`api`), `SKILLHOOK_RUNNER`. |
+| Job | `SKILLHOOK_JOB_ID`, `SKILLHOOK_JOB_DIR`, `SKILLHOOK_SKILL`, `SKILLHOOK_SKILL_DIR`, `SKILLHOOK_PAYLOAD_PATH`, `SKILLHOOK_EVENT_PATH`, `SKILLHOOK_PROMPT_PATH`, `SKILLHOOK_RESPONSE_PATH` (where the agent reports the outcome), `SKILLHOOK_TRIGGER` (`webhook`/`cli`/`mcp`/`api`/`schedule`), `SKILLHOOK_RUNNER`. |
 | Never implicit | `SKILLHOOK_ADMIN_TOKEN`, `SKILLHOOK_SECRET_*` (only if a skill lists them in `env:`). |
 
 A `skillhook serve` started from inside an interactive Claude Code session does not leak that session's `CLAUDE_CODE_*` variables to child runs: prefix passthrough applies to `.env` only, and only the credential names listed above are copied from the server's environment.
@@ -161,4 +165,4 @@ A `skillhook serve` started from inside an interactive Claude Code session does 
 
 ## Cost and usage
 
-`job.json` records `cost_usd`, `usage` and `num_turns` when the runner reports them (Claude does; Codex reports `usage` only). `skillhook jobs list` shows duration, `jobs show` shows cost, and the `?wait=` HTTP response and the MCP `get_job` tool include the full record.
+`job.json` records `cost_usd`, `usage` and `num_turns` when the runner reports them (Claude does; Codex reports `usage` only), and `outcome` / `response` (whether the task was done, as the agent reported it; [skills.md](skills.md#reporting-the-outcome)). `skillhook jobs list` shows duration and outcome, `jobs show` shows cost and the reported summary, and the `?wait=` HTTP response and the MCP `get_job` tool include the full record.

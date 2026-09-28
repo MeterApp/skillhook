@@ -49,6 +49,10 @@ describe("JobStore", () => {
     expect(s.list({ limit: 1 })).toHaveLength(1);
     expect(s.list({ trigger: "webhook" })).toHaveLength(2);
     expect(s.list({ trigger: ["cli", "api"] })).toEqual([]);
+    expect(s.list({ outcome: "failed" }).map((j) => j.id)).toEqual([b.id]); // derived from status for records without one
+    expect(s.list({ outcome: ["unknown", "completed"] })).toEqual([]); // a is still queued
+    s.update(a.id, { status: "succeeded", outcome: "needs_human" });
+    expect(s.list({ outcome: "needs_human" }).map((j) => j.id)).toEqual([a.id]);
     const page = s.listPage({ limit: 1 });
     expect(page.jobs.map((j) => j.id)).toEqual([b.id]);
     expect(page.next_after).toBe(b.id);

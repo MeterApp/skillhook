@@ -3,13 +3,14 @@ import { spawn } from "node:child_process";
 import { adminRequest, findRunningServer, openAdminEventStream } from "../client.js";
 import { isTerminal, JOB_STATUSES, type JobArtifact, type JobStatus } from "../jobs.js";
 import { TRIGGERS, type Trigger } from "../payload.js";
+import { JOB_OUTCOMES, jobOutcome, type JobOutcome } from "../response.js";
 import { publicJob } from "../server.js";
 import { sleep } from "../util.js";
 import { bool, CommandError, formatDuration, num, relativeTime, str, table, UsageError, type Ctx } from "./shared.js";
 
 const USAGE = `Usage:
-  skillhook jobs list [--skill NAME] [--status ${JOB_STATUSES.join("|")}] [--trigger ${TRIGGERS.join("|")}] [--since ISO] [--after ID] [--limit N]
-  skillhook jobs show <id> [--result] [--prompt] [--stdout] [--stderr]
+  skillhook jobs list [--skill NAME] [--status ${JOB_STATUSES.join("|")}] [--outcome ${JOB_OUTCOMES.join("|")}] [--trigger ${TRIGGERS.join("|")}] [--since ISO] [--after ID] [--limit N]
+  skillhook jobs show <id> [--result] [--response] [--prompt] [--stdout] [--stderr]
   skillhook jobs logs <id> [--follow|-f] [--stderr]
   skillhook jobs cancel <id>
   skillhook jobs resume <id> [--exec]      print (or run) the command that reopens the agent session
@@ -26,12 +27,14 @@ export async function jobsCommand(ctx: Ctx): Promise<number> {
       if (status && !JOB_STATUSES.includes(status)) throw new UsageError(`--status must be one of ${JOB_STATUSES.join(", ")}`, USAGE);
       const trigger = str(ctx.flags, "trigger") as Trigger | undefined;
       if (trigger && !TRIGGERS.includes(trigger)) throw new UsageError(`--trigger must be one of ${TRIGGERS.join(", ")}`, USAGE);
+      const outcome = str(ctx.flags, "outcome") as JobOutcome | undefined;
+      if (outcome && !JOB_OUTCOMES.includes(outcome)) throw new UsageError(`--outcome must be one of ${JOB_OUTCOMES.join(", ")}`, USAGE);
       const since = str(ctx.flags, "since");
       if (since && Number.isNaN(Date.parse(since))) throw new UsageError("--since must be an ISO-8601 instant", USAGE);
-      const page = store.listPage({ skill: str(ctx.flags, "skill"), status, trigger, since, after: str(ctx.flags, "after"), limit: num(ctx.flags, "limit") ?? 30 });
+      const page = store.listPage({ skill: str(ctx.flags, "skill"), status, trigger, outcome, since, after: str(ctx.flags, "after"), limit: num(ctx.flags, "limit") ?? 30 });
       const jobs = page.jobs;
-      const rows = jobs.map((j) => [j.id, j.skill, j.status, j.runner + (j.model ? `/${j.model}` : ""), formatDuration(j.duration_ms), relativeTime(j.created_at), (j.error ?? j.result ?? "").split("\n")[0]?.slice(0, 60) ?? ""]);
-      const human = rows.length ? `${table(rows, ["job", "skill", "status", "runner", "took", "when", "summary"])}${page.next_after ? `\n(more: --after ${page.next_after})` : ""}` : `No jobs in ${store.jobsDir}`;
+      const rows = jobs.map((j) => [j.id, j.skill, j.status, jobOutcome(j) ?? "", j.runner + (j.model ? `/${j.model}` : ""), formatDuration(j.duration_ms), relativeTime(j.created_at), (j.response?.summary ?? j.error ?? j.result ?? "").split("\n")[0]?.slice(0, 60) ?? ""]);
+      const human = rows.length ? `${table(rows, ["job", "skill", "status", "outcome", "runner", "took", "when", "summary"])}${page.next_after ? `\n(more: --after ${page.next_after})` : ""}` : `No jobs in ${store.jobsDir}`;
       ctx.print(human, { jobs: jobs.map(publicJob), next_after: page.next_after });
       return 0;
     }
@@ -39,11 +42,13 @@ export async function jobsCommand(ctx: Ctx): Promise<number> {
     case "get": {
       const job = store.get(requireId(id));
       if (!job) throw new CommandError(`Unknown job ${id}`);
-      const wanted: JobArtifact[] = (["result", "prompt", "stdout", "stderr"] as const).filter((a) => bool(ctx.flags, a));
+      const wanted: JobArtifact[] = (["result", "response", "prompt", "stdout", "stderr"] as const).filter((a) => bool(ctx.flags, a));
       const artifacts: Record<string, string | undefined> = {};
       for (const a of wanted) artifacts[a] = store.readArtifact(job.id, a);
+      const outcome = jobOutcome(job);
       const lines = [
-        `${job.id}  ${job.skill}  ${job.status}`,
+        `${job.id}  ${job.skill}  ${job.status}${outcome ? `  (${outcome})` : ""}`,
+        ...(job.response ? [`  outcome:  ${job.response.outcome}: ${job.response.summary.split("\n")[0] ?? ""}`, ...(job.response.links?.length ? [`  links:    ${job.response.links.join(", ")}`] : [])] : []),
         `  runner:   ${job.runner}${job.model ? ` (${job.model})` : ""}${job.effort ? ` effort=${job.effort}` : ""}`,
         `  trigger:  ${job.trigger} from ${job.source.ip}${job.source.user_agent ? ` (${job.source.user_agent})` : ""}`,
         `  created:  ${job.created_at}${job.duration_ms !== undefined ? `  took ${formatDuration(job.duration_ms)}` : ""}`,

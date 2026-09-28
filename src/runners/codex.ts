@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { expandTilde } from "../util.js";
+import { expandTilde, isPlainObject } from "../util.js";
 import { commandParts, lastLines, shellQuote, uniqueDirs, type Runner, type RunnerOutcome, type StreamState } from "./types.js";
 
 function tomlString(value: string): string {
@@ -27,6 +27,8 @@ export const codexRunner: Runner = {
     for (const dir of uniqueDirs([ctx.skill.dir, ctx.jobDir, ...(skillConfig.add_dirs ?? []).map(expandTilde)])) {
       if (dir !== ctx.cwd) args.push("--add-dir", dir);
     }
+    // The final message must be JSON matching the schema file prepareRun wrote next to the job.
+    if (ctx.skill.config.response?.mode === "structured") args.push("--output-schema", ctx.paths.responseSchemaPath);
     args.push(...runnerConfig.args, ...(skillConfig.args ?? []), "-");
     return { command, args, cwd: ctx.cwd, env: ctx.env, stdin: `${ctx.guardrails}\n\n${ctx.prompt}` };
   },
@@ -74,8 +76,18 @@ export const codexRunner: Runner = {
     }
     const ok = (io.exitCode === 0 || io.exitCode === null) && !io.state.failed;
     const outcome: RunnerOutcome = { ok, result, sessionId: io.state.sessionId, usage: io.state.usage };
-    if (!ok) outcome.error = io.state.failed ?? lastLines(io.stderr) ?? lastLines(io.stdout) ?? `codex exited with code ${io.exitCode}${io.signal ? ` (${io.signal})` : ""}`;
-    if (!ok && !outcome.error) outcome.error = `codex exited with code ${io.exitCode}`;
+    if (ctx.skill.config.response?.mode === "structured" && result) {
+      try {
+        const parsed = JSON.parse(result) as unknown;
+        if (isPlainObject(parsed)) {
+          outcome.structuredOutput = parsed;
+          if (typeof parsed.summary === "string") outcome.result = parsed.summary;
+        }
+      } catch {
+        /* the agent answered in prose; the outcome then comes from response.json or stays unknown */
+      }
+    }
+    if (!ok) outcome.error = io.state.failed || lastLines(io.stderr) || lastLines(io.stdout) || `codex exited with code ${io.exitCode}${io.signal ? ` (${io.signal})` : ""}`;
     return outcome;
   },
   resumeCommand(sessionId, cwd) {

@@ -150,6 +150,15 @@ export const SkillhookBlockSchema = z
       .strict()
       .optional(),
     shell: z.object({ command: CommandSpecSchema }).strict().optional(),
+    /** How the job's task outcome is read. `text` (default): the agent may write `response.json` in the job directory; `file`: it is asked to; `structured`: the runner must answer with JSON matching `schema` (`claude --json-schema` / `codex --output-schema`). See docs/skills.md#reporting-the-outcome. */
+    response: z
+      .object({
+        mode: z.enum(["text", "file", "structured"]).optional(),
+        /** JSON Schema for the structured answer. Default: `{outcome, summary, links, data}` with `outcome` one of completed, partial, needs_human, nothing_to_do, failed. */
+        schema: z.record(z.string(), z.unknown()).optional(),
+      })
+      .strict()
+      .optional(),
     enabled: z.boolean().optional(),
     /** Also run this skill on a cron schedule, without a webhook delivery: `"5 * * * *"` (UTC) or `{ cron, timezone, catch_up, overlap, payload }`. See docs/schedules.md. */
     schedule: ScheduleSchema.optional(),

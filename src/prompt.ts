@@ -9,6 +9,8 @@ export interface PromptInput {
   jobDir: string;
   payloadPath: string;
   eventPath: string;
+  /** Where the agent may (or, per `response.mode`, must) write its `{outcome, summary, links, data}`. */
+  responsePath: string;
   /** Larger payloads are truncated inline (the file on disk is complete). */
   inlineMaxBytes: number;
 }
@@ -26,6 +28,7 @@ export function templateVars(input: PromptInput): Record<string, unknown> {
     payload_json: typeof event.payload === "string" ? event.payload : JSON.stringify(event.payload),
     payload_path: input.payloadPath,
     event_path: input.eventPath,
+    response_path: input.responsePath,
     headers: JSON.stringify(event.headers, null, 2),
     query: event.query,
     job_id: input.jobId,
@@ -66,6 +69,17 @@ function describeTrigger(trigger: WebhookEvent["trigger"]): string {
   return `triggered by an inbound ${trigger} request`;
 }
 
+const OUTCOME_VALUES = '"completed", "partial", "needs_human", "nothing_to_do" or "failed"';
+
+/** The guardrail line that tells the agent how to report the task outcome, per the skill's `response.mode`. */
+function describeResponse(input: PromptInput): string {
+  const mode = input.skill.config.response?.mode ?? "text";
+  const shape = `{"outcome": ${OUTCOME_VALUES}, "summary": "one paragraph for a person", "links": ["https://…"], "data": {…}}`;
+  if (mode === "structured") return `- Your final answer must be the JSON object the schema asks for (outcome ${OUTCOME_VALUES}, summary, links, data) and nothing else. Use "needs_human" when a person must decide or act before the task is done, "nothing_to_do" when the event needed no action.`;
+  if (mode === "file") return `- Before you finish, write ${input.responsePath} as JSON: ${shape}. That file is how the outcome of this job is read; use "needs_human" when a person must decide or act before the task is done, "nothing_to_do" when the event needed no action.`;
+  return `- To report the outcome of the task, write ${input.responsePath} as JSON: ${shape}; use "needs_human" when a person must decide or act before the task is done, "nothing_to_do" when the event needed no action. Without it the job is recorded as done but with an unknown outcome.`;
+}
+
 /** Appended to the system prompt (Claude) or prepended to the prompt (Codex): unattended-run rules and prompt-injection guardrails. */
 export function buildGuardrails(input: PromptInput): string {
   const { skill, event } = input;
@@ -76,6 +90,7 @@ export function buildGuardrails(input: PromptInput): string {
     "- Do not ask for confirmation. Make reasonable decisions; when something genuinely needs a human, say so explicitly in your final message and stop rather than guessing on destructive or irreversible actions.",
     `- Files for this run: payload ${input.payloadPath}, full event ${input.eventPath}, job directory ${input.jobDir} (write any artifacts there), skill directory ${skill.dir}.`,
     "- Your final message is stored as the job result and may be forwarded to people. End with a concise summary: what you did, what you found, and any follow-ups.",
+    describeResponse(input),
   ].join("\n");
 }
 

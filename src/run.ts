@@ -4,6 +4,7 @@ import type { Secrets } from "./env.js";
 import type { JobRecord, JobStore } from "./jobs.js";
 import type { WebhookEvent } from "./payload.js";
 import { buildPrompt, type BuiltPrompt } from "./prompt.js";
+import { responseSchemaFor } from "./response.js";
 import { buildRunEnv, getRunner, type RunContext, type Runner, type RunnerInvocation } from "./runners/index.js";
 import type { Skill } from "./skills.js";
 import { expandTilde, isDirectory } from "./util.js";
@@ -66,9 +67,13 @@ export function prepareRun(input: PrepareRunInput): PreparedRun {
     jobDir: paths.dir,
     payloadPath: paths.payload,
     eventPath: paths.event,
+    responsePath: paths.response,
     inlineMaxBytes: config.jobs.inline_payload_max_bytes,
   });
-  if (input.writePrompt !== false) writeFileSync(paths.prompt, built.prompt, { mode: 0o600 });
+  if (input.writePrompt !== false) {
+    writeFileSync(paths.prompt, built.prompt, { mode: 0o600 });
+    if (skill.config.response?.mode === "structured") writeFileSync(paths.responseSchema, `${JSON.stringify(responseSchemaFor(skill), null, 2)}\n`, { mode: 0o600 });
+  }
   const jobVars: Record<string, string> = {
     SKILLHOOK_JOB_ID: job.id,
     SKILLHOOK_JOB_DIR: paths.dir,
@@ -77,6 +82,7 @@ export function prepareRun(input: PrepareRunInput): PreparedRun {
     SKILLHOOK_PAYLOAD_PATH: paths.payload,
     SKILLHOOK_EVENT_PATH: paths.event,
     SKILLHOOK_PROMPT_PATH: paths.prompt,
+    SKILLHOOK_RESPONSE_PATH: paths.response,
     SKILLHOOK_TRIGGER: input.event.trigger,
     SKILLHOOK_RUNNER: settings.runner,
   };
@@ -94,7 +100,7 @@ export function prepareRun(input: PrepareRunInput): PreparedRun {
     model: settings.model,
     effort: settings.effort,
     timeoutSeconds: settings.timeoutSeconds,
-    paths: { payloadPath: paths.payload, eventPath: paths.event, promptPath: paths.prompt, lastMessagePath: paths.lastMessage },
+    paths: { payloadPath: paths.payload, eventPath: paths.event, promptPath: paths.prompt, lastMessagePath: paths.lastMessage, responsePath: paths.response, responseSchemaPath: paths.responseSchema },
   };
   return { runner, ctx, invocation: runner.build(ctx), built };
 }

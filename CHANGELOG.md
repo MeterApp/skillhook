@@ -29,6 +29,18 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
   the response) and filter by `trigger` and `since`; the route caps `limit` at 500 and answers
   `400 bad_request` for an unknown `status` or `trigger`. A malformed skill name in a hook URL is
   `404 unknown_skill` instead of `500`.
+- Task outcomes. Every finished job now carries `outcome` (`completed`, `partial`, `needs_human`,
+  `nothing_to_do`, `failed`, `unknown`) next to `status`: the agent reports it by writing
+  `response.json` (`{outcome, summary, links, data}`) in the job directory (`SKILLHOOK_RESPONSE_PATH`,
+  `{{response_path}}`; the guardrails say so), and the report is kept as `job.response`. A new
+  `response:` field in the `skillhook:` block chooses how firmly it is asked for: `mode: file` asks for
+  the file, `mode: structured` makes the runner answer with JSON (`claude -p --json-schema`,
+  `codex exec --output-schema <job dir>/response.schema.json`; the answer is stored as `response.json`
+  too), optionally against your own `schema`. A shell command that exits 0 is `completed`; a run that
+  reports nothing is `unknown`; every non-succeeded status is `failed`. Surfaces: the `?wait=`
+  response (`outcome`, `response`), `GET /jobs?outcome=`, `?include=response`, the `response`
+  artifact, `skillhook jobs list --outcome` (new column) and `jobs show --response`, the MCP
+  `list_jobs` filter and `skillhook_status`.
 
 ## 0.3.0 (2026-09-23)
 

@@ -167,6 +167,15 @@ describe("cli", () => {
     expect(typeof jobs.json().next_after === "string" || jobs.json().next_after === null).toBe(true);
     const badTrigger = io();
     expect(await main(["jobs", "list", ...dir, "--trigger", "nope", "--json"], badTrigger.cli)).toBe(2);
+    const unknown = io();
+    expect(await main(["jobs", "list", ...dir, "--outcome", "unknown", "--json"], unknown.cli)).toBe(0);
+    expect((unknown.json().jobs as { outcome?: string }[]).length).toBeGreaterThan(0);
+    expect((unknown.json().jobs as { outcome?: string }[]).every((j) => j.outcome === "unknown")).toBe(true);
+    const badOutcome = io();
+    expect(await main(["jobs", "list", ...dir, "--outcome", "nope", "--json"], badOutcome.cli)).toBe(2);
+    const jobsTable = io();
+    expect(await main(["jobs", "list", ...dir], jobsTable.cli)).toBe(0);
+    expect(jobsTable.out()).toContain("outcome");
   });
 
   it("links a repository's skillhook.yaml, lists and runs its hooks, and unlinks it", async () => {

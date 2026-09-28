@@ -1,4 +1,5 @@
-import { expandTilde } from "../util.js";
+import { responseSchemaFor } from "../response.js";
+import { expandTilde, isPlainObject } from "../util.js";
 import { commandParts, lastLines, shellQuote, uniqueDirs, type Runner, type RunnerOutcome, type StreamState } from "./types.js";
 
 function extractText(message: unknown): string | undefined {
@@ -47,6 +48,8 @@ export const claudeRunner: Runner = {
     if (allowed.length) args.push("--allowedTools", allowed.join(","));
     if (skillConfig.disallowed_tools?.length) args.push("--disallowedTools", skillConfig.disallowed_tools.join(","));
     if (skillConfig.max_budget_usd) args.push("--max-budget-usd", String(skillConfig.max_budget_usd));
+    // The final answer must match the schema; the CLI returns it as `structured_output` on the result event.
+    if (ctx.skill.config.response?.mode === "structured") args.push("--json-schema", JSON.stringify(responseSchemaFor(ctx.skill)));
     const system = [ctx.guardrails, skillConfig.append_system_prompt].filter(Boolean).join("\n\n");
     args.push("--append-system-prompt", system);
     args.push(...runnerConfig.args, ...(skillConfig.args ?? []));
@@ -66,14 +69,19 @@ export const claudeRunner: Runner = {
       const text = extractText(event.message);
       if (text) state.lastMessage = text;
     }
-    if (event.type === "result") state.resultEvent = event;
+    if (event.type === "result") {
+      state.resultEvent = event;
+      if (event.structured_output !== undefined) state.structuredOutput = event.structured_output;
+    }
   },
   parse(io): RunnerOutcome {
     const event = io.state.resultEvent ?? findLastResultEvent(io.stdout);
     if (event) {
       const isError = event.is_error === true;
       const ok = !isError && (io.exitCode === 0 || io.exitCode === null);
-      const result = typeof event.result === "string" && event.result ? event.result : io.state.lastMessage;
+      const structured = event.structured_output !== undefined ? event.structured_output : io.state.structuredOutput;
+      let result = typeof event.result === "string" && event.result ? event.result : io.state.lastMessage;
+      if (!result && isPlainObject(structured) && typeof structured.summary === "string") result = structured.summary;
       const outcome: RunnerOutcome = {
         ok,
         result,
@@ -82,6 +90,7 @@ export const claudeRunner: Runner = {
         usage: event.usage,
         numTurns: typeof event.num_turns === "number" ? event.num_turns : undefined,
       };
+      if (structured !== undefined) outcome.structuredOutput = structured;
       if (!ok) outcome.error = result || (typeof event.subtype === "string" ? event.subtype : undefined) || lastLines(io.stderr) || `claude exited with code ${io.exitCode}`;
       return outcome;
     }

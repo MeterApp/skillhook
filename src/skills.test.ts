@@ -74,6 +74,18 @@ describe("dedupe options", () => {
   });
 });
 
+describe("response options", () => {
+  it("accepts mode and schema and rejects anything else", () => {
+    const doc = (block: string) => `---\nname: r\ndescription: r\nskillhook:\n  response:\n${block}\n---\nBody\n`;
+    expect(parseSkillDocument(doc("    mode: structured"), "/tmp/r").config.response).toEqual({ mode: "structured" });
+    expect(parseSkillDocument(doc("    mode: file"), "/tmp/r").config.response).toEqual({ mode: "file" });
+    expect(parseSkillDocument(doc("    schema:\n      type: object"), "/tmp/r").config.response).toEqual({ schema: { type: "object" } });
+    expect(parseSkillDocument(`---\nname: r\ndescription: r\n---\nBody\n`, "/tmp/r").config.response).toBeUndefined();
+    expect(() => parseSkillDocument(doc("    mode: loud"), "/tmp/r")).toThrow(/Invalid SKILL.md frontmatter/);
+    expect(() => parseSkillDocument(doc("    format: json"), "/tmp/r")).toThrow(/Invalid SKILL.md frontmatter/);
+  });
+});
+
 describe("loadSkills / SkillRegistry", () => {
   it("loads valid skills and reports broken ones", () => {
     const paths = tempHome();

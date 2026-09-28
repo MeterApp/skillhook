@@ -32,15 +32,15 @@ Give everything that has a trigger a webhook. Anything that can call a URL can s
    in the skill's cwd, prompt = SKILL.md body + payload, unattended-run guardrails
         │
         ▼
- ~/.skillhook/jobs/<id>/   job.json · payload.json · event.json · prompt.md · stdout.log · result.md
+ ~/.skillhook/jobs/<id>/   job.json · payload.json · event.json · prompt.md · stdout.log · result.md · response.json
 ```
 
 - A skill is a directory `~/.skillhook/skills/<name>/SKILL.md`: standard Agent Skills frontmatter plus a `skillhook:` block that sets the runner, model, authentication, filters and working directory. Edits apply to the next delivery without a restart.
 - A repository can carry its own hooks in a version-controlled `skillhook.yaml` (webhook name → a shell command, a `SKILL.md` in the repository, or inline instructions); `skillhook link <dir>` serves them. See [Version-controlled hooks](#version-controlled-hooks-in-a-repository).
 - Any skill or hook can also carry a `schedule:` (a cron expression, a time zone, and what to do about missed slots); the server fires it without a webhook. See [Scheduled hooks](#scheduled-hooks).
 - The runner is the real `claude` or `codex` CLI on the machine, so subscriptions, MCP servers, `CLAUDE.md`/`AGENTS.md` files and tool permissions apply as usual.
-- Responses are immediate (`202` with a job id) or synchronous with `?wait=N` (or `Prefer: wait=N`); the agent's final message becomes the job result.
-- Developed against Claude Code 2.1.270, Codex CLI 0.153.4 and Tailscale 1.102.3. skillhook drives the CLIs through their headless flags (`claude -p --output-format stream-json …`, `codex exec --json …`); `skillhook run <skill> --dry-run` shows the exact command line.
+- Responses are immediate (`202` with a job id) or synchronous with `?wait=N` (or `Prefer: wait=N`); the agent's final message becomes the job result, and what it reports in `response.json` (`completed`, `partial`, `needs_human`, `nothing_to_do`, `failed`) becomes the job's `outcome`, so `skillhook jobs list --outcome needs_human` shows what is waiting for a person.
+- Developed against Claude Code 2.1.270, Codex CLI 0.153.4 and Tailscale 1.102.3. skillhook drives the CLIs through their headless flags (`claude -p --output-format stream-json …`, `codex exec --json …`; `response: { mode: structured }` adds `claude --json-schema` / `codex --output-schema`); `skillhook run <skill> --dry-run` shows the exact command line.
 
 ## Quickstart
 
@@ -326,7 +326,7 @@ Agents reading this repository should start with [`AGENTS.md`](AGENTS.md) (layou
 | `skillhook secret set <NAME\|skill\|admin> [--value V\|--stdin]` · `secret generate <NAME\|skill\|admin> [--force] [--bytes N]` · `secret list` · `secret unset <NAME>` | Manage `.env` (values are shown once at generation, never afterwards). |
 | `skillhook run <skill> [--payload JSON\|@file\|-] [--header "N: v"] [--runner R] [--model M] [--effort E] [--cwd DIR] [--dry-run]` | Run a skill locally, no HTTP, no authentication. |
 | `skillhook send <skill> [--payload …] [--wait N] [--url BASE\|--public\|--local] [--header "N: v"]` | POST a correctly signed test webhook to the running server or the public URL. |
-| `skillhook jobs list [--skill S] [--status ST] [--trigger T] [--since ISO] [--after ID] [--limit N]` · `jobs show <id> [--result] [--prompt] [--stdout] [--stderr]` · `jobs logs <id> [-f] [--stderr]` · `jobs cancel <id>` · `jobs resume <id> [--exec]` · `jobs path <id>` · `jobs prune [--keep N]` | Inspect and manage jobs. |
+| `skillhook jobs list [--skill S] [--status ST] [--outcome O] [--trigger T] [--since ISO] [--after ID] [--limit N]` · `jobs show <id> [--result] [--response] [--prompt] [--stdout] [--stderr]` · `jobs logs <id> [-f] [--stderr]` · `jobs cancel <id>` · `jobs resume <id> [--exec]` · `jobs path <id>` · `jobs prune [--keep N]` | Inspect and manage jobs (`--outcome needs_human`: what is waiting for a person). |
 | `skillhook deliveries list [--skill S] [--outcome O] [--since ISO] [--after ID] [--limit N]` · `deliveries show <id> [--body]` | Every webhook the server received, whatever became of it: accepted, duplicate, in flight, skipped by a filter, rejected (with the status and reason), Slack challenge. |
 | `skillhook mcp [--print-config]` | MCP server over stdio; `--print-config` prints client configuration. |
 | `skillhook config show\|get <key>\|set <key> <value>\|unset <key>\|path` | Read and edit `skillhook.json`. |

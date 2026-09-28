@@ -544,6 +544,27 @@
             ],
             "additionalProperties": false
           },
+          "response": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "text",
+                  "file",
+                  "structured"
+                ]
+              },
+              "schema": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              }
+            },
+            "additionalProperties": false
+          },
           "enabled": {
             "type": "boolean"
           },

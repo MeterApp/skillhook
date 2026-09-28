@@ -8,6 +8,7 @@ import { formatDoctor, runDoctor } from "./doctor.js";
 import { listExamples } from "./examples.js";
 import { JOB_ARTIFACTS, JOB_STATUSES, type JobArtifact, type JobStatus } from "./jobs.js";
 import { TRIGGERS, type Trigger } from "./payload.js";
+import { JOB_OUTCOMES, type JobOutcome } from "./response.js";
 import { addExampleSkill, createOps, createSkill, generateSecretFor, initProject, linkProject, listProjects, publicJob, resolveBaseUrl, runSkillLocally, sendSignedWebhook, setSecret, triggerViaServer, unlinkProject, webhookUrl, type LinkResult, type Ops } from "./ops.js";
 import type { Paths } from "./paths.js";
 import { listSchedules, scheduleStatus } from "./scheduler.js";
@@ -25,7 +26,7 @@ Typical flow: skillhook_status → create_skill (or add_example) → set_secret/
 Skills live in <home>/skills/<name>/SKILL.md; the \`skillhook:\` frontmatter block sets runner, model, auth and filters. Secrets live in <home>/.env and are never returned by tools except right after generation.
 A repository can declare its own hooks in a version-controlled skillhook.yaml (webhook name → run: shell command | skill: SKILL.md directory | prompt: inline instructions); link_project registers it so the hooks are served, list_projects shows what runs from which webhook.
 A \`schedule:\` key (cron expression, optional timezone/catch_up/overlap) on any skill or hook makes the running server fire it on time without a webhook; \`webhook: false\` makes it schedule-only. list_schedules shows the next and last runs.
-Jobs are directories under <home>/jobs/<id> with payload.json, prompt.md, stdout.log and result.md.
+Jobs are directories under <home>/jobs/<id> with payload.json, prompt.md, stdout.log, result.md and, when the agent reported one, response.json. A job's \`status\` says how the process ended; its \`outcome\` (completed, partial, needs_human, nothing_to_do, failed, unknown) says whether the task was done, as reported by the agent through response.json or a structured answer (\`response: { mode: structured }\` in the skill).
 Every webhook the server received, including rejected, filtered and duplicate ones, is in the delivery log: list_deliveries and get_delivery show what arrived and why it did not run.`;
 
 type ToolResult = { content: { type: "text"; text: string }[]; structuredContent?: Record<string, unknown>; isError?: boolean };
@@ -81,7 +82,7 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
           skills: loaded.skills.map((s) => ({ name: s.name, runner: s.config.runner ?? o.config.defaults.runner, model: s.config.model ?? o.config.defaults.model ?? null, auth: s.auth.type, source: s.source, url: webhookUrl(baseUrl, s.name) })),
           skill_errors: loaded.errors,
           projects: loaded.projects.map((p) => ({ dir: p.dir, file: p.file, hooks: p.hooks.map((h) => h.name), error: p.error ?? null, errors: p.errors })),
-          recent_jobs: jobs.map((j) => ({ id: j.id, skill: j.skill, status: j.status, created_at: j.created_at, error: j.error ?? null })),
+          recent_jobs: jobs.map((j) => ({ id: j.id, skill: j.skill, status: j.status, outcome: j.outcome ?? null, created_at: j.created_at, error: j.error ?? null })),
           recent_deliveries: deliveries.map((d) => ({ id: d.id, skill: d.skill, outcome: d.outcome, http_status: d.http_status, code: d.code ?? null, received_at: d.received_at, job_id: d.job_id ?? null })),
           defaults: o.config.defaults,
         },
@@ -217,10 +218,10 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
 
   server.registerTool(
     "list_jobs",
-    { title: "List jobs", description: "Recent jobs, newest first. `after` (the `next_after` of the previous call) pages further back; `since` is an ISO-8601 instant.", inputSchema: z.object({ skill: z.string().optional(), status: z.enum(JOB_STATUSES as [JobStatus, ...JobStatus[]]).optional(), trigger: z.enum(TRIGGERS as [Trigger, ...Trigger[]]).optional(), since: z.string().optional(), after: z.string().optional(), limit: z.number().int().min(1).max(200).optional() }) },
-    wrap(async ({ skill, status, trigger, since, after, limit }) => {
+    { title: "List jobs", description: "Recent jobs, newest first. `status` is how the process ended, `outcome` whether the task was done (needs_human lists the jobs waiting for a person). `after` (the `next_after` of the previous call) pages further back; `since` is an ISO-8601 instant.", inputSchema: z.object({ skill: z.string().optional(), status: z.enum(JOB_STATUSES as [JobStatus, ...JobStatus[]]).optional(), outcome: z.enum(JOB_OUTCOMES as [JobOutcome, ...JobOutcome[]]).optional(), trigger: z.enum(TRIGGERS as [Trigger, ...Trigger[]]).optional(), since: z.string().optional(), after: z.string().optional(), limit: z.number().int().min(1).max(200).optional() }) },
+    wrap(async ({ skill, status, outcome, trigger, since, after, limit }) => {
       const o = ops();
-      const page = o.store.listPage({ skill, status, trigger, since, after, limit: limit ?? 20 });
+      const page = o.store.listPage({ skill, status, outcome, trigger, since, after, limit: limit ?? 20 });
       return ok({ jobs: page.jobs.map(publicJob), next_after: page.next_after });
     }),
   );

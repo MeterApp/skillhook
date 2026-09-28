@@ -63,8 +63,9 @@ export async function runCommand(ctx: Ctx): Promise<number> {
   });
   const ok = job.status === "succeeded";
   const human = [
-    `${ok ? "✓" : "✗"} ${job.status}${job.duration_ms !== undefined ? ` in ${formatDuration(job.duration_ms)}` : ""}${job.cost_usd ? ` ($${job.cost_usd.toFixed(4)})` : ""}`,
+    `${ok ? "✓" : "✗"} ${job.status}${job.outcome ? ` (${job.outcome})` : ""}${job.duration_ms !== undefined ? ` in ${formatDuration(job.duration_ms)}` : ""}${job.cost_usd ? ` ($${job.cost_usd.toFixed(4)})` : ""}`,
     ...(job.error ? [`error: ${job.error}`] : []),
+    ...(job.response ? [`outcome: ${job.response.outcome}: ${job.response.summary}`, ...(job.response.links?.length ? [`links: ${job.response.links.join(", ")}`] : [])] : []),
     ...(job.result ? ["", job.result] : []),
     ...(job.resume_command ? ["", `resume: ${job.resume_command}`] : []),
     "",

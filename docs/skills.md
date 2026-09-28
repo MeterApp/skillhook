@@ -79,6 +79,7 @@ Unknown top-level keys are allowed. Unknown keys inside `skillhook:` are rejecte
 | `claude` | object | — | Claude-only options, below. |
 | `codex` | object | — | Codex-only options, below. |
 | `shell` | `{ command: string \| string[] }` | — | Required when `runner: shell`. |
+| `response` | `{ mode?: text \| file \| structured, schema?: object }` | `{ mode: text }` | How the job's task outcome is read: the agent may write `response.json` (`text`), is asked to (`file`), or must answer with JSON matching `schema` (`structured`, through `claude --json-schema` / `codex --output-schema`). See [Reporting the outcome](#reporting-the-outcome). |
 | `enabled` | boolean | `true` | `false` makes the webhook answer `404 unknown_skill`; `skills list` shows `(disabled)`. |
 | `schedule` | string, object or `false` | none | Also run on a cron schedule: `"5 * * * *"` (UTC) or `{ cron, timezone, catch_up, overlap, payload }`; `false` cancels a schedule inherited from a SKILL.md. See [schedules.md](schedules.md). |
 | `webhook` | boolean | `true` | `false` makes a scheduled skill schedule-only: `POST /hooks/<name>` answers `404 schedule_only` and no secret is required. |
@@ -235,6 +236,7 @@ The Markdown body is rendered with a minimal template engine before it is sent t
 | `{{payload_json}}` | The payload as compact single-line JSON (not truncated). |
 | `{{payload_path}}` | Absolute path of `payload.json` in the job directory. |
 | `{{event_path}}` | Absolute path of `event.json`. |
+| `{{response_path}}` | Absolute path of `response.json` in the job directory, where the agent reports the outcome (see [Reporting the outcome](#reporting-the-outcome)). |
 | `{{headers}}` | Redacted request headers as pretty JSON (see below). |
 | `{{headers.x-github-event}}` | One header (case-insensitive). |
 | `{{query.foo}}` | One query-string parameter. |
@@ -294,10 +296,48 @@ Independently of the body, every run carries the guardrails (as `--append-system
 | Working directory | `cwd` (skill, then `defaults.cwd`, then the skill directory), `~` expanded. |
 | Extra directories | The skill directory and the job directory are added with `--add-dir` (Claude and Codex) unless one of them is the cwd; plus `claude.add_dirs` / `codex.add_dirs`. |
 | Files | `<job_dir>/payload.json` (pretty JSON or raw text), `<job_dir>/event.json` (method, path, query, redacted headers, source IP, content type, delivery id, payload), `<job_dir>/prompt.md`; `body.bin` for binary bodies. |
-| Environment | `SKILLHOOK_JOB_ID`, `SKILLHOOK_JOB_DIR`, `SKILLHOOK_SKILL`, `SKILLHOOK_SKILL_DIR`, `SKILLHOOK_PAYLOAD_PATH`, `SKILLHOOK_EVENT_PATH`, `SKILLHOOK_PROMPT_PATH`, `SKILLHOOK_TRIGGER`, `SKILLHOOK_RUNNER`; the variables listed in `env:` and in `env_passthrough`; runner credentials (`ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*`) and basic session variables. `SKILLHOOK_SECRET_*` and `SKILLHOOK_ADMIN_TOKEN` are never forwarded unless listed in `env:`. Full table in [runners.md](runners.md#environment). |
-| Result | The agent's final message becomes `result.md` and `job.result`; with `?wait=` it is returned in the HTTP response. |
+| Environment | `SKILLHOOK_JOB_ID`, `SKILLHOOK_JOB_DIR`, `SKILLHOOK_SKILL`, `SKILLHOOK_SKILL_DIR`, `SKILLHOOK_PAYLOAD_PATH`, `SKILLHOOK_EVENT_PATH`, `SKILLHOOK_PROMPT_PATH`, `SKILLHOOK_RESPONSE_PATH`, `SKILLHOOK_TRIGGER`, `SKILLHOOK_RUNNER`; the variables listed in `env:` and in `env_passthrough`; runner credentials (`ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*`) and basic session variables. `SKILLHOOK_SECRET_*` and `SKILLHOOK_ADMIN_TOKEN` are never forwarded unless listed in `env:`. Full table in [runners.md](runners.md#environment). |
+| Result | The agent's final message becomes `result.md` and `job.result`; what it reports in `response.json` (or as a structured answer) becomes `job.response` and `job.outcome`. With `?wait=` all of them are returned in the HTTP response. |
 
 Request bodies are parsed by content type: JSON (`*/json`, `*+json`, or anything that looks like JSON) becomes the payload object; `application/x-www-form-urlencoded` becomes an object (GitHub's legacy `payload=<json>` form is unwrapped); `text/*` and XML stay strings; anything else that is valid UTF-8 up to 256 KiB is kept as text; other bodies are stored as `body.bin` and the payload is `{"binary": true, "bytes": N, "content_type": "…"}`.
+
+## Reporting the outcome
+
+A job's `status` says how the runner process ended (`succeeded`, `failed`, `timed_out`, …). Whether the *task* was done is a separate field, `outcome`, set when the job ends:
+
+| `outcome` | Meaning |
+|---|---|
+| `completed` | The task is done. |
+| `partial` | Some of it is; the summary says what remains. |
+| `needs_human` | A person must decide or act before it can be finished. |
+| `nothing_to_do` | The event needed no action. |
+| `failed` | The task could not be done. Also every job whose status is not `succeeded`. |
+| `unknown` | The run succeeded but the agent reported nothing. |
+
+The agent reports it by writing `response.json` in the job directory (`{{response_path}}`, `SKILLHOOK_RESPONSE_PATH`):
+
+```json
+{
+  "outcome": "needs_human",
+  "summary": "Reproduced the crash. The fix touches billing and needs a review before I open the PR.",
+  "links": ["https://github.com/acme/api/issues/42"],
+  "data": { "branch": "fix/42" }
+}
+```
+
+`outcome` and `summary` (one paragraph for a person) are what matter; `links` and `data` are optional. The object becomes `job.response`, its outcome `job.outcome`, and both are in the `?wait=` response, in `GET /jobs?outcome=needs_human`, in `skillhook jobs list --outcome needs_human` and in the MCP `list_jobs` tool. A shell command that exits 0 counts as `completed` unless it writes `response.json`.
+
+`response.mode` chooses how firmly skillhook asks for it:
+
+- `text` (default): the guardrails mention the file; a skill that never writes it ends with `outcome: unknown`.
+- `file`: the guardrails ask the agent to write it before finishing.
+- `structured`: the runner is made to answer with JSON. Claude Code runs with `--json-schema` and returns the validated object as `structured_output`; Codex runs with `--output-schema <job dir>/response.schema.json` and its final message is the JSON. skillhook writes the answer to `response.json` too. The default schema is `{outcome, summary, links, data}` with `outcome` limited to the five values above; `response.schema` replaces it with your own JSON Schema, in which case the whole object is kept as `response.data` and the outcome is `completed` (or `failed` when the run failed) unless your schema has an `outcome` field.
+
+```yaml
+skillhook:
+  response:
+    mode: structured
+```
 
 ## Creating skills
 
