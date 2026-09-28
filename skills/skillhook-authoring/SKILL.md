@@ -44,6 +44,8 @@ Start from an example when one is close — `skillhook skills examples`, then `s
 | `codex` | `sandbox` (`read-only` \| `workspace-write` \| `danger-full-access`), `network_access`, `profile`, `add_dirs`, `args` | `workspace-write`, network on |
 | `shell` | `{ command: "…" }` — a script instead of an agent; payload on stdin, `SKILLHOOK_*` variables set | — |
 | `response` | `{ mode: text \| file \| structured, schema? }`: how the task outcome (`completed`, `partial`, `needs_human`, `nothing_to_do`, `failed`) is reported: `response.json` in the job directory, or a JSON answer forced through `claude --json-schema` / `codex --output-schema` | `text`: the agent may write `response.json`; otherwise the outcome is `unknown` |
+| `fallback` | `{ runners: [codex], on: [not_ready] }`: another runner when this one is not installed or not logged in (checked before the run); `on` may add `auth`, `usage_limit`, `rate_limit`, `crash` to re-run a job that failed that way before the agent did anything | `defaults.fallback`, else none |
+| `retry` | `{ attempts: 1–3, on: [rate_limit, crash], backoff_seconds: 30 }`: run again on the same runner after such a failure, before the agent did anything | none |
 | `agent_api` | how the agent reaches the job API while it runs (progress, asking a person, the outcome): `mcp` injects `job_*` tools, `cli` relies on `skillhook job …`, `none` mentions neither | `mcp` (`cli` for `runner: shell`) |
 | `human_wait_seconds` | how long one `job_ask_human` / `skillhook job ask` waits for a person; the timeout clock pauses meanwhile | 300 |
 | `enabled` | `false` takes the URL offline (404) without deleting the skill | `true` |
@@ -164,6 +166,7 @@ Guardrails are added for you: the agent already knows it runs unattended, that a
 - Fast models (`sonnet`, `haiku`) for summarizing, routing and notifying; an `opus`-class model with `effort: high` for code changes. `timeout_seconds`: 300 for notifications, the 900 default for most, 1800+ for fixes with test runs.
 - `concurrency: 1` (default) serializes runs of a skill — right for anything that edits a repository. Raise it only for read-only skills.
 - Under Codex, `workspace-write` confines writes to `cwd` plus the skill and job directories; desktop automation (`osascript`, GUI apps) may need `danger-full-access`.
+- `fallback: { runners: [codex] }` keeps a skill running when Claude Code is logged out (the job runs on Codex and says so in `runner_reason`); the triggers beyond `not_ready`, and `retry`, repeat a failed run and belong on idempotent skills only.
 - `claude.max_budget_usd` caps spend per run for API-key users; `claude.allowed_tools` with `permission_mode: acceptEdits` narrows what an unattended agent may do.
 
 ## Test loop

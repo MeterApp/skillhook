@@ -53,6 +53,9 @@ describe("JobStore", () => {
     expect(s.list({ outcome: ["unknown", "completed"] })).toEqual([]); // a is still queued
     s.update(a.id, { status: "succeeded", outcome: "needs_human" });
     expect(s.list({ outcome: "needs_human" }).map((j) => j.id)).toEqual([a.id]);
+    s.update(b.id, { failure: { kind: "rate_limit", retryable: true } });
+    expect(s.list({ failure: "rate_limit" }).map((j) => j.id)).toEqual([b.id]);
+    expect(s.list({ failure: ["auth", "crash"] })).toEqual([]);
     const page = s.listPage({ limit: 1 });
     expect(page.jobs.map((j) => j.id)).toEqual([b.id]);
     expect(page.next_after).toBe(b.id);

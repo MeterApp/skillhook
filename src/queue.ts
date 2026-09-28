@@ -1,15 +1,18 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createWriteStream, existsSync } from "node:fs";
-import type { Config } from "./config.js";
+import type { Config, RunnerName } from "./config.js";
 import type { Secrets } from "./env.js";
 import { Events } from "./events.js";
-import { isTerminal, type JobRecord, type JobStore } from "./jobs.js";
+import { isTerminal, type JobAttempt, type JobRecord, type JobStatus, type JobStore } from "./jobs.js";
 import type { Logger } from "./logger.js";
 import { answerQuestion, readTimeline, type JobAnswer, type JobQuestion, type ProgressEntry } from "./progress.js";
 import { deriveOutcome, resolveJobResponse } from "./response.js";
+import type { ReadinessCache, RunnerReadiness } from "./readiness.js";
 import { prepareRun } from "./run.js";
+import { classifyFailure, type FailureKind, type FallbackTrigger, type JobFailure } from "./runners/failure.js";
 import type { RunnerOutcome, StreamState } from "./runners/index.js";
+import { lastLines } from "./runners/types.js";
 import type { SkillRegistry } from "./registry.js";
 import { loadAdhocSkill, type Skill } from "./skills.js";
 import { errorMessage, nowIso, tail, truncate, writeJsonFile } from "./util.js";
@@ -28,6 +31,24 @@ export interface QueueDeps {
   processEnv?: NodeJS.ProcessEnv;
   /** How often the progress files of running jobs are read (default 1000 ms). */
   progressPollMs?: number;
+  /** Is the runner installed and logged in? Checked before a job spawns; a `fallback:` runner takes over or the job fails fast. */
+  readiness?: ReadinessCache;
+}
+
+interface AttemptResult {
+  status: JobStatus;
+  patch: Partial<JobRecord>;
+  failure?: JobFailure;
+  error?: string;
+  /** The agent said something before the run ended (a retry could repeat side effects). */
+  producedOutput: boolean;
+  startedAt: string;
+}
+
+/** The skill's `fallback:` (else `defaults.fallback`), with the default trigger. */
+function fallbackPolicy(skill: Skill, config: Config): { runners: RunnerName[]; on: FallbackTrigger[] } {
+  const spec = skill.config.fallback ?? config.defaults.fallback;
+  return { runners: spec?.runners ?? [], on: spec?.on ?? ["not_ready"] };
 }
 
 interface Running {
@@ -270,6 +291,27 @@ export class JobQueue extends EventEmitter {
     queueMicrotask(() => this.tick());
   }
 
+  /** The first usable runner of `candidates` other than `exclude` (`shell` only for a skill that has a command). */
+  private async firstReady(candidates: RunnerName[], exclude: RunnerName, skill: Skill): Promise<RunnerReadiness | undefined> {
+    for (const candidate of candidates) {
+      if (candidate === exclude) continue;
+      if (candidate === "shell" && !skill.config.shell?.command) continue;
+      try {
+        const readiness = await this.deps.readiness?.get(candidate);
+        if (readiness?.ready) return readiness;
+      } catch {
+        /* a probe that fails is not a ready runner */
+      }
+    }
+    return undefined;
+  }
+
+  /** Waits `ms` between attempts, or less when the job is cancelled or the queue stops meanwhile. */
+  private async backoff(running: Running, ms: number): Promise<void> {
+    const until = Date.now() + ms;
+    while (Date.now() < until && !running.cancelled && !this.stopping) await new Promise((r) => setTimeout(r, Math.min(100, until - Date.now())));
+  }
+
   private async execute(job: JobRecord): Promise<void> {
     const { store, config, registry, logger } = this.deps;
     const running: Running = { job, cancelled: false, timedOut: false, progressOffset: 0 };
@@ -286,33 +328,101 @@ export class JobQueue extends EventEmitter {
       return;
     }
 
+    // Pre-flight: a runner that is not installed or not logged in never spawns; a fallback takes over or the job fails fast.
+    const policy = fallbackPolicy(skill, config);
+    if (this.deps.readiness && running.job.runner !== "shell") {
+      let readiness: RunnerReadiness | undefined;
+      try {
+        readiness = await this.deps.readiness.get(running.job.runner);
+      } catch (error) {
+        logger.warn("readiness check failed; running anyway", { job: job.id, runner: running.job.runner, error: errorMessage(error) });
+      }
+      if (readiness && !readiness.ready) {
+        const alternative = policy.on.includes("not_ready") ? await this.firstReady(policy.runners, running.job.runner, skill) : undefined;
+        if (!alternative) {
+          this.finish(running.job, { status: "failed", started_at: nowIso(), error: `${running.job.runner} is not ready: ${readiness.detail}${readiness.hint ? ` (${readiness.hint})` : ""}`, failure: { kind: readiness.found ? "auth" : "not_found", retryable: false, message: readiness.detail } });
+          return;
+        }
+        logger.warn("runner not ready; using the fallback", { job: job.id, skill: job.skill, runner: running.job.runner, fallback: alternative.runner, detail: readiness.detail });
+        running.job = store.update(job.id, { runner: alternative.runner, runner_requested: running.job.runner, runner_reason: `fallback: ${running.job.runner} ${readiness.detail}` });
+        this.events.emit("job.updated", { job: running.job, fields: ["runner", "runner_requested", "runner_reason"] });
+      }
+    }
+
+    const retry = skill.config.retry;
+    const retryOn: FailureKind[] = retry?.on ?? ["rate_limit", "crash"];
+    let retriesLeft = retry?.attempts ?? 0;
+    const attempts: JobAttempt[] = [];
+    while (true) {
+      const attempt = await this.attempt(running, skill, attempts.length);
+      const kind = attempt.failure?.kind;
+      if (kind && (attempt.status === "failed" || attempt.status === "timed_out") && !attempt.producedOutput && !running.cancelled && !this.stopping) {
+        if (kind === "auth") this.deps.readiness?.invalidate(running.job.runner);
+        const sameRunner = retriesLeft > 0 && retryOn.includes(kind);
+        const alternative = !sameRunner && (policy.on as string[]).includes(kind) ? await this.firstReady(policy.runners, running.job.runner, skill) : undefined;
+        if (sameRunner || alternative) {
+          attempts.push({ runner: running.job.runner, started_at: attempt.startedAt, finished_at: nowIso(), status: attempt.status, ...(attempt.error ? { error: attempt.error } : {}), failure: attempt.failure });
+          const fields: (keyof JobRecord)[] = ["attempts"];
+          const patch: Partial<JobRecord> = { attempts: [...attempts] };
+          if (alternative) {
+            patch.runner = alternative.runner;
+            patch.runner_requested = running.job.runner_requested ?? running.job.runner;
+            patch.runner_reason = `fallback: ${running.job.runner} failed (${kind})`;
+            fields.push("runner", "runner_requested", "runner_reason");
+          }
+          running.job = store.update(job.id, patch);
+          this.events.emit("job.updated", { job: running.job, fields });
+          logger.warn(alternative ? "run failed; trying the fallback runner" : "run failed; retrying", { job: job.id, skill: job.skill, kind, runner: running.job.runner, attempt: attempts.length + 1 });
+          if (sameRunner) {
+            retriesLeft--;
+            const backoffMs = (retry?.backoff_seconds ?? 30) * 1000;
+            if (backoffMs > 0) await this.backoff(running, backoffMs);
+            if (running.cancelled || this.stopping) {
+              this.finish(running.job, { status: this.stopping ? "interrupted" : "cancelled", error: this.stopping ? "server shut down while the job was waiting to retry" : "cancelled", attempts: [...attempts] });
+              return;
+            }
+          }
+          continue;
+        }
+      }
+      this.finish(running.job, { ...attempt.patch, ...(attempts.length ? { attempts: [...attempts] } : {}) });
+      return;
+    }
+  }
+
+  /** One run of the job's runner: spawn, stream, wait, parse. Does not finish the job. */
+  private async attempt(running: Running, skill: Skill, index: number): Promise<AttemptResult> {
+    const { store, config, logger } = this.deps;
+    const job = running.job;
+    const startedAt = nowIso();
+    running.timedOut = false;
+    const fail = (error: string, failure?: JobFailure): AttemptResult => ({ status: "failed", patch: { status: "failed", started_at: job.started_at ?? startedAt, error, ...(failure ? { failure } : {}) }, failure, error, producedOutput: false, startedAt });
+
     let prepared: ReturnType<typeof prepareRun>;
     try {
       prepared = prepareRun({ skill, config, secrets: this.deps.secrets(), fileSecrets: this.deps.fileSecrets?.(), store, job, event: store.readEvent(job.id), cwd: job.cwd, processEnv: this.deps.processEnv });
     } catch (error) {
-      this.finish(job, { status: "failed", started_at: nowIso(), error: errorMessage(error) });
-      return;
+      return fail(errorMessage(error));
     }
 
     const { runner, ctx, invocation } = prepared;
     const paths = store.pathsFor(job.id);
     running.job = store.update(job.id, {
       status: "running",
-      started_at: nowIso(),
+      started_at: job.started_at ?? startedAt,
       cwd: invocation.cwd,
       command: [invocation.command, ...invocation.args],
       model: ctx.model,
       effort: ctx.effort,
     });
-    logger.info("job started", { job: job.id, skill: job.skill, runner: runner.name, model: ctx.model, cwd: invocation.cwd, timeout_s: ctx.timeoutSeconds });
-    this.events.emit("job.started", { job: running.job });
+    logger.info(index ? "job attempt started" : "job started", { job: job.id, skill: job.skill, runner: runner.name, model: ctx.model, cwd: invocation.cwd, timeout_s: ctx.timeoutSeconds, attempt: index + 1 });
+    if (!index) this.events.emit("job.started", { job: running.job });
 
     let child: ChildProcess;
     try {
       child = spawn(invocation.command, invocation.args, { cwd: invocation.cwd, env: invocation.env, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
     } catch (error) {
-      this.finish(running.job, { status: "failed", error: `failed to start ${invocation.command}: ${errorMessage(error)}` });
-      return;
+      return fail(`failed to start ${invocation.command}: ${errorMessage(error)}`, { kind: "not_found", retryable: false, message: errorMessage(error) });
     }
     running.child = child;
 
@@ -320,8 +430,12 @@ export class JobQueue extends EventEmitter {
     let stdout = "";
     let stderr = "";
     let lineBuffer = "";
-    const outFile = createWriteStream(paths.stdout, { mode: 0o600 });
-    const errFile = createWriteStream(paths.stderr, { mode: 0o600 });
+    const outFile = createWriteStream(paths.stdout, { mode: 0o600, flags: index ? "a" : "w" });
+    const errFile = createWriteStream(paths.stderr, { mode: 0o600, flags: index ? "a" : "w" });
+    if (index) {
+      outFile.write(`\n--- attempt ${index + 1} (${runner.name}) ---\n`);
+      errFile.write(`\n--- attempt ${index + 1} (${runner.name}) ---\n`);
+    }
 
     const feedLine = (line: string) => {
       if (!runner.onLine) return;
@@ -330,7 +444,7 @@ export class JobQueue extends EventEmitter {
       } catch {
         /* ignore parser errors */
       }
-      if (state.sessionId && !running.job.session_id) {
+      if (state.sessionId && running.job.session_id !== state.sessionId) {
         running.job = store.update(job.id, { session_id: state.sessionId, resume_command: runner.resumeCommand?.(state.sessionId, invocation.cwd) });
         this.events.emit("job.updated", { job: running.job, fields: ["session_id", "resume_command"] });
       }
@@ -411,14 +525,12 @@ export class JobQueue extends EventEmitter {
     disarm();
     if (waitGuard) clearTimeout(waitGuard);
     running.clock = undefined;
+    running.child = undefined;
     if (lineBuffer) feedLine(lineBuffer);
     await Promise.all([new Promise((r) => outFile.end(r)), new Promise((r) => errFile.end(r))]);
     this.readProgress(running); // the last progress lines, before the record is final
 
-    if (exit.error) {
-      this.finish(running.job, { status: "failed", error: `failed to start ${invocation.command}: ${exit.error.message}` });
-      return;
-    }
+    if (exit.error) return fail(`failed to start ${invocation.command}: ${exit.error.message}`, { kind: "not_found", retryable: false, message: exit.error.message });
 
     let outcome: RunnerOutcome;
     try {
@@ -426,9 +538,10 @@ export class JobQueue extends EventEmitter {
     } catch (error) {
       outcome = { ok: false, error: `failed to parse runner output: ${errorMessage(error)}` };
     }
-    const status = running.timedOut ? "timed_out" : running.cancelled ? (this.stopping ? "interrupted" : "cancelled") : outcome.ok ? "succeeded" : "failed";
+    const status: JobStatus = running.timedOut ? "timed_out" : running.cancelled ? (this.stopping ? "interrupted" : "cancelled") : outcome.ok ? "succeeded" : "failed";
     const error =
       status === "timed_out" ? `timed out after ${ctx.timeoutSeconds}s` : status === "cancelled" ? "cancelled" : status === "interrupted" ? "server shut down while the job was running" : outcome.error;
+    const failure = status === "failed" || status === "timed_out" ? classifyFailure({ status, error, exitCode: exit.code, signal: exit.signal, resultEvent: state.resultEvent, stderr: lastLines(stderr, 5), reported: Boolean(state.resultEvent) || Boolean(state.failed) }) : undefined;
     const sessionId = outcome.sessionId ?? state.sessionId ?? running.job.session_id;
     // A structured answer becomes response.json too, so the artifact exists whichever way the agent reported.
     if (outcome.structuredOutput !== undefined && !existsSync(paths.response)) {
@@ -442,20 +555,28 @@ export class JobQueue extends EventEmitter {
     // A run that ends with its question unanswered and nothing reported is waiting for that answer: a person can give it later.
     const questionPending = running.job.question !== undefined && !running.job.question.answered_at && !running.job.answer;
     const outcomeOverride = status === "succeeded" && !response && questionPending ? ("needs_human" as const) : undefined;
-    this.finish(running.job, {
-      ...(outcomeOverride ? { outcome: outcomeOverride } : {}),
+    return {
       status,
-      exit_code: exit.code,
-      signal: exit.signal,
-      session_id: sessionId,
-      resume_command: sessionId ? runner.resumeCommand?.(sessionId, invocation.cwd) : undefined,
-      cost_usd: outcome.costUsd,
-      usage: outcome.usage,
-      num_turns: outcome.numTurns,
-      result: outcome.result,
+      failure,
       error,
-      response,
-    });
+      producedOutput: Boolean(state.lastMessage),
+      startedAt,
+      patch: {
+        ...(outcomeOverride ? { outcome: outcomeOverride } : {}),
+        status,
+        exit_code: exit.code,
+        signal: exit.signal,
+        session_id: sessionId,
+        resume_command: sessionId ? runner.resumeCommand?.(sessionId, invocation.cwd) : undefined,
+        cost_usd: outcome.costUsd,
+        usage: outcome.usage,
+        num_turns: outcome.numTurns,
+        result: outcome.result,
+        error,
+        response,
+        ...(failure ? { failure } : {}),
+      },
+    };
   }
 }
 

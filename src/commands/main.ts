@@ -12,6 +12,7 @@ import { sendCommand } from "./send.js";
 import { healthCommand } from "./health.js";
 import { jobCommand } from "./job.js";
 import { jobsCommand } from "./jobs.js";
+import { runnersCommand } from "./runners.js";
 import { deliveriesCommand } from "./deliveries.js";
 import { exposeCommand, urlCommand } from "./expose.js";
 import { serviceCommand } from "./service.js";
@@ -32,6 +33,7 @@ Setup
   init [--runner claude|codex|shell] [--model M] [--port N] [--force]   Create ~/.skillhook: config, secrets, hello skill
   doctor                                                   Check node, config, secrets, skills, claude/codex login, Tailscale, server, service
   health [--quick] [--refresh] [--no-network] [--local]     Doctor plus MCP servers, plugins, codex doctor, disk and last runs, grouped; via the running server when there is one
+  runners [--refresh] [--local]                            Is each runner installed and logged in: what every job checks before it starts
   serve [--port N] [--host H] [--log-level L] [--pretty]   Run the webhook server in the foreground
   service install|uninstall|status|restart|logs [--lines N] [--follow]   Run the server at login (launchd / systemd --user)
   expose tailscale [--serve] [--port N] | status | off     Permanent HTTPS URL via Tailscale Funnel (or tailnet-only Serve)
@@ -52,7 +54,7 @@ Running
   run --file SKILL.md | --stdin [same options]             Run a SKILL.md that is not installed (kept with the job)
   send <skill> [--payload …] [--wait S] [--url BASE|--public|--local] [--header "K: v"]...   POST a signed test webhook
   schedules list | next <name> [--count N] | run <name> [--wait S]   Skills with a schedule: next and last runs; fire one now
-  jobs list [--skill S] [--status ST] [--outcome O] [--trigger T] [--waiting] [--since ISO] [--after ID] [--limit N] | show <id> [--result|--prompt|--stdout|--stderr] | logs <id> [-f]
+  jobs list [--skill S] [--status ST] [--outcome O] [--failure K] [--trigger T] [--waiting] [--since ISO] [--after ID] [--limit N] | show <id> [--result|--prompt|--stdout|--stderr] | logs <id> [-f]
   jobs answer <id> "<answer>" [--option X] [--by NAME] [--no-resume] [--wait S]   Answer a job that asked (live) or ended needs_human (resumes the session)
   jobs cancel <id> | replay <id> [--skip-filters] [--wait S] | resume <id> [--exec] | path <id> | prune [--keep N]
   deliveries list [--skill S] [--outcome O] [--since ISO] [--after ID] [--limit N] | show <id> [--body]   Every webhook received, whatever became of it
@@ -90,6 +92,7 @@ const COMMANDS: Record<string, Command> = {
   service: serviceCommand,
   doctor: doctorCommand,
   health: healthCommand,
+  runners: runnersCommand,
   config: configCommand,
   mcp: mcpCommand,
   update: updateCommand,

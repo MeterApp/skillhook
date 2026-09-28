@@ -6,6 +6,9 @@ import { setConfigValue } from "./config.js";
 import { DELIVERY_OUTCOMES, readDeliveryBody, type DeliveryOutcome } from "./delivery-log.js";
 import { formatDoctor, runDoctor } from "./doctor.js";
 import { formatHealth, runHealth, type HealthReport } from "./health.js";
+import { checkReadiness, RUNNER_NAMES, type RunnerReadiness } from "./readiness.js";
+import { baseRunEnv } from "./runners/env.js";
+import { FailureKindSchema } from "./runners/failure.js";
 import { listExamples } from "./examples.js";
 import { JOB_ARTIFACTS, JOB_STATUSES, type JobArtifact, type JobStatus } from "./jobs.js";
 import { TRIGGERS, type Trigger } from "./payload.js";
@@ -253,10 +256,10 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
 
   server.registerTool(
     "list_jobs",
-    { title: "List jobs", description: "Recent jobs, newest first. `status` is how the process ended, `outcome` whether the task was done. `waiting: true` lists only the jobs waiting for a person (an unanswered question, or outcome needs_human not yet resumed): answer them with answer_job. `after` (the `next_after` of the previous call) pages further back; `since` is an ISO-8601 instant.", inputSchema: z.object({ skill: z.string().optional(), status: z.enum(JOB_STATUSES as [JobStatus, ...JobStatus[]]).optional(), outcome: z.enum(JOB_OUTCOMES as [JobOutcome, ...JobOutcome[]]).optional(), trigger: z.enum(TRIGGERS as [Trigger, ...Trigger[]]).optional(), waiting: z.boolean().optional(), since: z.string().optional(), after: z.string().optional(), limit: z.number().int().min(1).max(200).optional() }) },
-    wrap(async ({ skill, status, outcome, trigger, waiting, since, after, limit }) => {
+    { title: "List jobs", description: "Recent jobs, newest first. `status` is how the process ended, `outcome` whether the task was done. `waiting: true` lists only the jobs waiting for a person (an unanswered question, or outcome needs_human not yet resumed): answer them with answer_job. `after` (the `next_after` of the previous call) pages further back; `since` is an ISO-8601 instant.", inputSchema: z.object({ skill: z.string().optional(), status: z.enum(JOB_STATUSES as [JobStatus, ...JobStatus[]]).optional(), outcome: z.enum(JOB_OUTCOMES as [JobOutcome, ...JobOutcome[]]).optional(), trigger: z.enum(TRIGGERS as [Trigger, ...Trigger[]]).optional(), failure: FailureKindSchema.optional().describe("only jobs that failed this way: auth, usage_limit, rate_limit, budget, max_turns, not_found, timeout, crash, unknown"), waiting: z.boolean().optional(), since: z.string().optional(), after: z.string().optional(), limit: z.number().int().min(1).max(200).optional() }) },
+    wrap(async ({ skill, status, outcome, trigger, failure, waiting, since, after, limit }) => {
       const o = ops();
-      const page = o.store.listPage({ skill, status, outcome, trigger, waiting: waiting || undefined, since, after, limit: limit ?? 20 });
+      const page = o.store.listPage({ skill, status, outcome, trigger, failure, waiting: waiting || undefined, since, after, limit: limit ?? 20 });
       return ok({ jobs: page.jobs.map(publicJob), next_after: page.next_after });
     }),
   );
@@ -458,6 +461,23 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
       }
       const report = await runHealth(paths, { env, deep: deep ?? true, network: network ?? true });
       return ok({ via: "local", ...report }, formatHealth(report));
+    }),
+  );
+
+  server.registerTool(
+    "get_runners",
+    { title: "Runner readiness", description: "Is each runner (claude, codex, shell) installed and logged in, or given an API key: what every job checks before it starts (a `fallback:` runner takes over, or the job fails fast with failure.kind auth). Through the running server's cached answer when there is one (`refresh` probes again).", inputSchema: z.object({ refresh: z.boolean().optional() }) },
+    wrap(async ({ refresh }) => {
+      const running = await findRunningServer(paths);
+      if (running) {
+        const response = await adminRequest<{ runners: RunnerReadiness[]; default_runner: string; error?: string; message?: string }>(running.baseUrl, loadSecrets(paths, env), `/runners${refresh ? "?refresh=1" : ""}`, { timeoutMs: 60_000 });
+        if (response.status >= 400) throw new Error(`${String(response.body.error)}: ${String(response.body.message)}`);
+        return ok({ via: "server", base_url: running.baseUrl, ...response.body }, response.body.runners.map((r) => `${r.runner}: ${r.ready ? "ready" : "not ready"} (${r.detail})`).join("\n"));
+      }
+      const o = ops();
+      const runEnv = baseRunEnv({ secrets: o.secrets(), fileSecrets: o.fileSecrets(), processEnv: env });
+      const runners = await Promise.all(RUNNER_NAMES.map((runner) => checkReadiness(runner, o.config, runEnv)));
+      return ok({ via: "local", runners, default_runner: o.config.defaults.runner }, runners.map((r) => `${r.runner}: ${r.ready ? "ready" : "not ready"} (${r.detail})`).join("\n"));
     }),
   );
 

@@ -7,6 +7,7 @@ import { createOps, runJobLocally } from "../ops.js";
 import { TRIGGERS, type Trigger } from "../payload.js";
 import { readProgress, type ProgressEntry } from "../progress.js";
 import { JOB_OUTCOMES, jobOutcome, type JobOutcome } from "../response.js";
+import { FAILURE_KINDS, type FailureKind } from "../runners/failure.js";
 import { resolveRunSettings } from "../run.js";
 import { publicJob } from "../server.js";
 import { sleep } from "../util.js";
@@ -14,7 +15,7 @@ import { replayCommand } from "./replay.js";
 import { bool, CommandError, formatDuration, num, relativeTime, str, table, UsageError, type Ctx } from "./shared.js";
 
 const USAGE = `Usage:
-  skillhook jobs list [--skill NAME] [--status ${JOB_STATUSES.join("|")}] [--outcome ${JOB_OUTCOMES.join("|")}] [--trigger ${TRIGGERS.join("|")}] [--waiting] [--since ISO] [--after ID] [--limit N]
+  skillhook jobs list [--skill NAME] [--status ${JOB_STATUSES.join("|")}] [--outcome ${JOB_OUTCOMES.join("|")}] [--failure ${FAILURE_KINDS.join("|")}] [--trigger ${TRIGGERS.join("|")}] [--waiting] [--since ISO] [--after ID] [--limit N]
   skillhook jobs show <id> [--result] [--response] [--prompt] [--stdout] [--stderr]
   skillhook jobs logs <id> [--follow|-f] [--stderr]
   skillhook jobs answer <id> "<answer>" [--option X] [--by NAME] [--no-resume] [--wait S]   answer the question a job asked, or a job that ended needs_human (a new job then continues its session)
@@ -38,10 +39,12 @@ export async function jobsCommand(ctx: Ctx): Promise<number> {
       if (outcome && !JOB_OUTCOMES.includes(outcome)) throw new UsageError(`--outcome must be one of ${JOB_OUTCOMES.join(", ")}`, USAGE);
       const since = str(ctx.flags, "since");
       if (since && Number.isNaN(Date.parse(since))) throw new UsageError("--since must be an ISO-8601 instant", USAGE);
+      const failure = str(ctx.flags, "failure") as FailureKind | undefined;
+      if (failure && !FAILURE_KINDS.includes(failure)) throw new UsageError(`--failure must be one of ${FAILURE_KINDS.join(", ")}`, USAGE);
       const waiting = bool(ctx.flags, "waiting") || undefined;
-      const page = store.listPage({ skill: str(ctx.flags, "skill"), status, trigger, outcome, waiting, since, after: str(ctx.flags, "after"), limit: num(ctx.flags, "limit") ?? 30 });
+      const page = store.listPage({ skill: str(ctx.flags, "skill"), status, trigger, outcome, failure, waiting, since, after: str(ctx.flags, "after"), limit: num(ctx.flags, "limit") ?? 30 });
       const jobs = page.jobs;
-      const rows = jobs.map((j) => [j.id, j.skill, j.status, jobOutcome(j) ?? "", isWaitingForHuman(j) ? "waiting" : (j.progress?.state ?? ""), j.runner + (j.model ? `/${j.model}` : ""), formatDuration(j.duration_ms), relativeTime(j.created_at), (isWaitingForHuman(j) && j.question ? `? ${j.question.text}` : (j.response?.summary ?? j.error ?? j.result ?? "")).split("\n")[0]?.slice(0, 60) ?? ""]);
+      const rows = jobs.map((j) => [j.id, j.skill, `${j.status}${j.failure ? ` (${j.failure.kind})` : ""}`, jobOutcome(j) ?? "", isWaitingForHuman(j) ? "waiting" : (j.progress?.state ?? ""), j.runner + (j.model ? `/${j.model}` : ""), formatDuration(j.duration_ms), relativeTime(j.created_at), (isWaitingForHuman(j) && j.question ? `? ${j.question.text}` : (j.response?.summary ?? j.error ?? j.result ?? "")).split("\n")[0]?.slice(0, 60) ?? ""]);
       const human = rows.length ? `${table(rows, ["job", "skill", "status", "outcome", "human", "runner", "took", "when", "summary"])}${page.next_after ? `\n(more: --after ${page.next_after})` : ""}` : waiting ? "No job is waiting for a person" : `No jobs in ${store.jobsDir}`;
       ctx.print(human, { jobs: jobs.map(publicJob), next_after: page.next_after });
       return 0;
@@ -63,7 +66,9 @@ export async function jobsCommand(ctx: Ctx): Promise<number> {
         ...(job.answer ? [`  answer:   ${job.answer.option ? `${job.answer.option}: ` : ""}${job.answer.text.split("\n")[0] ?? ""}${job.answer.by ? ` (${job.answer.by})` : ""}`] : []),
         ...(job.resume_of ? [`  resumes:  job ${job.resume_of}${job.resume ? ` (session ${job.resume.session_id})` : job.runner_reason ? ` (${job.runner_reason})` : ""}`] : []),
         ...(job.resolved_by ? [`  resolved: by job ${job.resolved_by}`] : []),
-        `  runner:   ${job.runner}${job.model ? ` (${job.model})` : ""}${job.effort ? ` effort=${job.effort}` : ""}`,
+        `  runner:   ${job.runner}${job.model ? ` (${job.model})` : ""}${job.effort ? ` effort=${job.effort}` : ""}${job.runner_requested ? `  (asked for ${job.runner_requested}: ${job.runner_reason ?? "fallback"})` : ""}`,
+        ...(job.failure ? [`  failure:  ${job.failure.kind}${job.failure.code ? ` (${job.failure.code})` : ""}${job.failure.retryable ? ", retryable" : ""}`] : []),
+        ...(job.attempts?.length ? [`  attempts: ${job.attempts.map((a, i) => `${i + 1}. ${a.runner} ${a.status}${a.failure ? ` (${a.failure.kind})` : ""}`).join("; ")}; ${job.attempts.length + 1}. ${job.runner} ${job.status}`] : []),
         `  trigger:  ${job.trigger} from ${job.source.ip}${job.source.user_agent ? ` (${job.source.user_agent})` : ""}`,
         `  created:  ${job.created_at}${job.duration_ms !== undefined ? `  took ${formatDuration(job.duration_ms)}` : ""}`,
         ...(job.replay_of ? [`  replays:  ${[job.replay_of.delivery ? `delivery ${job.replay_of.delivery}` : "", job.replay_of.job ? `job ${job.replay_of.job}` : ""].filter(Boolean).join(", ")}`] : []),

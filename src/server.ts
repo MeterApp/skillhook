@@ -6,6 +6,8 @@ import { DELIVERY_OUTCOMES, readDeliveryBody, type DeliveryLog, type DeliveryOut
 import { ADMIN_TOKEN_ENV, type Secrets } from "./env.js";
 import { EVENT_TYPES, type Events } from "./events.js";
 import type { HealthCache } from "./health.js";
+import type { ReadinessCache } from "./readiness.js";
+import { FAILURE_KINDS, type FailureKind } from "./runners/failure.js";
 import { describeCondition, evaluateConditions } from "./filters.js";
 import { newJobId } from "./ids.js";
 import { AnswerError, answerJob, type AnswerJobResult } from "./answer.js";
@@ -40,6 +42,8 @@ export interface ServerDeps {
   schedules?: () => ScheduleStatus[];
   /** The cached health report behind `GET /health/checks` and `GET /doctor` (built by `serve`; absent means 404). */
   health?: HealthCache;
+  /** Runner readiness behind `GET /runners` (the queue's pre-flight shares it). */
+  readiness?: ReadinessCache;
   /** The process-wide event bus: `GET /events` streams it and `GET /jobs/<id>/events` follows one job on it. */
   events?: Events;
   /** Where every `/hooks/<skill>` request is recorded; `GET /deliveries` reads it. Absent: nothing is recorded. */
@@ -655,6 +659,13 @@ export function createServer(deps: ServerDeps): Server {
       const { report, cached } = await deps.health.get({ deep, network, refresh: url.searchParams.get("refresh") === "1" });
       return send(res, 200, { ...report, cached });
     }
+    if (segments[0] === "runners" && segments.length === 1) {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (method !== "GET") throw new HttpError(405, "method_not_allowed", "use GET");
+      if (!deps.readiness) throw new HttpError(404, "not_found", "this server has no runner checks");
+      const runners = await deps.readiness.all({ refresh: url.searchParams.get("refresh") === "1" });
+      return send(res, 200, { runners, default_runner: config.defaults.runner });
+    }
     if (segments[0] === "events" && segments.length === 1) {
       requireAdmin(headers, req, viaProxy, ip);
       if (method !== "GET") throw new HttpError(405, "method_not_allowed", "use GET");
@@ -753,9 +764,11 @@ export function createServer(deps: ServerDeps): Server {
         if (outcome && !(JOB_OUTCOMES as string[]).includes(outcome)) throw new HttpError(400, "bad_request", `unknown outcome "${outcome}" (${JOB_OUTCOMES.join(", ")})`);
         const since = url.searchParams.get("since") ?? undefined;
         if (since && Number.isNaN(Date.parse(since))) throw new HttpError(400, "bad_request", "since must be an ISO-8601 instant");
+        const failure = url.searchParams.get("failure") ?? undefined;
+        if (failure && !(FAILURE_KINDS as string[]).includes(failure)) throw new HttpError(400, "bad_request", `unknown failure kind "${failure}" (${FAILURE_KINDS.join(", ")})`);
         const waitingParam = url.searchParams.get("waiting");
         const waiting = waitingParam === "1" || waitingParam === "true" ? true : undefined;
-        const page = store.listPage({ skill: url.searchParams.get("skill") ?? undefined, status: status as JobStatus | undefined, trigger: trigger as Trigger | undefined, outcome: outcome as JobOutcome | undefined, waiting, since, after: url.searchParams.get("after") ?? undefined, limit: pageLimit(url) });
+        const page = store.listPage({ skill: url.searchParams.get("skill") ?? undefined, status: status as JobStatus | undefined, trigger: trigger as Trigger | undefined, outcome: outcome as JobOutcome | undefined, failure: failure as FailureKind | undefined, waiting, since, after: url.searchParams.get("after") ?? undefined, limit: pageLimit(url) });
         return send(res, 200, { jobs: page.jobs.map(publicJob), queue: queue.stats(), next_after: page.next_after });
       }
       const id = segments[1] as string;

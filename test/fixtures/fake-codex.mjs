@@ -2,6 +2,8 @@
 // Emulates `codex exec --json ... -o <file> -`: reads the prompt from stdin, prints JSONL events
 // and writes the last message to the -o file.
 //   FAKE_CODEX_FAIL=<message> -> emit error + turn.failed and exit 1
+//   FAKE_CODEX_FAIL_KIND=<auth|usage_limit|rate_limit> -> the failure the real CLI prints for it (also `auth` when
+//                               CODEX_HOME/logged-out exists)
 //   FAKE_CODEX_RECORD=<file>  -> write argv/prompt/cwd as JSON
 //   FAKE_CODEX_OUTCOME=<o>    -> the `outcome` of the JSON answer emitted when --output-schema is present
 import { randomBytes } from "node:crypto";
@@ -69,9 +71,19 @@ const out = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
 out({ type: "thread.started", thread_id: threadId });
 out({ type: "turn.started" });
 if (process.env.FAKE_CODEX_RECORD) writeFileSync(process.env.FAKE_CODEX_RECORD, JSON.stringify({ args, prompt, cwd: process.cwd() }, null, 2));
-if (process.env.FAKE_CODEX_FAIL) {
-  out({ type: "error", message: process.env.FAKE_CODEX_FAIL });
-  out({ type: "turn.failed", error: { message: process.env.FAKE_CODEX_FAIL } });
+const failKind = process.env.FAKE_CODEX_FAIL_KIND ?? (stateFile("logged-out") !== undefined ? "auth" : undefined);
+const failMessage =
+  process.env.FAKE_CODEX_FAIL ??
+  (failKind
+    ? ({
+        auth: "Not logged in. Run `codex login` to authenticate.",
+        usage_limit: "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage or try again at Sep 19th.",
+        rate_limit: "Rate limit reached for gpt-5-codex (429). Try again in 20s.",
+      }[failKind] ?? `simulated ${failKind} failure`)
+    : undefined);
+if (failMessage) {
+  out({ type: "error", message: failMessage });
+  out({ type: "turn.failed", error: { message: failMessage } });
   process.exit(1);
 }
 // With --output-schema the real CLI's final message is the JSON object the schema asks for.

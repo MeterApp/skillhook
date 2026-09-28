@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { createServer } from "node:http";
 import { main, nodeVersionProblem } from "./commands/main.js";
 import type { CliIO } from "./commands/shared.js";
-import { FAKE_CLAUDE, tempHome, writeSkill } from "./test-support/helpers.js";
+import { FAKE_CLAUDE, FAKE_CODEX, tempHome, writeSkill } from "./test-support/helpers.js";
 
 function io(env: NodeJS.ProcessEnv = {}) {
   const out: string[] = [];
@@ -449,6 +449,30 @@ describe("cli", () => {
     expect(deep.out()).toContain("tools\n");
     expect(deep.out()).toContain("claude mcp stitch");
     expect(deep.out()).toMatch(/\d+ ok, \d+ warnings, \d+ failures, \d+ skipped \(deep/);
+  });
+
+  it("reports runner readiness and filters jobs by failure kind", async () => {
+    const codex = io();
+    expect(await main(["config", "set", "runners.codex.command", JSON.stringify(FAKE_CODEX), ...dir, "--json"], codex.cli)).toBe(0);
+    const local = io();
+    expect(await main(["runners", "--local", ...dir, "--json"], local.cli)).toBe(0);
+    const report = local.json() as { via: string; default_runner: string; runners: { runner: string; ready: boolean; version?: string; method?: string }[] };
+    expect(report).toMatchObject({ via: "local", default_runner: "claude" });
+    expect(report.runners.map((r) => [r.runner, r.ready])).toEqual([
+      ["claude", true],
+      ["codex", true],
+      ["shell", true],
+    ]);
+    expect(report.runners[0]).toMatchObject({ version: "2.1.270", method: "subscription" });
+    const human = io();
+    expect(await main(["runners", "--local", ...dir], human.cli)).toBe(0);
+    expect(human.out()).toContain("claude");
+    expect(human.out()).toContain("ready");
+    const none = io();
+    expect(await main(["jobs", "list", "--failure", "auth", ...dir, "--json"], none.cli)).toBe(0);
+    expect(Array.isArray(none.json().jobs)).toBe(true);
+    const bad = io();
+    expect(await main(["jobs", "list", "--failure", "nope", ...dir, "--json"], bad.cli)).toBe(2);
   });
 
   it("runs doctor, url and expose status without crashing", async () => {

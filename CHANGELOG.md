@@ -71,6 +71,18 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
   question, or outcome `needs_human`); a run that ends with its question unanswered counts as
   `needs_human`. New block fields `agent_api` (`mcp` | `cli` | `none`) and `human_wait_seconds`; new
   job variables `SKILLHOOK_BIN`, `SKILLHOOK_HOME`, `SKILLHOOK_HUMAN_WAIT_SECONDS`.
+- Runner readiness, failure kinds and fallback. Before a job spawns, skillhook checks that its runner is
+  installed and logged in (or has an API key), with the job environment, cached for
+  `health.readiness_cache_seconds` (60): `skillhook runners`, `GET /runners`, MCP `get_runners`, event
+  `runners.changed`. A runner that is not ready fails the job at once (`failure.kind: auth`, no
+  process started) unless the skill's new `fallback: { runners: [codex] }` (or `defaults.fallback` in
+  `skillhook.json`) names a ready runner, which then takes over (`runner_requested`, `runner_reason`).
+  Every `failed` or `timed_out` job now carries `failure: {kind, code, retryable, message}` (`auth`,
+  `usage_limit`, `rate_limit`, `budget`, `max_turns`, `not_found`, `timeout`, `crash`, `unknown`),
+  classified from what the CLI printed; `jobs list --failure`, `GET /jobs?failure=` and `list_jobs`
+  filter by it. `fallback.on` may add `auth`, `usage_limit`, `rate_limit`, `crash`, and the new
+  `retry: { attempts, on, backoff_seconds }` repeats a run on the same runner; both act only on a run
+  that failed before the agent produced anything, and record the earlier runs in `attempts`.
 - Deep health. `skillhook health` (`GET /health/checks`, MCP `get_health`) is the doctor plus what the
   agents actually depend on, grouped (`system`, `skillhook`, `runners`, `tools`, `skills`, `exposure`):
   `claude` / `codex` versions and logins, one check per MCP server Claude Code and Codex know

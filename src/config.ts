@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { FallbackSchema } from "./runners/failure.js";
 import { readFileSync } from "node:fs";
 import { exists, writeJsonFile } from "./util.js";
 import type { Paths } from "./paths.js";
@@ -52,6 +53,8 @@ export const ConfigSchema = z
         effort: z.string().optional(),
         timeout_seconds: z.number().int().positive().default(900),
         cwd: z.string().optional(),
+        /** Fallback runners for every skill that does not set its own `fallback:` (`{ runners: [codex], on: [not_ready] }`). */
+        fallback: FallbackSchema.optional(),
       })
       .strict()
       .prefault({}),
@@ -102,6 +105,8 @@ export const ConfigSchema = z
         cache_seconds: z.number().int().min(0).default(60),
         /** How long one slow probe (`claude mcp list`, which connects to every server; `codex doctor`) may take. */
         probe_timeout_seconds: z.number().int().positive().default(20),
+        /** How long a runner's readiness (installed, logged in) is trusted before a job re-checks it. */
+        readiness_cache_seconds: z.number().int().min(0).default(60),
       })
       .strict()
       .prefault({}),

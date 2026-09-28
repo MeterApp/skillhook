@@ -151,6 +151,47 @@ The rendered prompt is still written to `prompt.md`, so a shell command can hand
 
 In a repository's `skillhook.yaml` a shell hook is written as `run: <command>` (string or array) and runs in the repository by default; see [projects.md](projects.md#run-hooks).
 
+## Readiness
+
+Before a job spawns, skillhook checks that its runner is usable: installed (`runners.<name>.command` resolves) and logged in, or given an API key (`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`). The check runs `claude auth status` / `codex login status` with the same environment as a job and its answer is trusted for `health.readiness_cache_seconds` (60), then re-checked; a run that fails to authenticate forgets it at once. `skillhook runners [--refresh] [--local]`, `GET /runners?refresh=1` and the MCP tool `get_runners` show the answer per runner (`found`, `version`, `authenticated`, `method`: `subscription` or `api_key`, `detail`, `hint`, `ready`), and `runners.changed` is published on the event stream when it changes. The shell runner is always ready; `skillhook health` checks each shell skill's binary.
+
+A job whose runner is not ready never starts: it fails at once with `error: <runner> is not ready: …`, `failure.kind: auth` (or `not_found`), no `command` and no process, unless a [fallback](#fallback-and-retry) runner is ready.
+
+## Failure kinds
+
+Every job that ends `failed` or `timed_out` carries `failure: {kind, code?, retryable, message?}`, classified from what the runner printed (the captured real lines are the fixtures; the kind never changes the job's `status`):
+
+| `kind` | When | `retryable` |
+|---|---|---|
+| `auth` | not logged in, an expired OAuth session, an invalid API key, a `401`; also a job refused by the readiness check | no |
+| `usage_limit` | the subscription's usage or quota is exhausted (`You've hit your usage limit`) | no |
+| `rate_limit` | a `429`, "rate limit", "overloaded", "too many requests" | yes |
+| `budget` | Claude's `error_max_budget_usd` (`claude.max_budget_usd`) | no |
+| `max_turns` | Claude's `error_max_turns` | no |
+| `not_found` | the command could not be started (`ENOENT`) | no |
+| `timeout` | `timeout_seconds` elapsed | no |
+| `crash` | a signal or a non-zero exit with no recognisable reason | yes |
+| `unknown` | the runner reported an error skillhook does not recognise | no |
+
+`code` is Claude's result `subtype` when it is not `success`. `skillhook jobs list` shows the kind next to the status (`failed (auth)`), `--failure <kind>` (`GET /jobs?failure=`, MCP `list_jobs {failure}`) filters by it.
+
+## Fallback and retry
+
+```yaml
+skillhook:
+  fallback:
+    runners: [codex]              # in order of preference; shell only for a skill with shell.command
+    on: [not_ready]               # default; add auth, usage_limit, rate_limit, crash to re-run a failed job on the next runner
+  retry:
+    attempts: 1                   # more runs on the same runner (1–3)
+    on: [rate_limit, crash]       # default
+    backoff_seconds: 30           # default
+```
+
+`fallback` names other runners for when this one cannot run. With the default `on: [not_ready]` it acts only before the run: the readiness check fails, the first ready runner of the list takes over, and the job records `runner` (the one that ran), `runner_requested` (the one asked for) and `runner_reason` (`fallback: claude not logged in`). `defaults.fallback` in `skillhook.json` applies to every skill that sets none.
+
+The other triggers (`auth`, `usage_limit`, `rate_limit`, `crash`) and `retry` act after a run failed that way, **only when the agent had not produced anything yet** (no assistant message): the failed run becomes an entry of `attempts` (`{runner, started_at, finished_at, status, error, failure}`), the next run starts on the same runner (`retry`, after `backoff_seconds`) or on the next ready fallback runner, and the job record is the last attempt. A run that had already started acting is never repeated, because a repeat could redo its side effects; both features are off by default and belong on idempotent skills only. Each attempt gets the full `timeout_seconds`; `stdout.log` / `stderr.log` keep every attempt, separated by `--- attempt N (<runner>) ---`.
+
 ## Environment
 
 Every runner gets a freshly built environment:
@@ -176,7 +217,7 @@ A `skillhook serve` started from inside an interactive Claude Code session does 
 ## Timeouts, cancellation, concurrency
 
 - Processes are spawned detached in their own process group. On timeout (`timeout_seconds`), cancel (`POST /jobs/<id>/cancel`, `skillhook jobs cancel`, MCP `cancel_job`) or server shutdown, the whole group gets `SIGTERM`, then `SIGKILL` 10 seconds later.
-- Resulting statuses: `timed_out` (error `timed out after Ns`), `cancelled`, `interrupted` (server shut down or restarted while running; a queued job survives a restart and is re-queued).
+- Resulting statuses: `timed_out` (error `timed out after Ns`), `cancelled`, `interrupted` (server shut down or restarted while running; a queued job survives a restart and is re-queued). A `failed` or `timed_out` job also says why in `failure.kind` ([Failure kinds](#failure-kinds)).
 - The queue is FIFO with a global cap of `concurrency` (default 2) running jobs and one job per skill at a time unless the skill sets `concurrency`. A job whose skill is at its limit is skipped in favour of the next eligible job.
 - The `session_id`/`resume_command` are stored as soon as they appear, so an interrupted Claude or Codex run can be picked up with `skillhook jobs resume <id>`, and a person's answer can continue it as a new job (`skillhook jobs answer`).
 - The timeout clock stops while the agent waits for a person (`job_ask_human` / `skillhook job ask`) and restarts with the remaining time on the answer, or by itself thirty seconds after the question's `wait_until` when no answer came. A waiting job keeps its concurrency slot.

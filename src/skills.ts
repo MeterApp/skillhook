@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { parseFrontmatter } from "./frontmatter.js";
 import { ClaudePermissionModeSchema, CodexSandboxSchema, CommandSpecSchema, RunnerNameSchema, type RunnerName } from "./config.js";
+import { FallbackSchema, RetrySchema } from "./runners/failure.js";
 import { defaultSecretEnvFor } from "./env.js";
 import { isValidTimeZone, parseCron, type CronSpec } from "./schedule.js";
 import { errorMessage, isDirectory, isValidSkillName } from "./util.js";
@@ -150,6 +151,10 @@ export const SkillhookBlockSchema = z
       .strict()
       .optional(),
     shell: z.object({ command: CommandSpecSchema }).strict().optional(),
+    /** Another runner when this one cannot run: `runners` in order of preference, `on` says when (`not_ready`: not installed or not logged in, checked before the run, the default; `auth`, `usage_limit`, `rate_limit`, `crash`: after a run failed that way before the agent produced anything, safe only for idempotent skills). Default: `defaults.fallback` in skillhook.json. */
+    fallback: FallbackSchema.optional(),
+    /** Run again on the same runner after a failure of the listed kinds (default rate_limit and crash), at most `attempts` more times, `backoff_seconds` (30) apart. Only safe for idempotent skills. */
+    retry: RetrySchema.optional(),
     /** How the running agent reaches the job API (progress, asking a person, the outcome): `mcp` (default for claude and codex) injects a per-run MCP server with `job_*` tools, `cli` relies on `skillhook job …` (always available; the default for shell), `none` mentions neither. */
     agent_api: z.enum(["mcp", "cli", "none"]).optional(),
     /** How long `job_ask_human` / `skillhook job ask` waits for a live answer by default (seconds; the job's timeout is paused meanwhile). Default 300. */

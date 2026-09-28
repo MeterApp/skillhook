@@ -12,6 +12,8 @@ import { JobStore, type JobRecord } from "./jobs.js";
 import { silentLogger, type Logger } from "./logger.js";
 import type { Paths } from "./paths.js";
 import { JobQueue } from "./queue.js";
+import { ReadinessCache } from "./readiness.js";
+import { baseRunEnv } from "./runners/env.js";
 import { createAdhocJob, createManualJob, type AdhocRunInput, type ManualRunInput } from "./manual.js";
 import { resolveRunSettings } from "./run.js";
 import { publicJob } from "./server.js";
@@ -284,7 +286,8 @@ export function describeProject(project: LoadedProject): string {
 /** Runs an already created job in this process (a private queue) and resolves when it finishes or `waitMs` elapses. */
 export async function runJobLocally(ops: Ops, job: JobRecord, options: { waitMs?: number; timeoutSeconds: number }): Promise<JobRecord> {
   const config = { ...ops.config, concurrency: 1 };
-  const queue = new JobQueue({ store: ops.store, config, registry: ops.registry, secrets: ops.secrets, fileSecrets: ops.fileSecrets, logger: ops.logger });
+  const readiness = new ReadinessCache({ config: () => config, env: () => baseRunEnv({ secrets: ops.secrets(), fileSecrets: ops.fileSecrets(), processEnv: process.env }), ttlMs: () => config.health.readiness_cache_seconds * 1000 });
+  const queue = new JobQueue({ store: ops.store, config, registry: ops.registry, secrets: ops.secrets, fileSecrets: ops.fileSecrets, logger: ops.logger, readiness });
   queue.enqueue(job);
   const finished = await queue.waitFor(job.id, options.waitMs ?? (options.timeoutSeconds + 30) * 1000);
   return finished ?? ops.store.require(job.id);

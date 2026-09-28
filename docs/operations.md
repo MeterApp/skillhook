@@ -211,6 +211,8 @@ Once the cause is fixed (a secret pasted, a filter corrected, a skill installed)
 | `jobs.dedupe_window_seconds` | `86400` | Replay window. |
 | `jobs.dedupe_in_flight` | `true` | Fold a delivery identical to a queued or running job of the same skill into that job; skills override with `dedupe.in_flight`. |
 | `jobs.inline_payload_max_bytes` | `200000` | Payload size inlined in prompts. |
+| `defaults.fallback` | none | `{ "runners": ["codex"], "on": ["not_ready"] }`: fallback runners for every skill that sets no `fallback:` of its own ([runners.md](runners.md#fallback-and-retry)). |
+| `health.readiness_cache_seconds` | `60` | How long a runner's readiness (installed, logged in) is trusted before a job re-checks it. |
 | `health.cache_seconds` | `60` | How long the running server reuses a health report (`GET /health/checks`, `skillhook health`, MCP `get_health`) before probing again; `refresh` bypasses it. |
 | `health.probe_timeout_seconds` | `20` | How long one slow probe may take (`claude mcp list` connects to every server; `codex doctor`). |
 | `deliveries.max` | `2000` | Records kept in the delivery log (`jobs/.delivery-log`). |
@@ -334,6 +336,10 @@ The directory name and `name:` differ, the name has uppercase letters or undersc
 ### Job ends as `interrupted` after a restart
 
 The server (or the machine) stopped while the agent was running; the process was terminated and the job marked `interrupted` with `server restarted while the job was running` or `server shut down while the job was running`. If a session id was captured, `skillhook jobs resume <id>` reopens the agent session; otherwise re-send the delivery (`skillhook send <skill> --payload @<home>/jobs/<id>/payload.json`).
+
+### Job fails at once with `<runner> is not ready`
+
+The readiness check found the runner not installed or not logged in (`failure.kind: auth` or `not_found`, no process was started). `skillhook runners` shows what it saw and the hint; `claude login` / `codex login` as the user that runs the server, or an API key in `.env`, fixes it, and a `fallback:` runner in the skill (or `defaults.fallback`) keeps such jobs running meanwhile.
 
 ### Job fails at once with `Working directory does not exist`
 

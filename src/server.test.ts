@@ -6,6 +6,8 @@ import { loadConfig } from "./config.js";
 import { DeliveryLog } from "./delivery-log.js";
 import { Events } from "./events.js";
 import { HealthCache } from "./health.js";
+import { ReadinessCache } from "./readiness.js";
+import { baseRunEnv } from "./runners/env.js";
 import { JobStore } from "./jobs.js";
 import { silentLogger } from "./logger.js";
 import { JobQueue } from "./queue.js";
@@ -21,6 +23,8 @@ let base = "";
 let queue: JobQueue;
 let store: JobStore;
 let events: Events;
+let readiness: ReadinessCache;
+let ENV_BASE: Record<string, string> = {};
 const recordFile = path.join(paths.home, "record.json");
 const projectDir = path.join(paths.home, "repo");
 const ADMIN = "admin-token-123";
@@ -51,7 +55,7 @@ beforeAll(async () => {
     rate_limit: { requests_per_minute: 1000, auth_failures_per_minute: 50 },
     runners: { claude: { command: FAKE_CLAUDE }, codex: { command: FAKE_CODEX } },
   });
-  writeEnv(paths, {
+  ENV_BASE = {
     SKILLHOOK_ADMIN_TOKEN: ADMIN,
     SKILLHOOK_SECRET_HELLO: "hello-secret",
     GH_SECRET: "gh-secret",
@@ -76,10 +80,18 @@ beforeAll(async () => {
     SKILLHOOK_SECRET_ASKALONE: "alone",
     FAKE_CLAUDE_ASK: "Deploy A or B?",
     FAKE_CLAUDE_ASK_WAIT_MS: "4000",
-  });
+    SKILLHOOK_SECRET_FLAKY: "fl",
+    SKILLHOOK_SECRET_RETRIER: "re",
+    SKILLHOOK_SECRET_FALLBACKY: "fb",
+    FAKE_CLAUDE_FAIL_KIND: "rate_limit",
+  };
+  writeEnv(paths, ENV_BASE);
   // `asker` would time out after 2 s but waits up to 4 s for a person: the clock has to pause while it waits.
   writeSkill(paths, "asker", "description: ask\nskillhook:\n  timeout_seconds: 2\n  human_wait_seconds: 20\n  env: [FAKE_CLAUDE_ASK, FAKE_CLAUDE_ASK_WAIT_MS]");
   writeSkill(paths, "askalone", "description: alone\nskillhook:\n  timeout_seconds: 30\n  env: [FAKE_CLAUDE_ASK, FAKE_CLAUDE_ASK_WAIT_MS]");
+  writeSkill(paths, "flaky", "description: fl\nskillhook:\n  env: [FAKE_CLAUDE_FAIL_KIND]\n  fallback:\n    runners: [codex]\n    on: [not_ready, rate_limit]");
+  writeSkill(paths, "retrier", "description: re\nskillhook:\n  env: [FAKE_CLAUDE_FAIL_KIND]\n  retry:\n    attempts: 1\n    on: [rate_limit]\n    backoff_seconds: 0");
+  writeSkill(paths, "fallbacky", "description: fb\nskillhook:\n  fallback:\n    runners: [codex]");
   writeSkill(paths, "structured", "description: st\nskillhook:\n  response:\n    mode: structured\n  env: [FAKE_CLAUDE_OUTCOME]");
   writeSkill(paths, "filer", "description: fi\nskillhook:\n  env: [FAKE_CLAUDE_WRITE_RESPONSE]");
   writeSkill(paths, "codexst", "description: cs\nskillhook:\n  runner: codex\n  response:\n    mode: structured\n  env: [FAKE_CODEX_OUTCOME]");
@@ -107,10 +119,11 @@ beforeAll(async () => {
   const secrets = () => loadSecrets(paths, {});
   events = new Events(silentLogger);
   const deliveryLog = new DeliveryLog(paths.jobsDir, () => config.deliveries);
-  queue = new JobQueue({ store, config, registry, secrets, fileSecrets: secrets, logger: silentLogger, events, processEnv: { ...process.env, SKILLHOOK_BIN: "skillhook-test-bin" }, progressPollMs: 100 });
+  readiness = new ReadinessCache({ config: () => config, env: () => baseRunEnv({ secrets: secrets(), fileSecrets: secrets(), processEnv: process.env }), ttlMs: () => 60_000, events });
+  queue = new JobQueue({ store, config, registry, secrets, fileSecrets: secrets, logger: silentLogger, events, processEnv: { ...process.env, SKILLHOOK_BIN: "skillhook-test-bin" }, progressPollMs: 100, readiness });
   const scheduler = new Scheduler({ registry, store, queue, config, logger: silentLogger, now: () => new Date("2026-09-23T10:00:00Z"), events });
   const health = new HealthCache(paths, { ttlMs: () => 60_000, options: () => ({ env: { SKILLHOOK_NO_UPDATE_CHECK: "1" }, exposure: false, service: false, live: () => ({ started_at: new Date().toISOString(), queue: queue.stats() }) }), events });
-  server = createServer({ config, paths, store, queue, registry, secrets, logger: silentLogger, events, deliveryLog, health, schedules: () => scheduler.status() });
+  server = createServer({ config, paths, store, queue, registry, secrets, logger: silentLogger, events, deliveryLog, health, readiness, schedules: () => scheduler.status() });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const address = server.address();
   base = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
@@ -734,6 +747,76 @@ describe("HTTP surface", () => {
     const first = JSON.parse(got[0]!.data) as { data: { report: { deep: boolean }; changed: { name: string; from: string | null; to: string }[] } };
     expect(first.data.report.deep).toBe(false);
     expect(first.data.changed.find((c) => c.name === "node")).toEqual({ name: "node", from: null, to: "ok" });
+  });
+
+  it("classifies failures, retries on the same runner and falls back to another after a failed run", async () => {
+    const auth = { authorization: `Bearer ${ADMIN}` };
+    const retried = await json(await fetch(`${base}/hooks/retrier?wait=20`, { method: "POST", body: "{}", headers: { authorization: "Bearer re" } }));
+    expect(retried).toMatchObject({ status: "failed", outcome: "failed" });
+    const retriedJob = store.get(String(retried.job_id))!;
+    expect(retriedJob.failure).toEqual({ kind: "rate_limit", code: "error_during_execution", retryable: true, message: expect.stringContaining("429") });
+    expect(retriedJob.attempts).toHaveLength(1);
+    expect(retriedJob.attempts?.[0]).toMatchObject({ runner: "claude", status: "failed", failure: { kind: "rate_limit" } });
+    expect(retriedJob.runner).toBe("claude");
+    expect(retriedJob.runner_requested).toBeUndefined();
+    expect(readFileSync(store.pathsFor(retriedJob.id).stdout, "utf8")).toContain("--- attempt 2 (claude) ---");
+    const fell = await json(await fetch(`${base}/hooks/flaky?wait=20`, { method: "POST", body: "{}", headers: { authorization: "Bearer fl" } }));
+    expect(fell).toMatchObject({ status: "succeeded", outcome: "unknown" });
+    const fellJob = store.get(String(fell.job_id))!;
+    expect(fellJob).toMatchObject({ runner: "codex", runner_requested: "claude", runner_reason: "fallback: claude failed (rate_limit)" });
+    expect(fellJob.attempts).toEqual([expect.objectContaining({ runner: "claude", status: "failed", failure: expect.objectContaining({ kind: "rate_limit" }) })]);
+    expect(fellJob.failure).toBeUndefined();
+    expect(String(fell.result)).toContain("FAKE CODEX OK");
+    const failed = await json(await fetch(`${base}/hooks/failing?wait=20`, { method: "POST", body: "{}", headers: { authorization: "Bearer x" } }));
+    expect(store.get(String(failed.job_id))?.failure).toEqual({ kind: "unknown", code: "error", retryable: false, message: "simulated failure" });
+    const byKind = (await json(await fetch(`${base}/jobs?failure=rate_limit`, { headers: auth }))) as unknown as { jobs: { id: string; failure: { kind: string } }[] };
+    expect(byKind.jobs.map((j) => j.id)).toContain(retriedJob.id);
+    expect(byKind.jobs.every((j) => j.failure.kind === "rate_limit")).toBe(true);
+    expect((await fetch(`${base}/jobs?failure=nope`, { headers: auth })).status).toBe(400);
+  });
+
+  it("checks runner readiness before a job: a logged-out runner falls back or fails fast", async () => {
+    const auth = { authorization: `Bearer ${ADMIN}` };
+    const before = (await json(await fetch(`${base}/runners`, { headers: auth }))) as unknown as { runners: { runner: string; ready: boolean; version?: string }[]; default_runner: string };
+    expect(before.default_runner).toBe("claude");
+    expect(before.runners.map((r) => [r.runner, r.ready])).toEqual([
+      ["claude", true],
+      ["codex", true],
+      ["shell", true],
+    ]);
+    expect(before.runners[0]?.version).toBe("2.1.270");
+    expect((await fetch(`${base}/runners`, { headers: { "x-forwarded-for": "203.0.113.1" } })).status).toBe(401);
+    // Claude logs out (the job environment sees CLAUDE_CONFIG_DIR from .env, like a real install).
+    const loggedOut = path.join(paths.home, "claude-logged-out");
+    mkdirSync(loggedOut, { recursive: true });
+    writeFileSync(path.join(loggedOut, "logged-out"), "");
+    writeEnv(paths, { ...ENV_BASE, CLAUDE_CONFIG_DIR: loggedOut });
+    try {
+      const stream = await fetch(`${base}/events?types=runners.changed`, { headers: auth });
+      const refreshed = (await json(await fetch(`${base}/runners?refresh=1`, { headers: auth }))) as unknown as { runners: { runner: string; ready: boolean; authenticated: boolean | null; hint?: string }[] };
+      expect(refreshed.runners[0]).toMatchObject({ runner: "claude", ready: false, authenticated: false, hint: expect.stringContaining("claude login") });
+      expect(refreshed.runners[1]).toMatchObject({ runner: "codex", ready: true });
+      const changed = await readSse(stream, (event) => event.event === "runners.changed" && (JSON.parse(event.data) as { data: { runner: string } }).data.runner === "claude", 10_000);
+      expect((JSON.parse(changed.at(-1)!.data) as { data: { readiness: { ready: boolean }; previous: { ready: boolean } } }).data).toMatchObject({ readiness: { ready: false }, previous: { ready: true } });
+      // With a fallback the job runs on codex; without one it fails before spawning anything.
+      const fell = await json(await fetch(`${base}/hooks/fallbacky?wait=20`, { method: "POST", body: "{}", headers: { authorization: "Bearer fb" } }));
+      expect(fell).toMatchObject({ status: "succeeded" });
+      expect(store.get(String(fell.job_id))).toMatchObject({ runner: "codex", runner_requested: "claude", runner_reason: "fallback: claude not logged in" });
+      expect(store.get(String(fell.job_id))?.attempts).toBeUndefined();
+      const fast = await json(await fetch(`${base}/hooks/hello?wait=20`, { method: "POST", body: '{"name":"NoAuth"}', headers: { authorization: "Bearer hello-secret", "content-type": "application/json" } }));
+      expect(fast).toMatchObject({ status: "failed", outcome: "failed" });
+      const fastJob = store.get(String(fast.job_id))!;
+      expect(fastJob.error).toContain("claude is not ready: not logged in");
+      expect(fastJob.failure).toEqual({ kind: "auth", retryable: false, message: "not logged in" });
+      expect(fastJob.command).toBeUndefined();
+      expect(fastJob.started_at).toBeDefined();
+    } finally {
+      writeEnv(paths, ENV_BASE);
+    }
+    const restored = (await json(await fetch(`${base}/runners?refresh=1`, { headers: auth }))) as unknown as { runners: { runner: string; ready: boolean }[] };
+    expect(restored.runners[0]).toMatchObject({ runner: "claude", ready: true });
+    const ok = await json(await fetch(`${base}/hooks/hello?wait=20`, { method: "POST", body: '{"name":"Back"}', headers: { authorization: "Bearer hello-secret", "content-type": "application/json" } }));
+    expect(ok.status).toBe("succeeded");
   });
 
   it("pages and filters jobs", async () => {

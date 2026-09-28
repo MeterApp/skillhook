@@ -6,6 +6,8 @@ import type { HealthChange, HealthReport } from "./health.js";
 import type { JobRecord } from "./jobs.js";
 import type { Logger } from "./logger.js";
 import type { JobAnswer, JobQuestion, ProgressEntry } from "./progress.js";
+import type { RunnerReadiness } from "./readiness.js";
+import type { RunnerName } from "./config.js";
 import type { SkipReason } from "./scheduler.js";
 import type { ServerState } from "./server.js";
 import type { SkillSource } from "./skills.js";
@@ -36,11 +38,13 @@ export interface EventMap {
   "skill.changed": { name: string; action: "added" | "changed" | "removed"; source: SkillSource };
   /** A fresh health report whose checks differ from the previous one (or the first report of that flavour). */
   "health.changed": { report: HealthReport; changed: HealthChange[] };
+  /** A runner became usable or stopped being so (installed, logged in), as the readiness check before jobs sees it. */
+  "runners.changed": { runner: RunnerName; readiness: RunnerReadiness; previous?: RunnerReadiness };
 }
 
 export type EventType = keyof EventMap;
 
-export const EVENT_TYPES: EventType[] = ["server.started", "server.stopping", "delivery.received", "job.queued", "job.started", "job.updated", "job.cancelled", "job.finished", "job.progress", "job.waiting_human", "job.answered", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed", "health.changed"];
+export const EVENT_TYPES: EventType[] = ["server.started", "server.stopping", "delivery.received", "job.queued", "job.started", "job.updated", "job.cancelled", "job.finished", "job.progress", "job.waiting_human", "job.answered", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed", "health.changed", "runners.changed"];
 
 export interface SkillhookEvent<K extends EventType = EventType> {
   /** Increases by one per event in this process; `GET /events` sends it as the SSE id. */

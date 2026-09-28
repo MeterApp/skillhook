@@ -5,6 +5,7 @@ import { idToDate, isJobId, newJobId } from "./ids.js";
 import type { Trigger, WebhookEvent } from "./payload.js";
 import { payloadJson } from "./prompt.js";
 import type { JobAnswer, JobProgress, JobQuestion } from "./progress.js";
+import type { FailureKind, JobFailure } from "./runners/failure.js";
 import { jobOutcome, type JobOutcome, type JobResponse } from "./response.js";
 import { ensureDir, nowIso, readJsonFileOr, truncate, writeJsonFile } from "./util.js";
 
@@ -70,6 +71,12 @@ export interface JobRecord {
   resolved_by?: string;
   /** Why the runner or the way of running differs from what was asked (a resume without a session, a fallback). */
   runner_reason?: string;
+  /** The runner the skill asked for, when `runner` is a fallback that took over. */
+  runner_requested?: RunnerName;
+  /** Why a job that did not succeed failed, classified from the runner's output (see docs/runners.md#failure-kinds). Set for `failed` and `timed_out` jobs. */
+  failure?: JobFailure;
+  /** Earlier attempts of this job (a retry, or a fallback after a failed run); the record itself is the last one. */
+  attempts?: JobAttempt[];
   delivery_id?: string;
   /** Hash of payload + query for in-flight de-duplication of webhook deliveries (see `deliveryFingerprint`). */
   fingerprint?: string;
@@ -145,10 +152,21 @@ export function jobPathsFor(jobsDir: string, id: string): JobPaths {
   };
 }
 
+export interface JobAttempt {
+  runner: RunnerName;
+  started_at: string;
+  finished_at: string;
+  status: JobStatus;
+  error?: string;
+  failure?: JobFailure;
+}
+
 export interface JobFilter {
   skill?: string;
   status?: JobStatus | JobStatus[];
   trigger?: Trigger | Trigger[];
+  /** Failure kind of jobs that did not succeed. */
+  failure?: FailureKind | FailureKind[];
   /** Task outcome (derived for records written before outcomes existed); queued and running jobs never match. */
   outcome?: JobOutcome | JobOutcome[];
   /** Only jobs waiting for a person: a pending question, or a finished job with outcome `needs_human` that no resume answered yet. */
@@ -305,6 +323,10 @@ export class JobStore {
         if (!outcome || !outcomes.includes(outcome)) continue;
       }
       if (filter.waiting && !isWaitingForHuman(job)) continue;
+      if (filter.failure) {
+        const kinds = Array.isArray(filter.failure) ? filter.failure : [filter.failure];
+        if (!job.failure || !kinds.includes(job.failure.kind)) continue;
+      }
       out.push(job);
       if (out.length >= limit) break;
     }

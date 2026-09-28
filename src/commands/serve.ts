@@ -2,6 +2,8 @@ import { DeliveryLog } from "../delivery-log.js";
 import { ADMIN_TOKEN_ENV, readEnvFile } from "../env.js";
 import { Events } from "../events.js";
 import { HealthCache } from "../health.js";
+import { ReadinessCache } from "../readiness.js";
+import { baseRunEnv } from "../runners/env.js";
 import { JobQueue } from "../queue.js";
 import { createLogger } from "../logger.js";
 import { Scheduler } from "../scheduler.js";
@@ -21,11 +23,12 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   const store = ctx.store();
   const deliveryLog = new DeliveryLog(ctx.paths.jobsDir, () => config.deliveries);
   const secrets = () => ctx.secrets();
-  const queue = new JobQueue({ store, config, registry, secrets, fileSecrets: () => readEnvFile(ctx.paths.envFile), logger, events });
+  const readiness = new ReadinessCache({ config: () => config, env: () => baseRunEnv({ secrets: secrets(), fileSecrets: readEnvFile(ctx.paths.envFile), processEnv: ctx.io.env }), ttlMs: () => config.health.readiness_cache_seconds * 1000, events });
+  const queue = new JobQueue({ store, config, registry, secrets, fileSecrets: () => readEnvFile(ctx.paths.envFile), logger, events, readiness });
   const scheduler = new Scheduler({ registry, store, queue, config, logger, events });
   const startedAt = new Date().toISOString();
   const health = new HealthCache(ctx.paths, { ttlMs: () => config.health.cache_seconds * 1000, options: () => ({ env: ctx.io.env, timeoutMs: config.health.probe_timeout_seconds * 1000, live: () => ({ started_at: startedAt, queue: queue.stats() }) }), events });
-  const server = createServer({ config, paths: ctx.paths, store, queue, registry, secrets, logger, events, deliveryLog, health, schedules: () => scheduler.status() });
+  const server = createServer({ config, paths: ctx.paths, store, queue, registry, secrets, logger, events, deliveryLog, health, readiness, schedules: () => scheduler.status() });
 
   const loaded = registry.list();
   for (const error of loaded.errors) logger.error("skill failed to load", { skill: error.name, error: error.error });

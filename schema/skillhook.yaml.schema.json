@@ -544,6 +544,76 @@
             ],
             "additionalProperties": false
           },
+          "fallback": {
+            "type": "object",
+            "properties": {
+              "runners": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "claude",
+                    "codex",
+                    "shell"
+                  ]
+                }
+              },
+              "on": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "not_ready",
+                    "auth",
+                    "usage_limit",
+                    "rate_limit",
+                    "crash"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "runners"
+            ],
+            "additionalProperties": false
+          },
+          "retry": {
+            "type": "object",
+            "properties": {
+              "attempts": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              },
+              "on": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "auth",
+                    "usage_limit",
+                    "rate_limit",
+                    "budget",
+                    "max_turns",
+                    "not_found",
+                    "timeout",
+                    "crash",
+                    "unknown"
+                  ]
+                }
+              },
+              "backoff_seconds": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "attempts"
+            ],
+            "additionalProperties": false
+          },
           "agent_api": {
             "type": "string",
             "enum": [

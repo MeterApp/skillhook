@@ -20,6 +20,7 @@ Related: [security.md](security.md) (authentication), [skills.md](skills.md) (fi
 | `GET` | `/health` | none; admin for details | Liveness. Public callers get `{ok, version}`; admin callers also get `uptime_seconds`, `queue` and `schedules`. |
 | `GET` | `/health/checks` | admin | The grouped health report (`skillhook health`), cached; `?deep=0`, `?network=1`, `?refresh=1`. |
 | `GET` | `/doctor` | admin | The quick report (`skillhook doctor`), cached; `?network=0`, `?refresh=1`. |
+| `GET` | `/runners` | admin | Is each runner installed and logged in (what a job checks before it starts); `?refresh=1`. |
 | `GET`, `HEAD` | `/hooks/<skill>` | none | `200` text when the skill exists, is enabled and has a webhook, `404` otherwise (`schedule_only` for a `webhook: false` skill). Lets providers "test" the URL. |
 | `POST`, `PUT` | `/hooks/<skill>` | the skill's `auth` | Deliver a webhook. `404 schedule_only` for a skill with `webhook: false`. |
 | `GET` | `/skills` | admin | Every skill with its effective settings. |
@@ -184,6 +185,10 @@ The report of [`skillhook health`](operations.md#health): `{checks, ok, summary,
 
 The quick flavour, as `skillhook doctor` prints it: `GET /health/checks?deep=0` with `network` on by default (`?network=0` to turn it off).
 
+## `GET /runners`
+
+`{runners: [{runner, found, path?, version?, authenticated, method?, detail, hint?, ready, checked_at}], default_runner}` for `claude`, `codex` and `shell`: whether each is installed and logged in or given an API key, as the queue checks before every job ([runners.md](runners.md#readiness)). Answers are cached for `health.readiness_cache_seconds`; `?refresh=1` probes again.
+
 ## `GET /skills`
 
 ```json
@@ -278,7 +283,7 @@ curl -sS -X POST -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" -H "Content-T
 
 ## `GET /jobs`
 
-Query: `skill=<name>`, `status=<queued|running|succeeded|failed|timed_out|cancelled|interrupted>`, `outcome=<completed|partial|needs_human|nothing_to_do|failed|unknown>` (derived for jobs recorded before outcomes existed; queued and running jobs never match), `trigger=<webhook|api|cli|mcp|schedule|replay|test|resume>`, `waiting=1` (only jobs waiting for a person: an unanswered question, or a finished job with outcome `needs_human` that nobody answered or resumed yet), `since=<ISO-8601>` (created at or after; whole seconds), `after=<job id>` (only older jobs: the `next_after` of the previous page), `limit=<n>` (default 50, at most 500). Newest first. An unknown `status`, `outcome`, `trigger` or `since` value is `400 bad_request`.
+Query: `skill=<name>`, `status=<queued|running|succeeded|failed|timed_out|cancelled|interrupted>`, `outcome=<completed|partial|needs_human|nothing_to_do|failed|unknown>` (derived for jobs recorded before outcomes existed; queued and running jobs never match), `trigger=<webhook|api|cli|mcp|schedule|replay|test|resume>`, `failure=<auth|usage_limit|rate_limit|budget|max_turns|not_found|timeout|crash|unknown>` (jobs that failed that way, see [runners.md](runners.md#failure-kinds)), `waiting=1` (only jobs waiting for a person: an unanswered question, or a finished job with outcome `needs_human` that nobody answered or resumed yet), `since=<ISO-8601>` (created at or after; whole seconds), `after=<job id>` (only older jobs: the `next_after` of the previous page), `limit=<n>` (default 50, at most 500). Newest first. An unknown `status`, `outcome`, `trigger` or `since` value is `400 bad_request`.
 
 ```json
 {
@@ -364,7 +369,7 @@ A `text/event-stream` of the server's event bus. Each message carries `id` (the 
 |---|---|
 | `server.started`, `server.stopping` | `{state}` (the `server.json` record) and `{reason, running}` |
 | `job.queued`, `job.started`, `job.finished` | `{job}` |
-| `job.updated` | `{job, fields}`: `pid`, `session_id`, `resume_command` captured while running |
+| `job.updated` | `{job, fields}`: `pid`, `session_id`, `resume_command` captured while running; `runner`, `runner_requested`, `runner_reason` when a fallback runner takes over; `attempts` when a run is repeated |
 | `job.cancelled` | `{job, state}` with `state` `queued` or `running`; `job.finished` follows |
 | `job.progress` | `{job, entry}`: the agent reported progress, a note or its outcome (`entry` is the `progress.jsonl` line) |
 | `job.waiting_human` | `{job, question}`: the agent asked a person and waits |
@@ -374,6 +379,7 @@ A `text/event-stream` of the server's event bus. Each message carries `id` (the 
 | `schedule.skipped` | `{skill, slot, reason}`: `in_flight`, `caught_up`, `too_old` or `duplicate` |
 | `skill.changed` | `{name, action, source}` with `action` `added`, `changed` or `removed`, noticed when a lookup or listing reads the changed file |
 | `health.changed` | `{report, changed}`: a fresh health report whose checks differ from the previous one of the same flavour (`changed` lists `{name, from, to}`; the first report of a flavour has `from: null`) |
+| `runners.changed` | `{runner, readiness, previous?}`: a runner became usable or stopped being so (installed, logged in), as the readiness check sees it |
 
 ```bash
 curl -sN -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" "http://127.0.0.1:8787/events?types=job.finished,schedule.fired"
@@ -468,7 +474,10 @@ The same for an earlier job, whatever its trigger: its `event.json` (payload, re
 | `answer` | object, optional | The person's answer: `{"question_id"?, "text", "option"?, "by"?, "at"}`. |
 | `resume_of`, `resume` | optional | For `trigger: resume`: the job whose answer this run carries, and `{"session_id", "runner"}` when that job's session is continued (absent when the skill had to run afresh; `runner_reason` then says why). |
 | `resolved_by` | string, optional | The resume job an answer to this job started. |
-| `runner_reason` | string, optional | Why the run differs from what was asked (for now: a resume without a session). |
+| `runner_reason` | string, optional | Why the run differs from what was asked: a resume without a session, or a fallback runner (`fallback: claude not logged in`, `fallback: claude failed (rate_limit)`). |
+| `runner_requested` | string, optional | The runner the skill asked for, when `runner` is a fallback that took over. |
+| `failure` | object, optional | For `failed` and `timed_out` jobs: `{"kind", "code"?, "retryable", "message"?}` with `kind` one of `auth`, `usage_limit`, `rate_limit`, `budget`, `max_turns`, `not_found`, `timeout`, `crash`, `unknown` ([runners.md](runners.md#failure-kinds)). |
+| `attempts` | array, optional | Earlier runs of this job that a `retry:` or `fallback:` repeated: `[{runner, started_at, finished_at, status, error?, failure?}]`; the record itself is the last attempt. |
 | `adhoc` | `true`, optional | The SKILL.md came with the request (`POST /skills/test`, `skillhook run --file`) and lives in `jobs/<id>/skill/<name>/`. |
 | `skill_file` | string, optional | The `SKILL.md` (or `skillhook.yaml`) the job ran from. |
 | `delivery_id` | string, optional | Provider delivery id when known; `schedule:<wall-clock slot>` for scheduled runs. |
@@ -483,7 +492,7 @@ The same for an earlier job, whatever its trigger: its `event.json` (payload, re
 |---|---|---|
 | 200 | — | Result available, duplicate, skipped, Slack challenge, admin reads, successful cancel. |
 | 202 | — | Job queued (or still running after `wait`). |
-| 400 | `bad_request` | `/skills/<skill>/run` body is not a JSON object; unknown `?types=` (`/events`), `?streams=` (`/jobs/<id>/events`), `?status=`/`?trigger=` (`/jobs`), `?outcome=` (`/deliveries`) or malformed `?since=` value; `/skills/test` without `skill_md`; `/jobs/<id>/answer` without `answer` or with a `resume` other than `auto`/`never`. |
+| 400 | `bad_request` | `/skills/<skill>/run` body is not a JSON object; unknown `?types=` (`/events`), `?streams=` (`/jobs/<id>/events`), `?status=`/`?trigger=` (`/jobs`), `?outcome=` (`/deliveries`) or malformed `?since=` value; `/skills/test` without `skill_md`; `/jobs/<id>/answer` without `answer` or with a `resume` other than `auto`/`never`; an unknown `?failure=` kind (`/jobs`). |
 | 400 | `invalid_skill_document` | `/skills/test`: the SKILL.md does not validate (the message says why). |
 | 401 | `missing_token`, `invalid_token`, `missing_credentials`, `invalid_credentials`, `missing_signature`, `invalid_signature`, `missing_timestamp`, `invalid_timestamp`, `stale_timestamp` | Webhook authentication failed. |
 | 401 | `unauthorized` | Admin route without a valid token. |

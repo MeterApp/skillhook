@@ -2,6 +2,8 @@
 // Emulates `claude -p --output-format stream-json`: reads the prompt from stdin and prints
 // stream-json events. Controlled through env vars the test passes via env_passthrough:
 //   FAKE_CLAUDE_FAIL=<message>  -> emit an is_error result and exit 1
+//   FAKE_CLAUDE_FAIL_KIND=<auth|usage_limit|rate_limit|max_turns|budget> -> the failure the real CLI prints for it (also `auth`
+//                                  when CLAUDE_CONFIG_DIR/logged-out exists, like a logged-out install)
 //   FAKE_CLAUDE_SLEEP_MS=<ms>   -> delay before answering (timeout/cancel tests)
 //   FAKE_CLAUDE_RECORD=<file>   -> write argv, prompt, env and cwd as JSON for assertions
 //   FAKE_CLAUDE_OUTCOME=<o>     -> the `outcome` of the structured_output emitted when --json-schema is present
@@ -117,6 +119,19 @@ if (process.env.FAKE_CLAUDE_ASK && process.env.SKILLHOOK_JOB_DIR && !args.includ
 
 if (process.env.FAKE_CLAUDE_FAIL) {
   out({ type: "result", subtype: "error", is_error: true, result: process.env.FAKE_CLAUDE_FAIL, session_id: sessionId, total_cost_usd: 0, num_turns: 1, duration_ms: 5 });
+  process.exit(1);
+}
+const failKind = process.env.FAKE_CLAUDE_FAIL_KIND ?? (stateFile("logged-out") !== undefined ? "auth" : undefined);
+if (failKind) {
+  // Captured shapes: the real CLI reports an auth failure as `subtype: success` with `is_error: true`.
+  const canned = {
+    auth: { subtype: "success", result: "Failed to authenticate: OAuth session expired and could not be refreshed" },
+    usage_limit: { subtype: "success", result: "You've hit your usage limit. Your limit will reset at 3pm (UTC)." },
+    rate_limit: { subtype: "error_during_execution", result: 'API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit."}}' },
+    max_turns: { subtype: "error_max_turns", result: "Reached max turns (1)" },
+    budget: { subtype: "error_max_budget_usd", result: "Reached max budget ($0.01)" },
+  }[failKind] ?? { subtype: "success", result: `simulated ${failKind} failure` };
+  out({ type: "result", is_error: true, ...canned, session_id: sessionId, total_cost_usd: 0, num_turns: 1, duration_ms: 5 });
   process.exit(1);
 }
 if (process.env.FAKE_CLAUDE_WRITE_RESPONSE && process.env.SKILLHOOK_JOB_DIR) writeFileSync(`${process.env.SKILLHOOK_JOB_DIR}/response.json`, process.env.FAKE_CLAUDE_WRITE_RESPONSE);
