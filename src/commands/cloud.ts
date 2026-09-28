@@ -1,7 +1,8 @@
 import { adminRequest, findRunningServer, readServerState } from "../client.js";
-import { assertSecureCloudUrl, CLOUD_TOKEN_ENV, cloudDisabledByEnv, resolveCloudUrl } from "../cloud/config.js";
+import { assertSecureCloudUrl, CLOUD_PRIVATE_KEY_ENV, CLOUD_TOKEN_ENV, cloudDisabledByEnv, resolveCloudUrl } from "../cloud/config.js";
 import { CloudHttpError } from "../cloud/http.js";
 import { clearLinkCredentials, machineInfo, pairMachine, revokeToken, writeLinkCredentials } from "../cloud/pair.js";
+import { machineKeyPair, publicKeyOf, SealError } from "../cloud/seal.js";
 import { readEnvFile } from "../env.js";
 import { bool, CommandError, str, UsageError, type Ctx } from "./shared.js";
 
@@ -41,14 +42,23 @@ export async function cloudCommand(ctx: Ctx): Promise<number> {
       if (config.cloud.enabled && config.cloud.machine_id && existingToken && !bool(ctx.flags, "force")) throw new CommandError(`Already connected to ${resolveCloudUrl(env, config.cloud)} as machine ${config.cloud.machine_id}. Use --force to pair again, or: skillhook cloud disconnect`);
       const mode = bool(ctx.flags, "control") ? "control" : "observe";
       const state = readServerState(ctx.paths);
+      // The machine's own key pair (kept across re-pairing): the cloud seals values for this machine to its public half.
+      const storedKey = readEnvFile(ctx.paths.envFile)[CLOUD_PRIVATE_KEY_ENV];
+      let keys: { publicKey: string; privateKey: string };
+      try {
+        keys = storedKey ? { publicKey: publicKeyOf(storedKey), privateKey: storedKey } : machineKeyPair();
+      } catch (error) {
+        if (!(error instanceof SealError)) throw error;
+        keys = machineKeyPair();
+      }
       let response;
       try {
-        response = await pairMachine({ url, code, token, mode, machine: machineInfo(state, config.public_url), previousMachineId: config.cloud.machine_id });
+        response = await pairMachine({ url, code, token, mode, machine: machineInfo(state, config.public_url), previousMachineId: config.cloud.machine_id, publicKey: keys.publicKey });
       } catch (error) {
         if (error instanceof CloudHttpError) throw new CommandError(`Pairing with ${url} failed: ${error.code}: ${error.message}`);
         throw error;
       }
-      writeLinkCredentials(ctx.paths, { token: response.machine_token, machineId: response.machine_id, url, mode: response.mode });
+      writeLinkCredentials(ctx.paths, { token: response.machine_token, machineId: response.machine_id, url, mode: response.mode, privateKey: keys.privateKey });
       const running = await findRunningServer(ctx.paths);
       if (running) await notifyReload(ctx, running.baseUrl);
       const lines = [

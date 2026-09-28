@@ -530,6 +530,8 @@ describe("cli", () => {
       expect(connect.out()).not.toContain(fake.token);
       expect(fake.pairs[1]).toMatchObject({ code: fake.code, requested_mode: "control", machine: { os: process.platform } });
       expect(readFileSync(paths.envFile, "utf8")).toContain(`SKILLHOOK_CLOUD_TOKEN=${fake.token}`);
+      expect(readFileSync(paths.envFile, "utf8")).toContain("SKILLHOOK_CLOUD_PRIVATE_KEY=");
+      expect(fake.pairs[1]?.public_key).toMatch(/^[A-Za-z0-9_-]{43}$/);
       expect((JSON.parse(readFileSync(paths.configFile, "utf8")) as { cloud: unknown }).cloud).toMatchObject({ enabled: true, machine_id: fake.machineId, mode: "control", url: fake.url });
       const again = io(env);
       expect(await main(["cloud", "connect", "--code", fake.code, ...dir, "--json"], again.cli)).toBe(1);
@@ -552,6 +554,7 @@ describe("cli", () => {
       expect(off.json()).toMatchObject({ ok: true, was_enabled: true, token_removed: true, revoked: true });
       expect(fake.disconnects).toBe(1);
       expect(readFileSync(paths.envFile, "utf8")).not.toContain("SKILLHOOK_CLOUD_TOKEN");
+      expect(readFileSync(paths.envFile, "utf8")).not.toContain("SKILLHOOK_CLOUD_PRIVATE_KEY");
       expect((JSON.parse(readFileSync(paths.configFile, "utf8")) as { cloud: { enabled: boolean; machine_id?: string } }).cloud).toMatchObject({ enabled: false });
       const after = io(env);
       await main(["doctor", ...dir, "--json"], after.cli);

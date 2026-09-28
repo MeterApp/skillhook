@@ -195,7 +195,7 @@ export const COMMAND_ARGS = {
   "config.patch": z.object({ set: z.record(z.string(), z.unknown()).optional(), unset: z.array(z.string().max(200)).max(100).optional() }).strict(),
   "secret.list": z.object({}).strict(),
   "secret.generate": z.object({ name: z.string().min(1).max(100), force: z.boolean().optional(), recipient_key: z.string().max(200).optional() }).strict(),
-  "secret.set": z.object({ name: z.string().min(1).max(100), sealed: z.object({ ciphertext: z.string(), nonce: z.string(), ephemeral_public_key: z.string() }).strict() }).strict(),
+  "secret.set": z.object({ name: z.string().min(1).max(100), sealed: z.object({ recipient_key: z.string().max(200).optional(), ephemeral_public_key: z.string().min(1).max(200), nonce: z.string().min(1).max(64), ciphertext: z.string().min(1).max(64 * 1024) }).strict() }).strict(),
   "service.status": z.object({}).strict(),
   "service.restart": z.object({ when: z.enum(["idle", "now"]).optional(), wait_seconds: z.number().int().min(0).max(600).optional() }).strict(),
   "logs.tail": z.object({ lines: z.number().int().min(1).max(2000).optional() }).strict(),

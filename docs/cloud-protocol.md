@@ -10,7 +10,7 @@ Outbound HTTPS from the machine only:
 |---|---|
 | `POST /api/agent/pair` | `PairRequest` (a pairing code from the dashboard, or a token) → `PairResponse` (`machine_id`, `machine_token` shown once, `mode`, `dashboard_url`). |
 | `POST /api/agent/sync` | `SyncRequest` → `SyncResponse` (or `SyncError`). The machine's heartbeat, event upload, command channel and hosted-ingress channel, all in one; `wait: true` lets the cloud hold the request up to `LIMITS.long_poll_seconds` (25) when it has nothing to say. `Authorization: Bearer <machine_token>`, `x-skillhook-protocol: 1`. |
-| `PUT /api/agent/artifacts/<job>/<name>` | Chunked upload of a job artifact (`Content-Range`, `LIMITS.artifact_chunk_bytes` per request, `LIMITS.max_artifact_bytes` total, sha256). |
+| `PUT /api/agent/artifacts/<job>/<name>` | Chunked upload of a job artifact for `job.artifact`: `application/octet-stream` bodies of `LIMITS.artifact_chunk_bytes` (1 MiB), in order, each with `Content-Range: bytes <start>-<end>/<total>` and `x-skillhook-sha256` (hex SHA-256 of the whole, already scrubbed, file); at most `LIMITS.max_artifact_bytes` (32 MiB). |
 | `POST /api/agent/disconnect` | Revoke the token (`skillhook cloud disconnect`). |
 
 ## `SyncRequest`
@@ -41,6 +41,19 @@ Outbound HTTPS from the machine only:
 | `notice?` | A line for the server log. |
 
 Errors are `SyncError` `{ok: false, error, message?, retry_after_ms?, min_protocol_version?}` with HTTP status: `401 invalid_token` and `403 machine_disabled` stop the link until the config or the token changes; `413 payload_too_large` halves the batch; `426 upgrade_required` retries in ten minutes; `429 rate_limited` honours `retry_after_ms`; `5xx` and network errors back off exponentially (1 s to 60 s with full jitter).
+
+## Transient output
+
+`job.watch` makes the machine send `job.output` events with `seq: null` and an id of the form `<machine_id>:out:<uuid>`: `{job_id, stream, offset, chunk, eof?, status?, expired?}`. They ride along with the next sync, are never spooled to disk and are not re-sent if that request fails.
+
+## Command results worth knowing
+
+- `skill.run`, `skill.test`, `delivery.replay`, `job.replay`, `schedule.run`: `{accepted: true, job_id, …}` (a replay whose filters do not match: `{accepted: false, skipped: true, reason}`); the job itself is followed through its events.
+- `job.answer`: `{job_id, delivered: live|resumed|recorded, answer, resume_job_id}`.
+- `config.patch`: `{applied, restart_required_keys, pending_restart}`.
+- `secret.generate`: `{secret_env, existed, generated}` with the value in the result's `sealed` field only, `sensitive: true`.
+- `job.artifact`: `{job_id, name, bytes, text, truncated}` inline, or `{job_id, name, uploaded: true, bytes, sha256, chunks}`.
+- `service.restart`: `{restarting: true, when, wait_seconds, running}`; the restart begins once a sync response acknowledges this result (or 15 seconds later).
 
 ## Ordering and idempotency
 

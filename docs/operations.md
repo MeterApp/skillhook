@@ -21,6 +21,7 @@ Related: [exposure.md](exposure.md) (public URL), [security.md](security.md) (se
 │   ├── .delivery-log/      every webhook received (deliveries.jsonl) and the bodies of refused ones (bodies/), see Delivery log
 │   ├── .schedules.json     per schedule: last slot handled, last job and its status
 │   ├── .cloud/             the Skillhook Cloud link's spool: outbox.jsonl + state.json (events not yet acknowledged), commands.json, ingress.json
+│   ├── .removed-skills/    skills removed from the Skillhook Cloud dashboard (skill.delete), kept for restoring
 │   └── <job id>/           one directory per job (see Jobs)
 └── logs/
     └── service.log         server output when run by launchd / systemd

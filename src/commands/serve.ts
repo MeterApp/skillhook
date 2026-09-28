@@ -1,3 +1,4 @@
+import { createControlHandlers } from "../cloud/control.js";
 import { CloudLink } from "../cloud/link.js";
 import { localBaseUrl } from "../client.js";
 import { ConfigRef } from "../config.js";
@@ -95,7 +96,9 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   writeServerState(ctx.paths, state);
   events.emit("server.started", { state });
   // The cloud link idles until `skillhook cloud connect` enabled it (docs/cloud.md); it re-reads the config every few seconds.
-  link = new CloudLink({ paths: ctx.paths, config, secrets, fileSecrets: () => readEnvFile(ctx.paths.envFile), events, logger, registry, store, deliveryLog, schedules: () => scheduler.status(), health, readiness, serverState: () => state, localBaseUrl: () => localBaseUrl({ host, port: boundPort }), env: ctx.io.env, queueStats: () => queue.stats(), runningJobs: () => queue.stats().running_ids });
+  const fileSecrets = () => readEnvFile(ctx.paths.envFile);
+  const cloudControl = createControlHandlers({ paths: ctx.paths, config, configRef, secrets, fileSecrets, registry, store, deliveryLog, queue, events, logger, serverControl: control });
+  link = new CloudLink({ paths: ctx.paths, config, secrets, fileSecrets, events, logger, registry, store, deliveryLog, schedules: () => scheduler.status(), health, readiness, serverState: () => state, localBaseUrl: () => localBaseUrl({ host, port: boundPort }), env: ctx.io.env, queueStats: () => queue.stats(), runningJobs: () => queue.stats().running_ids, control: cloudControl });
   link.start();
   logger.info("skillhook listening", { url: `http://${host}:${boundPort}`, public_url: config.public_url, skills: loaded.skills.map((s) => s.name), concurrency: config.concurrency, home: ctx.paths.home, version: VERSION });
   if (config.public_url) for (const skill of loaded.skills) logger.info("webhook url", { skill: skill.name, url: `${config.public_url}/hooks/${skill.name}` });

@@ -8,7 +8,7 @@ import type { Paths } from "../paths.js";
 import type { ServerState } from "../server.js";
 import { nowIso } from "../util.js";
 import { VERSION } from "../version.js";
-import { CLOUD_TOKEN_ENV } from "./config.js";
+import { CLOUD_PRIVATE_KEY_ENV, CLOUD_TOKEN_ENV } from "./config.js";
 import { cloudRequest } from "./http.js";
 import { cloudStateDir } from "./outbox.js";
 import { PairResponseSchema, PROTOCOL_VERSION, type MachineInfo, type MachineMode, type PairRequest, type PairResponse } from "./protocol.js";
@@ -52,11 +52,14 @@ export interface LinkCredentials {
   machineId: string;
   url: string;
   mode: MachineMode;
+  /** The machine's X25519 private key (values the cloud seals to this machine open with it). */
+  privateKey?: string;
 }
 
 /** Token first (in `.env`, mode 600), then the addressing keys, then `cloud.enabled: true`, so a crash in between never leaves an enabled link without a token. */
 export function writeLinkCredentials(paths: Paths, credentials: LinkCredentials): void {
   upsertEnvVar(paths.envFile, CLOUD_TOKEN_ENV, credentials.token);
+  if (credentials.privateKey) upsertEnvVar(paths.envFile, CLOUD_PRIVATE_KEY_ENV, credentials.privateKey);
   ensureSecretFileMode(paths.envFile);
   updateConfig(paths, { set: { "cloud.url": credentials.url, "cloud.machine_id": credentials.machineId, "cloud.mode": credentials.mode } });
   updateConfig(paths, { set: { "cloud.enabled": true } });
@@ -65,7 +68,10 @@ export function writeLinkCredentials(paths: Paths, credentials: LinkCredentials)
 /** The reverse order: the link is disabled first; the spool is deleted; the token goes unless asked to keep it. */
 export function clearLinkCredentials(paths: Paths, options: { keepToken?: boolean } = {}): void {
   updateConfig(paths, { set: { "cloud.enabled": false }, unset: ["cloud.machine_id"] });
-  if (!options.keepToken) removeEnvVar(paths.envFile, CLOUD_TOKEN_ENV);
+  if (!options.keepToken) {
+    removeEnvVar(paths.envFile, CLOUD_TOKEN_ENV);
+    removeEnvVar(paths.envFile, CLOUD_PRIVATE_KEY_ENV);
+  }
   rmSync(cloudStateDir(paths.jobsDir), { recursive: true, force: true });
 }
 

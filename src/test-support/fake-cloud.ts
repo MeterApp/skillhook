@@ -33,6 +33,8 @@ export class FakeCloud {
   /** Answer 413 to a sync that carries more events than this. */
   maxEventsPerRequest = Number.POSITIVE_INFINITY;
   tooLarge = 0;
+  /** Artifact uploads by `<job>/<name>`: the chunks in arrival order, their Content-Range and the announced sha256. */
+  readonly artifacts = new Map<string, { chunks: Buffer[]; ranges: string[]; sha256: string | undefined }>();
   private readonly commands: Command[] = [];
   private readonly ingress: IngressItem[] = [];
   private readonly waiters: { predicate: () => boolean; resolve: () => void }[] = [];
@@ -105,6 +107,19 @@ export class FakeCloud {
       if (parsed.data.code && parsed.data.code !== this.code) return this.reply(res, 404, { ok: false, error: "unknown_code", message: "that pairing code is unknown or expired" });
       if (parsed.data.token && parsed.data.token !== this.token) return this.reply(res, 401, { ok: false, error: "invalid_token", message: "bad token" });
       return this.reply(res, 200, { ok: true, machine_id: this.machineId, machine_token: this.token, mode: parsed.data.requested_mode, account: { org: "Fake Org", org_slug: "fake" }, dashboard_url: `${this.url}/o/fake`, protocol_version: 1, min_protocol_version: 1 });
+    }
+    if (req.method === "PUT" && url.pathname.startsWith("/api/agent/artifacts/")) {
+      if (req.headers.authorization !== `Bearer ${this.token}`) return this.reply(res, 401, { ok: false, error: "invalid_token", message: "bad token" });
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk as Buffer);
+      const key = decodeURIComponent(url.pathname.slice("/api/agent/artifacts/".length));
+      const entry = this.artifacts.get(key) ?? { chunks: [], ranges: [], sha256: undefined };
+      entry.chunks.push(Buffer.concat(chunks));
+      entry.ranges.push(String(req.headers["content-range"] ?? ""));
+      entry.sha256 = typeof req.headers["x-skillhook-sha256"] === "string" ? req.headers["x-skillhook-sha256"] : entry.sha256;
+      this.artifacts.set(key, entry);
+      this.notify();
+      return this.reply(res, 200, { ok: true });
     }
     if (req.method === "POST" && url.pathname === "/api/agent/disconnect") {
       this.disconnects++;

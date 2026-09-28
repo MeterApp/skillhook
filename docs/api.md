@@ -532,7 +532,7 @@ Query: `since=<24h|7d|2w|ISO-8601>` (default: everything on disk, newest 5000 jo
 | `skill_file` | string, optional | The `SKILL.md` (or `skillhook.yaml`) the job ran from. |
 | `delivery_id` | string, optional | Provider delivery id when known; `schedule:<wall-clock slot>` for scheduled runs. |
 | `fingerprint` | string, optional | SHA-256 of the payload and query string of a webhook delivery; what the in-flight duplicate check compares. |
-| `source` | object | `ip`, `method` (`POST`, `PUT`, `LOCAL` for CLI/MCP runs, `SCHEDULE` for scheduled runs, `REPLAY` for replays, whose `ip` is the original sender's, `TEST` for ad-hoc runs, `RESUME` for resumed runs), `path`, `content_type`, `user_agent`. |
+| `source` | object | `ip`, `method` (`POST`, `PUT`, `LOCAL` for CLI/MCP runs, `SCHEDULE` for scheduled runs, `REPLAY` for replays, whose `ip` is the original sender's, `TEST` for ad-hoc runs, `RESUME` for resumed runs, `CLOUD` for runs started from Skillhook Cloud), `path`, `content_type`, `user_agent`. |
 
 `job.json` on disk also contains `command` (the exact argv); API responses omit it.
 

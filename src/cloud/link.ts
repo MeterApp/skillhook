@@ -3,13 +3,14 @@
 // them, and reports back next time. Nothing runs unless `cloud.enabled` is true, a token is in `.env` and
 // `SKILLHOOK_NO_CLOUD` is not set; the loop re-reads those every iteration, so `skillhook cloud connect` and
 // `disconnect` take effect within seconds. See docs/cloud.md and docs/cloud-protocol.md.
-import { randomInt } from "node:crypto";
+import { createHash, randomInt, randomUUID } from "node:crypto";
+import { closeSync, openSync, readSync, statSync } from "node:fs";
 import type { Config } from "../config.js";
 import { readDeliveryBody, type DeliveryLog } from "../delivery-log.js";
 import { upsertEnvVar, type Secrets } from "../env.js";
 import type { Events, EventType, SkillhookEvent } from "../events.js";
 import type { HealthCache } from "../health.js";
-import type { JobRecord, JobStore } from "../jobs.js";
+import { isTerminal, type JobRecord, type JobStore } from "../jobs.js";
 import type { Logger } from "../logger.js";
 import type { Paths } from "../paths.js";
 import type { ReadinessCache } from "../readiness.js";
@@ -17,13 +18,13 @@ import type { SkillRegistry } from "../registry.js";
 import type { ScheduleStatus } from "../scheduler.js";
 import { publicJob, type ServerState } from "../server.js";
 import { errorMessage, nowIso } from "../util.js";
-import { createCommandDispatcher, type CommandDeps, type CommandDispatcher, type CommandHandler } from "./commands.js";
+import { CommandError, createCommandDispatcher, type CommandDeps, type CommandDispatcher, type CommandHandler } from "./commands.js";
 import { CLOUD_TOKEN_ENV, cloudDisabledByEnv, isSecureCloudUrl, resolveCloudUrl, type CloudPolicy } from "./config.js";
 import { CloudHttpError, cloudRequest } from "./http.js";
 import { processIngressItem } from "./ingress.js";
 import { CommandLedger, IngressLedger, Outbox } from "./outbox.js";
 import { machineInfo } from "./pair.js";
-import { LIMITS, PROTOCOL_VERSION, SyncResponseSchema, type CloudEventType, type CommandType, type Hints, type LinkReason, type LinkState, type LinkStatus, type SyncRequest, type SyncResponse } from "./protocol.js";
+import { LIMITS, PROTOCOL_VERSION, SyncResponseSchema, type CloudEventType, type CommandType, type EventEnvelope, type Hints, type LinkReason, type LinkState, type LinkStatus, type SyncRequest, type SyncResponse } from "./protocol.js";
 import { capText, redactUpload, scrubSecrets, secretValues } from "./redact.js";
 import { buildSnapshot } from "./snapshot.js";
 
@@ -68,6 +69,26 @@ export interface LinkTiming {
 /** A single event larger than this is replaced by a note (it would never fit a request). */
 const MAX_EVENT_BYTES = 1024 * 1024;
 const PROGRESS_COALESCE_MS = 5_000;
+/** Watched output is read this often, at most this much per job and tick. */
+const WATCH_TICK_MS = 2_000;
+const WATCH_CHUNK_BYTES = 64 * 1024;
+/** Transient `job.output` events waiting for the next sync; the oldest go first when a cloud is slow. */
+const MAX_TRANSIENT = 100;
+/** A deferred action (a restart) runs even if the cloud never confirms it has the result. */
+const AFTER_ACK_FALLBACK_MS = 15_000;
+
+/** How many bytes of `buf` end on a complete UTF-8 character. */
+function utf8SafeLength(buf: Buffer): number {
+  let end = buf.length;
+  for (let back = 1; back <= Math.min(3, buf.length); back++) {
+    const byte = buf[buf.length - back] as number;
+    if ((byte & 0xc0) === 0x80) continue; // continuation byte: keep looking for the lead byte
+    const needed = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+    if (needed > back) end = buf.length - back;
+    break;
+  }
+  return end;
+}
 
 const DEFAULT_TIMING: LinkTiming = { disabledPollMs: 5_000, syncTimeoutMs: 35_000, backoffMinMs: 1_000, backoffMaxMs: 60_000, revokedRetryMs: 300_000, upgradeRetryMs: 600_000, stopSyncTimeoutMs: 3_000 };
 
@@ -106,6 +127,12 @@ export class CloudLink {
   private receivedCommands: string[] = [];
   /** Per job, the last `job.progress` uploaded, to send at most one progress line per job every few seconds. */
   private readonly progressSent = new Map<string, { at: number; state: string }>();
+  /** Actions waiting for the cloud to acknowledge a command's result. */
+  private readonly afterAcks = new Map<string, { fn: () => void; timer: NodeJS.Timeout }>();
+  /** Jobs whose output streams to the cloud (`job.watch`). */
+  private readonly watches = new Map<string, { stream: "stdout" | "stderr"; offset: number; until: number }>();
+  private watchTimer?: NodeJS.Timeout;
+  private transient: EventEnvelope[] = [];
   private hints: Hints = {};
   private lastSnapshotAt = 0;
   private lastHealthAt = 0;
@@ -140,6 +167,9 @@ export class CloudLink {
       uploadPayloads: () => this.uploadPayloads(),
       uploadArtifacts: () => this.uploadArtifacts(),
       control: deps.control,
+      afterAck: (commandId, fn) => this.afterAck(commandId, fn),
+      upload: (jobId, name, data) => this.upload(jobId, name, data),
+      watch: { start: (jobId, stream, ttlSeconds) => this.watchStart(jobId, stream, ttlSeconds), stop: (jobId) => this.watchStop(jobId) },
     };
     this.dispatcher = createCommandDispatcher(commandDeps);
   }
@@ -154,7 +184,7 @@ export class CloudLink {
       mode: cloud.mode,
       outbox_depth: this.outbox.depth(),
       dropped_total: this.outbox.droppedTotal(),
-      watched_jobs: 0,
+      watched_jobs: this.watches.size,
       enabled: cloud.enabled && !cloudDisabledByEnv(this.env()),
       url: resolveCloudUrl(this.env(), cloud),
       machine_id: cloud.machine_id ?? null,
@@ -184,6 +214,9 @@ export class CloudLink {
     this.running = false;
     this.unsubscribe?.();
     this.unsubscribe = undefined;
+    if (this.watchTimer) clearInterval(this.watchTimer);
+    this.watchTimer = undefined;
+    this.watches.clear();
     this.wake();
     this.inflight?.abort();
     // A command still running (a deep health probe) must not hold up a shutdown for long.
@@ -209,6 +242,117 @@ export class CloudLink {
   // ---- internals
 
   private inflightIdle = false;
+
+  private afterAck(commandId: string, fn: () => void): void {
+    const timer = setTimeout(() => this.runAfterAck(commandId), AFTER_ACK_FALLBACK_MS);
+    timer.unref();
+    this.afterAcks.set(commandId, { fn, timer });
+  }
+
+  private runAfterAck(commandId: string): void {
+    const entry = this.afterAcks.get(commandId);
+    if (!entry) return;
+    this.afterAcks.delete(commandId);
+    clearTimeout(entry.timer);
+    try {
+      entry.fn();
+    } catch (error) {
+      this.deps.logger.error("deferred cloud command action failed", { command: commandId, error: errorMessage(error) });
+    }
+  }
+
+  /** `PUT /api/agent/artifacts/<job>/<name>` in chunks with `Content-Range` and the whole file's sha256 on each. */
+  private async upload(jobId: string, name: string, data: Buffer): Promise<{ bytes: number; sha256: string; chunks: number }> {
+    const token = this.deps.secrets()[CLOUD_TOKEN_ENV];
+    if (!token) throw new CommandError("unavailable", "not connected to the cloud");
+    const url = resolveCloudUrl(this.env(), this.deps.config.cloud);
+    const sha256 = createHash("sha256").update(data).digest("hex");
+    let chunks = 0;
+    try {
+      for (let start = 0; start < data.length; start += LIMITS.artifact_chunk_bytes) {
+        const end = Math.min(data.length, start + LIMITS.artifact_chunk_bytes);
+        await cloudRequest(url, `/api/agent/artifacts/${encodeURIComponent(jobId)}/${encodeURIComponent(name)}`, { method: "PUT", token, raw: { body: data.subarray(start, end), contentType: "application/octet-stream", headers: { "content-range": `bytes ${start}-${end - 1}/${data.length}`, "x-skillhook-sha256": sha256 } }, fetchImpl: this.deps.fetchImpl, timeoutMs: 60_000 });
+        chunks++;
+      }
+    } catch (error) {
+      throw new CommandError("unavailable", `upload failed after ${chunks} chunk(s): ${errorMessage(error)}`);
+    }
+    return { bytes: data.length, sha256, chunks };
+  }
+
+  private watchStart(jobId: string, stream: "stdout" | "stderr", ttlSeconds: number): { watching: number } {
+    if (!this.watches.has(jobId) && this.watches.size >= LIMITS.max_watched_jobs) throw new CommandError("conflict", `at most ${LIMITS.max_watched_jobs} jobs are watched at once`);
+    const existing = this.watches.get(jobId);
+    this.watches.set(jobId, { stream, offset: existing?.stream === stream ? existing.offset : 0, until: Date.now() + ttlSeconds * 1000 });
+    if (!this.watchTimer) {
+      this.watchTimer = setInterval(() => this.pumpWatches(), WATCH_TICK_MS);
+      this.watchTimer.unref();
+    }
+    this.pumpWatches();
+    return { watching: this.watches.size };
+  }
+
+  private watchStop(jobId: string): boolean {
+    const had = this.watches.delete(jobId);
+    if (!this.watches.size && this.watchTimer) {
+      clearInterval(this.watchTimer);
+      this.watchTimer = undefined;
+    }
+    return had;
+  }
+
+  /** Reads what the watched jobs wrote since last time and queues it as `job.output` (complete lines while the job runs). */
+  private pumpWatches(): void {
+    const machineId = this.deps.config.cloud.machine_id;
+    if (!machineId) return;
+    const values = secretValues(this.deps.fileSecrets());
+    for (const [jobId, watch] of [...this.watches]) {
+      const job = this.deps.store.get(jobId);
+      const finished = !job || isTerminal(job.status);
+      const file = this.deps.store.pathsFor(jobId)[watch.stream];
+      let size = 0;
+      try {
+        size = statSync(file).size;
+      } catch {
+        size = 0;
+      }
+      let chunk = Buffer.alloc(0);
+      const start = watch.offset;
+      if (size > watch.offset) {
+        const length = Math.min(size - watch.offset, WATCH_CHUNK_BYTES);
+        const buffer = Buffer.alloc(length);
+        const fd = openSync(file, "r");
+        try {
+          readSync(fd, buffer, 0, length, watch.offset);
+        } finally {
+          closeSync(fd);
+        }
+        let take = length;
+        const newline = buffer.lastIndexOf(0x0a);
+        if (!finished && newline >= 0) take = newline + 1;
+        else if (!finished && length < WATCH_CHUNK_BYTES) take = 0; // wait for the rest of the line
+        else take = utf8SafeLength(buffer.subarray(0, take));
+        chunk = buffer.subarray(0, take);
+        watch.offset += take;
+      }
+      const eof = finished && watch.offset >= size;
+      const expired = !eof && Date.now() > watch.until;
+      if (chunk.length || eof || expired) {
+        this.pushTransient(machineId, { job_id: jobId, stream: watch.stream, offset: start, chunk: scrubSecrets(chunk.toString("utf8"), values), ...(eof ? { eof: true, status: job?.status ?? null } : {}), ...(expired ? { expired: true } : {}) });
+      }
+      if (eof || expired) this.watches.delete(jobId);
+    }
+    if (!this.watches.size && this.watchTimer) {
+      clearInterval(this.watchTimer);
+      this.watchTimer = undefined;
+    }
+  }
+
+  private pushTransient(machineId: string, data: unknown): void {
+    this.transient.push({ id: `${machineId}:out:${randomUUID()}`, seq: null, ts: nowIso(), machine_id: machineId, type: "job.output", data });
+    if (this.transient.length > MAX_TRANSIENT) this.transient.splice(0, this.transient.length - MAX_TRANSIENT);
+    this.wake();
+  }
 
   private env(): NodeJS.ProcessEnv {
     return this.deps.env ?? process.env;
@@ -480,16 +624,18 @@ export class CloudLink {
     const commandResults = this.commandLedger.pendingResults(LIMITS.max_command_results);
     const ingressAcks = this.ingressLedger.pendingAcks(LIMITS.max_ingress_items * 5);
     const commandsReceived = this.receivedCommands;
-    const idle = options.wait && !events.length && !commandResults.length && !ingressAcks.length && !commandsReceived.length && !snapshotDue && this.hints.mode !== "idle";
+    // Watched output rides along; it is not kept if this request fails.
+    const transient = this.transient.splice(0, Math.max(0, Math.min(this.maxBatch, LIMITS.max_events_per_sync) - events.length));
+    const idle = options.wait && !events.length && !transient.length && !commandResults.length && !ingressAcks.length && !commandsReceived.length && !snapshotDue && this.hints.mode !== "idle";
     const state = this.deps.serverState();
     const request: SyncRequest = {
       protocol_version: PROTOCOL_VERSION,
       sent_at: nowIso(),
       wait: idle,
       machine: { id: machineId, ...machineInfo(state, cloud.enabled ? this.deps.config.public_url : undefined) },
-      status: { queue: this.queueStats(), running_jobs: this.runningJobs(), link: { state: this.state === "connecting" || this.state === "disabled" || this.state === "disconnected" ? "connecting" : this.state, ...(this.reason ? { reason: this.reason } : {}), mode: cloud.mode, outbox_depth: this.outbox.depth(), dropped_total: this.outbox.droppedTotal(), watched_jobs: 0 } },
+      status: { queue: this.queueStats(), running_jobs: this.runningJobs(), link: { state: this.state === "connecting" || this.state === "disabled" || this.state === "disconnected" ? "connecting" : this.state, ...(this.reason ? { reason: this.reason } : {}), mode: cloud.mode, outbox_depth: this.outbox.depth(), dropped_total: this.outbox.droppedTotal(), watched_jobs: this.watches.size } },
       ...(snapshotDue ? { snapshot: this.snapshot() } : {}),
-      events,
+      events: [...events, ...transient],
       command_results: commandResults,
       ingress_acks: ingressAcks,
       ack: { commands_received: commandsReceived },
@@ -518,6 +664,7 @@ export class CloudLink {
     if (this.maxBatch < LIMITS.max_events_per_sync && events.length >= this.maxBatch) this.maxBatch = Math.min(LIMITS.max_events_per_sync, this.maxBatch * 2);
     if (response.ack.events_through > 0) this.outbox.ack(response.ack.events_through);
     this.commandLedger.ackResults(response.ack.command_results);
+    for (const id of response.ack.command_results) this.runAfterAck(id);
     this.ingressLedger.acksSent(ingressAcks.map((a) => a.id));
     if (response.hints) this.hints = { ...this.hints, ...response.hints };
     if (response.notice) this.deps.logger.warn("notice from the cloud", { notice: response.notice });
@@ -540,7 +687,7 @@ export class CloudLink {
     const moreEvents = this.outbox.depth() > 0 && (!events.length || response.ack.events_through >= sentThrough);
     const newResults = this.commandLedger.pendingResults(LIMITS.max_command_results).some((r) => !sentResults.has(r.command_id));
     const newAcks = this.ingressLedger.pendingAcks(LIMITS.max_ingress_items * 5).some((a) => !sentAcks.has(a.id));
-    return moreEvents || newResults || newAcks || response.commands.length > 0 || response.ingress.length > 0 ? 0 : response.next_poll_ms;
+    return moreEvents || newResults || newAcks || this.transient.length > 0 || response.commands.length > 0 || response.ingress.length > 0 ? 0 : response.next_poll_ms;
   }
 
   private queueStats(): { running: number; queued: number } {

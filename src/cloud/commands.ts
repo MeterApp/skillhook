@@ -2,7 +2,7 @@
 // consulted (`commandAllowed`), the same functions the CLI and the MCP server call, results redacted and scrubbed.
 // Read commands are here; control commands (running skills, answering jobs, changing config, restarting) come with the
 // control handlers in `deps.control` and answer `unsupported_command` until a version provides them.
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { HOT_CONFIG_KEYS, RESTART_CONFIG_KEYS, type Config } from "../config.js";
 import { readDeliveryBody, type DeliveryLog } from "../delivery-log.js";
 import type { Secrets } from "../env.js";
@@ -22,7 +22,7 @@ import { updateStatusFromCache } from "../update.js";
 import { errorMessage, nowIso } from "../util.js";
 import { commandAllowed, type CloudPolicy } from "./config.js";
 import type { CommandLedger } from "./outbox.js";
-import { COMMAND_CLASS, parseCommandArgs, type Command, type CommandErrorCode, type CommandResult, type CommandType, type Snapshot } from "./protocol.js";
+import { COMMAND_CLASS, LIMITS, parseCommandArgs, type Command, type CommandErrorCode, type CommandResult, type CommandType, type Sealed, type Snapshot } from "./protocol.js";
 import { redactUpload, scrubSecrets, secretValues } from "./redact.js";
 
 export class CommandError extends Error {
@@ -55,14 +55,25 @@ export interface CommandDeps {
   /** Whether payload bodies may leave the machine (`cloud.upload_payloads` and the cloud's hint). */
   uploadPayloads: () => boolean;
   uploadArtifacts: () => boolean;
-  /** Control handlers (skill.run, job.answer, config.patch, …), when this version has them. */
+  /** Control handlers (skill.run, job.answer, config.patch, …): `createControlHandlers` in control.ts. */
   control?: Partial<Record<CommandType, CommandHandler>>;
+  /** Runs `fn` once the cloud acknowledged the command's result (a restart must not swallow its own answer). */
+  afterAck?: (commandId: string, fn: () => void) => void;
+  /** Uploads an artifact in chunks (`PUT /api/agent/artifacts/<job>/<name>`), for ones too large to inline. */
+  upload?: (jobId: string, name: string, data: Buffer) => Promise<{ bytes: number; sha256: string; chunks: number }>;
+  /** Streams a running job's output as `job.output` events. */
+  watch?: { start(jobId: string, stream: "stdout" | "stderr", ttlSeconds: number): { watching: number }; stop(jobId: string): boolean };
 }
 
 export type CommandHandler = (args: never, command: Command, deps: CommandDeps) => Promise<CommandOutcome> | CommandOutcome;
 export interface CommandOutcome {
   result: unknown;
+  /** Never cached; never scrubbed or stored in the clear by the cloud. */
   sensitive?: boolean;
+  /** A value only the requester can open (a generated secret). */
+  sealed?: Sealed;
+  /** Runs after the cloud has the result (see `CommandDeps.afterAck`). */
+  after?: () => void;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -123,15 +134,33 @@ const readHandlers: Partial<Record<CommandType, CommandHandler>> = {
     const progress = readProgress(deps.store.pathsFor(job.id).dir, { timelineLimit: 100 });
     return { result: { job: publicJob(job), artifacts, ...(progress.timeline.length || progress.question ? { progress } : {}), ...(args.include?.length && !deps.uploadArtifacts() ? { artifacts_withheld: "cloud.upload_artifacts is false on this machine" } : {}) } };
   },
-  "job.artifact": (args: Args<{ id: string; name: "stdout" | "stderr" | "prompt" | "result" | "payload" | "event" | "response"; max_inline_bytes?: number }>, _c, deps) => {
+  "job.artifact": async (args: Args<{ id: string; name: "stdout" | "stderr" | "prompt" | "result" | "payload" | "event" | "response"; max_inline_bytes?: number }>, _c, deps) => {
     if (!deps.uploadArtifacts()) throw new CommandError("denied_by_policy", "cloud.upload_artifacts is false on this machine");
     const job = deps.store.get(args.id);
     if (!job) throw new CommandError("not_found", `unknown job ${args.id}`);
+    const file = deps.store.pathsFor(job.id)[args.name];
+    if (!existsSync(file)) throw new CommandError("not_found", `job ${args.id} has no ${args.name}`);
+    const size = statSync(file).size;
     const max = args.max_inline_bytes ?? ARTIFACT_INLINE_DEFAULT;
-    const text = deps.store.readArtifact(job.id, args.name, max);
-    if (text === undefined) throw new CommandError("not_found", `job ${args.id} has no ${args.name}`);
-    return { result: { job_id: job.id, name: args.name, text, truncated: text.startsWith("…") } };
+    const values = secretValues(deps.fileSecrets());
+    if (size <= max || !deps.upload) {
+      const text = deps.store.readArtifact(job.id, args.name, max) ?? "";
+      return { result: { job_id: job.id, name: args.name, bytes: size, text: scrubSecrets(text, values), truncated: size > max } };
+    }
+    if (size > LIMITS.max_artifact_bytes) throw new CommandError("too_large", `${args.name} of job ${job.id} is ${size} bytes; at most ${LIMITS.max_artifact_bytes} are uploaded`);
+    const data = Buffer.from(scrubSecrets(readFileSync(file, "utf8"), values), "utf8");
+    const uploaded = await deps.upload(job.id, args.name, data);
+    return { result: { job_id: job.id, name: args.name, uploaded: true, ...uploaded } };
   },
+  "job.watch": (args: Args<{ id: string; ttl_s?: number; stream?: "stdout" | "stderr" }>, _c, deps) => {
+    if (!deps.uploadArtifacts()) throw new CommandError("denied_by_policy", "cloud.upload_artifacts is false on this machine");
+    if (!deps.watch) throw new CommandError("unavailable", "this server does not stream job output");
+    const job = deps.store.get(args.id);
+    if (!job) throw new CommandError("not_found", `unknown job ${args.id}`);
+    const { watching } = deps.watch.start(job.id, args.stream ?? "stdout", args.ttl_s ?? 600);
+    return { result: { job_id: job.id, stream: args.stream ?? "stdout", ttl_s: args.ttl_s ?? 600, status: job.status, watching } };
+  },
+  "job.unwatch": (args: Args<{ id: string }>, _c, deps) => ({ result: { job_id: args.id, stopped: deps.watch?.stop(args.id) ?? false } }),
   "job.progress.get": (args: Args<{ id: string }>, _c, deps) => {
     const job = deps.store.get(args.id);
     if (!job) throw new CommandError("not_found", `unknown job ${args.id}`);
@@ -172,12 +201,13 @@ export interface CommandDispatcher {
 }
 
 export function createCommandDispatcher(deps: CommandDeps): CommandDispatcher {
-  const finish = (command: Command, startedAt: string, outcome: { ok: true; result: unknown; sensitive?: boolean } | { ok: false; error: { code: CommandErrorCode; message: string; hint?: string } }): CommandResult => {
+  const finish = (command: Command, startedAt: string, outcome: { ok: true; result: unknown; sensitive?: boolean; sealed?: Sealed } | { ok: false; error: { code: CommandErrorCode; message: string; hint?: string } }): CommandResult => {
     const finished = nowIso();
     const values = secretValues(deps.fileSecrets());
     const base = { command_id: command.id, started_at: startedAt, finished_at: finished, duration_ms: Math.max(0, Date.parse(finished) - Date.parse(startedAt)) };
+    // Even a sensitive result is scrubbed of .env values: what must travel does so sealed, never in `result`.
     const result: CommandResult = outcome.ok
-      ? { ...base, ok: true, result: outcome.sensitive ? outcome.result : scrubSecrets(redactUpload(outcome.result), values), ...(outcome.sensitive ? { sensitive: true } : {}) }
+      ? { ...base, ok: true, result: scrubSecrets(redactUpload(outcome.result), values), ...(outcome.sensitive ? { sensitive: true } : {}), ...(outcome.sealed ? { sealed: outcome.sealed } : {}) }
       : { ...base, ok: false, error: { ...outcome.error, message: scrubSecrets(outcome.error.message, values) } };
     deps.ledger.complete(result);
     return result;
@@ -203,7 +233,13 @@ export function createCommandDispatcher(deps: CommandDeps): CommandDispatcher {
           Promise.resolve(handler(parsed.args as never, command, deps)),
           new Promise<never>((_, reject) => setTimeout(() => reject(new CommandError("timeout", `${command.type} took longer than ${timeoutFor(command)} ms`)), timeoutFor(command)).unref()),
         ]);
-        return finish(command, startedAt, { ok: true, result: outcome.result, sensitive: outcome.sensitive });
+        const done = finish(command, startedAt, { ok: true, result: outcome.result, sensitive: outcome.sensitive, sealed: outcome.sealed });
+        if (outcome.after) {
+          const after = outcome.after;
+          if (deps.afterAck) deps.afterAck(command.id, after);
+          else setImmediate(after);
+        }
+        return done;
       } catch (error) {
         if (error instanceof CommandError) return finish(command, startedAt, { ok: false, error: { code: error.code, message: error.message, ...(error.hint ? { hint: error.hint } : {}) } });
         deps.logger.error("cloud command failed", { command: command.id, type: command.type, error: errorMessage(error) });

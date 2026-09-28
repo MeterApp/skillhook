@@ -2,7 +2,7 @@
 
 Skillhook Cloud is the hosted control plane for machines running skillhook: every webhook and job of every machine in one place, health of the CLIs and their MCP servers, replay, stats, a playground for skills, remote configuration from a browser or from an MCP client, alerts, and hosted webhook URLs that keep deliveries while a machine is asleep. It is a separate service (`MeterApp/skillhook-cloud`); this document is about the machine side.
 
-**Status.** The link is in this version: `skillhook cloud connect` pairs a machine, the running server keeps one outbound connection to the cloud, uploads what happens, answers the read commands below and delivers webhooks that arrived at the machine's hosted URLs. Commands that act on the machine (running skills, answering jobs, changing the configuration) are refused as `unsupported_command` until the version that implements them; `cloud.mode` already decides whether they will be allowed.
+**Status.** The link is in this version: `skillhook cloud connect` pairs a machine, the running server keeps one outbound connection to the cloud, uploads what happens, runs the commands below as far as `cloud.mode` and the allow/deny lists permit, and delivers webhooks that arrived at the machine's hosted URLs.
 
 ## Principles
 
@@ -72,8 +72,35 @@ A skill can have a hosted webhook URL on the cloud (the dashboard creates it) in
 
 Read commands (both modes): `ping`, `health.get`, `snapshot.get`, `runners.get`, `skills.list`, `skill.get`, `delivery.list`, `delivery.get`, `job.list`, `job.get`, `job.artifact`, `job.watch`, `job.unwatch`, `job.progress.get`, `stats.get`, `config.get`, `secret.list` (names only), `service.status`, `logs.tail`, `schedules.list`, `update.check`, `expose.status`.
 
-Control commands (`mode: control` or an allow entry; answered `unsupported_command` by this version): `skill.put`, `skill.delete`, `skill.run`, `skill.test`, `delivery.replay`, `job.cancel`, `job.replay`, `job.answer`, `config.patch` (never `host`, `port`, `trust_proxy`, `runners.*`, `env_passthrough`, `projects`, `cloud.*`), `secret.generate` (sealed), `service.restart`, `schedule.run`, `update.install`.
+Control commands (`mode: control` or an allow entry): `skill.put`, `skill.delete`, `skill.run`, `skill.test`, `delivery.replay`, `job.cancel`, `job.replay`, `job.answer`, `config.patch`, `secret.generate`, `service.restart`, `schedule.run`, `update.install`.
 
 Results are scrubbed like events. Each command runs once: its id is remembered in `jobs/.cloud/commands.json`, and a command the cloud sends again is answered from the kept result.
+
+## Control mode
+
+**Control mode gives the cloud, and everyone with access to this machine on the dashboard, the power to run code on the machine as the user who runs skillhook:** `skill.test` runs any SKILL.md, including `runner: shell` commands and agents with `bypassPermissions`, and `skill.put` installs one. Turn it on only for machines you would give those people a shell on. `cloud.deny_commands` narrows it (for example `["skill.put", "skill.test", "update.install"]` keeps running and answering installed skills while refusing new code), and `cloud.allow_commands` lets an `observe` machine accept a few chosen ones (`["job.answer"]` to answer the agents' questions from a phone and nothing else).
+
+What each control command does, and the rules it adds on top of the policy:
+
+| Command | Effect |
+|---|---|
+| `skill.run` | Runs an installed skill with the given payload as a new job (`trigger: api`, `source.method: CLOUD`, header `x-skillhook-cloud-user` with the requester's name). Answers `{accepted, job_id}` at once; the job's progress arrives as events. |
+| `skill.test` | Runs a SKILL.md that is not installed, like `skillhook run --file` (`trigger: test`). |
+| `delivery.replay`, `job.replay` | Replays a recorded delivery or an earlier job, like `skillhook deliveries replay` / `jobs replay` (`force` for a rejected delivery, `skip_filters`). |
+| `job.cancel` | Cancels a queued or running job. |
+| `job.answer` | A person's answer to a job waiting for one: delivered live, or a new job resumes the agent's session ([skills.md](skills.md#reporting-progress-and-asking-a-person)); `by` defaults to the requester's name. |
+| `config.patch` | Changes `skillhook.json` like `PATCH /config`, except for `host`, `port`, `trust_proxy`, `runners`, `env_passthrough`, `projects` and `cloud`, which the cloud may never change. |
+| `service.restart` | Restarts a server run by launchd / systemd once the cloud has the answer (`when: idle` lets running jobs finish, up to `wait_seconds`; `now` does not wait). |
+| `schedule.run` | Fires a scheduled skill now. |
+| `update.install` | Installs a newer skillhook with the package manager that installed it; the server keeps running the old version until `service.restart`. |
+| `secret.generate` | Generates a skill's secret (or any `ENV_NAME`) and returns it only sealed to the requester's key (`recipient_key`, required); the value never travels or rests in the clear. `SKILLHOOK_CLOUD_*` names are refused. |
+| `skill.put` | Writes `skills/<name>/SKILL.md` after validating it. Never for a name that comes from a linked repository; `auth: none` needs `allow_unauthenticated`. No secret is created: `secret.generate` does that, sealed. |
+| `skill.delete` | Removes a skill of `skills/` by moving its directory to `jobs/.removed-skills/<name>-<time>/`, where it can be restored. |
+
+`secret.set` (a value sealed to this machine's key, created at pairing and kept in `.env` as `SKILLHOOK_CLOUD_PRIVATE_KEY`) is allowed only when listed in `cloud.allow_commands`, whatever the mode.
+
+## Live output and artifacts
+
+`job.watch` streams a job's `stdout` (or `stderr`) to the cloud as `job.output` events: complete lines, at most 64 KiB per job every two seconds, for at most five jobs at once, until the job ends (`eof: true` with its status) or `ttl_s` runs out (`expired: true`). `job.artifact` returns an artifact inline up to 256 KiB (`max_inline_bytes`) and uploads a larger one (up to 32 MiB) in 1 MiB chunks. Both are scrubbed of `.env` values and need `cloud.upload_artifacts`.
 
 Allow-list only: `secret.set` (a value sealed to this machine's key).

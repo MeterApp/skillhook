@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingHttpHeaders, type Server } from "node:http";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadConfig, type Config } from "../config.js";
+import { ConfigRef, loadConfig, type Config } from "../config.js";
 import { DeliveryLog } from "../delivery-log.js";
 import { loadSecrets, readEnvFile } from "../env.js";
 import { Events } from "../events.js";
@@ -12,8 +15,10 @@ import { SkillRegistry } from "../registry.js";
 import { createServer } from "../server.js";
 import { FakeCloud } from "../test-support/fake-cloud.js";
 import { FAKE_CLAUDE, tempHome, writeConfigFile, writeEnv, writeSkill } from "../test-support/helpers.js";
+import { createControlHandlers } from "./control.js";
 import { CloudLink, type LinkTiming } from "./link.js";
-import type { Command, IngressItem } from "./protocol.js";
+import type { Command, CommandResult, EventEnvelope, IngressItem } from "./protocol.js";
+import { machineKeyPair, openSealed, sealForRecipient } from "./seal.js";
 
 // Placeholder values: nothing here is a real credential.
 const SECRET = "placeholder-hello-value";
@@ -47,6 +52,9 @@ interface SetupOptions {
   env?: NodeJS.ProcessEnv;
   localBaseUrl?: () => string | undefined;
   fetchImpl?: typeof fetch;
+  /** Run jobs and accept control commands (a queue with the fake runner, the control handlers, a fake supervisor). */
+  control?: boolean;
+  extraEnv?: Record<string, string>;
 }
 
 async function setup(options: SetupOptions = {}) {
@@ -54,7 +62,7 @@ async function setup(options: SetupOptions = {}) {
   cleanups.push(() => fake.close());
   const paths = tempHome("skillhook-link-");
   writeConfigFile(paths, { runners: { claude: { command: FAKE_CLAUDE } }, cloud: { enabled: true, url: fake.url, machine_id: fake.machineId, ...options.cloud } });
-  writeEnv(paths, { SKILLHOOK_CLOUD_TOKEN: fake.token, SKILLHOOK_SECRET_HELLO: SECRET });
+  writeEnv(paths, { SKILLHOOK_CLOUD_TOKEN: fake.token, SKILLHOOK_SECRET_HELLO: SECRET, ...options.extraEnv });
   writeSkill(paths, "hello", "description: hello");
   const config = loadConfig(paths);
   const events = new Events(silentLogger);
@@ -62,9 +70,30 @@ async function setup(options: SetupOptions = {}) {
   const deliveryLog = new DeliveryLog(paths.jobsDir, () => config.deliveries);
   const registry = new SkillRegistry(paths.skillsDir);
   const secrets = () => loadSecrets(paths, {});
-  const link = new CloudLink({ paths, config, secrets, fileSecrets: () => readEnvFile(paths.envFile), events, logger: silentLogger, registry, store, deliveryLog, serverState: () => undefined, localBaseUrl: options.localBaseUrl ?? (() => undefined), env: options.env ?? {}, fetchImpl: options.fetchImpl, timing: TIMING });
+  const fileSecrets = () => readEnvFile(paths.envFile);
+  const restarts: { force: boolean; waitSeconds: number }[] = [];
+  let queue: JobQueue | undefined;
+  let control: ReturnType<typeof createControlHandlers> | undefined;
+  if (options.control) {
+    queue = new JobQueue({ store, config, registry, secrets, fileSecrets: secrets, logger: silentLogger, events });
+    const configRef = new ConfigRef(paths, config, { events });
+    control = createControlHandlers({ paths, config, configRef, secrets, fileSecrets, registry, store, deliveryLog, queue, events, logger: silentLogger, serverControl: { supervised: async () => true, restart: (o) => void restarts.push(o) }, applyUpdate: async ({ install }) => ({ ok: true, current: "0.4.0", latest: "0.4.1", available: true, checked_at: null, registry: "http://registry.invalid", cached: false, install: { method: "npm", command: "npm install -g @meterapp/skillhook@0.4.1" }, release_notes: null, installed: install, service_restarted: false, service_note: null }) });
+    const q = queue;
+    cleanups.push(() => q.shutdown());
+  }
+  const link = new CloudLink({ paths, config, secrets, fileSecrets, events, logger: silentLogger, registry, store, deliveryLog, serverState: () => undefined, localBaseUrl: options.localBaseUrl ?? (() => undefined), env: options.env ?? {}, fetchImpl: options.fetchImpl, timing: TIMING, control, queueStats: queue ? () => (queue as JobQueue).stats() : undefined });
   cleanups.push(() => link.stop("test"));
-  return { fake, paths, config, events, store, deliveryLog, registry, link, secrets };
+  return { fake, paths, config, events, store, deliveryLog, registry, link, secrets, queue, restarts };
+}
+
+async function runCommands(fake: FakeCloud, commands: Command[]): Promise<Record<string, CommandResult>> {
+  for (const command of commands) fake.queueCommand(command);
+  await fake.waitFor(() => commands.every((c) => fake.results.some((r) => r.command_id === c.id)), 15_000);
+  return Object.fromEntries(fake.results.map((r) => [r.command_id, r]));
+}
+
+function cmd(id: string, type: Command["type"], args?: unknown): Command {
+  return { id, type, ...(args === undefined ? {} : { args }), issued_at: new Date().toISOString(), requested_by: { kind: "user", name: "ada" } };
 }
 
 function event(skill: string): WebhookEvent {
@@ -308,6 +337,147 @@ describe("CloudLink", () => {
     expect(uploaded.delivery).toMatchObject({ via: "ingress", outcome: "accepted" });
     expect(JSON.parse(uploaded.body.text)).toEqual({ name: "cloud" }); // the job's payload.json, pretty-printed
     expect(JSON.stringify(fake.requests)).not.toContain(SECRET);
+  });
+
+  it("acts on the machine in control mode: runs, tests, replays, answers, patches config within bounds, restarts after the answer", async () => {
+    const { fake, link, store, paths, config, restarts, registry } = await setup({ control: true, cloud: { mode: "control" } });
+    link.start();
+    await waitUntil(() => link.status().state === "connected");
+    const first = await runCommands(fake, [cmd("run", "skill.run", { name: "hello", payload: { name: "cloud" }, model: "haiku" }), cmd("test", "skill.test", { skill_md: "---\nname: scratch\ndescription: Scratch.\n---\nTry it.\n", payload: { x: 1 } }), cmd("nosuch", "skill.run", { name: "nope" })]);
+    expect(first.run).toMatchObject({ ok: true, result: { accepted: true, skill: "hello", runner: "claude" } });
+    expect(first.test).toMatchObject({ ok: true, result: { accepted: true, skill: "scratch", adhoc: true } });
+    expect(first.nosuch).toMatchObject({ ok: false, error: { code: "not_found" } });
+    const runId = (first.run!.result as { job_id: string }).job_id;
+    await waitUntil(() => store.get(runId)?.status === "succeeded", 15_000);
+    const run = store.get(runId)!;
+    expect(run).toMatchObject({ trigger: "api", model: "haiku", source: { method: "CLOUD" } });
+    expect(store.readEvent(runId).headers).toMatchObject({ "x-skillhook-cloud-user": "ada", "user-agent": "skillhook-cloud" });
+
+    // A job that ended needing a person, answered from the dashboard: a resume job continues its session.
+    const needy = store.create({ skill: "hello", trigger: "webhook", runner: "claude", source: { ip: "203.0.113.1", method: "POST", path: "/hooks/hello", content_type: "application/json" }, event: event("hello") });
+    store.update(needy.id, { status: "succeeded", outcome: "needs_human", response: { outcome: "needs_human", summary: "Which branch?" }, session_id: "sess-placeholder", finished_at: new Date().toISOString() });
+    const second = await runCommands(fake, [
+      cmd("replay", "job.replay", { id: runId }),
+      cmd("cancel", "job.cancel", { id: runId }),
+      cmd("answer", "job.answer", { id: needy.id, answer: "main" }),
+      cmd("answer-again", "job.answer", { id: needy.id, answer: "main" }),
+      cmd("patch", "config.patch", { set: { concurrency: 3 } }),
+      cmd("patch-runner", "config.patch", { set: { "runners.claude.command": "/bin/sh" } }),
+      cmd("patch-cloud", "config.patch", { set: { "cloud.mode": "observe" } }),
+      cmd("patch-bad", "config.patch", { set: { concurrency: "lots" } }),
+      cmd("sched", "schedule.run", { name: "hello" }),
+      cmd("update", "update.install", {}),
+    ]);
+    expect(second.replay).toMatchObject({ ok: true, result: { accepted: true, replay_of: { job: runId } } });
+    expect(second.cancel).toMatchObject({ ok: false, error: { code: "conflict" } });
+    expect(second.answer).toMatchObject({ ok: true, result: { job_id: needy.id, delivered: "resumed", answer: { text: "main", by: "ada" } } });
+    expect(store.get(needy.id)?.resolved_by).toBe((second.answer!.result as { resume_job_id: string }).resume_job_id);
+    expect(second["answer-again"]).toMatchObject({ ok: false, error: { code: "conflict" } });
+    expect(second.patch).toMatchObject({ ok: true, result: { applied: ["concurrency"] } });
+    expect(config.concurrency).toBe(3);
+    expect(second["patch-runner"]).toMatchObject({ ok: false, error: { code: "denied_by_policy" } });
+    expect(second["patch-cloud"]).toMatchObject({ ok: false, error: { code: "denied_by_policy" } });
+    expect(second["patch-bad"]).toMatchObject({ ok: false, error: { code: "invalid_args" } });
+    expect(config.cloud.mode).toBe("control");
+    expect(second.sched).toMatchObject({ ok: false, error: { code: "conflict", message: expect.stringContaining("no schedule") } });
+    expect(second.update).toMatchObject({ ok: true, result: { installed: true, latest: "0.4.1" } });
+
+    // A restart waits until the cloud has the answer.
+    const third = await runCommands(fake, [cmd("restart", "service.restart", { when: "idle", wait_seconds: 5 })]);
+    expect(third.restart).toMatchObject({ ok: true, result: { restarting: true, when: "idle", wait_seconds: 5 } });
+    await waitUntil(() => restarts.length === 1);
+    expect(restarts[0]).toEqual({ force: false, waitSeconds: 5 });
+
+    // Skills written and removed from the dashboard: validated, never for a repository's hook, kept when removed.
+    const skillMd = "---\nname: cloudy\ndescription: From the cloud.\n---\nDo cloudy things.\n";
+    const fourth = await runCommands(fake, [
+      cmd("put", "skill.put", { name: "cloudy", content: skillMd }),
+      cmd("put-open", "skill.put", { name: "wide-open", content: "---\nname: wide-open\ndescription: Open.\nskillhook:\n  auth:\n    type: none\n---\nBody\n" }),
+      cmd("put-mismatch", "skill.put", { name: "other", content: skillMd }),
+    ]);
+    expect(fourth.put).toMatchObject({ ok: true, result: { name: "cloudy", created: true, secret_env: "SKILLHOOK_SECRET_CLOUDY", secret_configured: false } });
+    expect(readFileSync(path.join(paths.skillsDir, "cloudy", "SKILL.md"), "utf8")).toBe(skillMd);
+    expect(registry.get("cloudy")?.description).toBe("From the cloud.");
+    expect(fourth["put-open"]).toMatchObject({ ok: false, error: { code: "invalid_args", message: expect.stringContaining("allow_unauthenticated") } });
+    expect(fourth["put-mismatch"]).toMatchObject({ ok: false, error: { code: "invalid_args" } });
+    const fifth = await runCommands(fake, [cmd("delete", "skill.delete", { name: "cloudy" }), cmd("delete-missing", "skill.delete", { name: "cloudy-nope" })]);
+    const keptAt = (fifth.delete!.result as { kept_at: string }).kept_at;
+    expect(fifth.delete).toMatchObject({ ok: true, result: { removed: true, restorable: true } });
+    expect(existsSync(path.join(paths.skillsDir, "cloudy"))).toBe(false);
+    expect(readFileSync(path.join(keptAt, "SKILL.md"), "utf8")).toBe(skillMd);
+    expect(keptAt.startsWith(path.join(paths.jobsDir, ".removed-skills"))).toBe(true);
+    expect(fifth["delete-missing"]).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(JSON.stringify(fake.results)).not.toContain(SECRET);
+  });
+
+  it("generates secrets only sealed to whoever asked, and sets one sealed to this machine when allow-listed", async () => {
+    const machine = machineKeyPair();
+    const { fake, link, paths, config } = await setup({ control: true, cloud: { mode: "control" }, extraEnv: { SKILLHOOK_CLOUD_PRIVATE_KEY: machine.privateKey } });
+    link.start();
+    await waitUntil(() => link.status().state === "connected");
+    const requester = machineKeyPair(); // stands in for the dashboard user's browser key
+    const results = await runCommands(fake, [
+      cmd("gen", "secret.generate", { name: "hello", force: true, recipient_key: requester.publicKey }),
+      cmd("gen-plain", "secret.generate", { name: "hello", force: true }),
+      cmd("gen-cloud", "secret.generate", { name: "SKILLHOOK_CLOUD_TOKEN", force: true, recipient_key: requester.publicKey }),
+      cmd("set-denied", "secret.set", { name: "PLACEHOLDER_API_KEY", sealed: sealForRecipient("placeholder-set-value", machine.publicKey) }),
+    ]);
+    expect(results.gen).toMatchObject({ ok: true, sensitive: true, result: { secret_env: "SKILLHOOK_SECRET_HELLO", generated: true } });
+    const opened = openSealed(results.gen!.sealed!, requester.privateKey);
+    expect(readEnvFile(paths.envFile).SKILLHOOK_SECRET_HELLO).toBe(opened);
+    expect(opened).not.toBe(SECRET);
+    expect(JSON.stringify(results.gen)).not.toContain(opened);
+    expect(results["gen-plain"]).toMatchObject({ ok: false, error: { code: "invalid_args", message: expect.stringContaining("recipient_key") } });
+    expect(results["gen-cloud"]).toMatchObject({ ok: false, error: { code: "denied_by_policy" } });
+    expect(results["set-denied"]).toMatchObject({ ok: false, error: { code: "denied_by_policy", message: expect.stringContaining("allow_commands") } });
+    // The machine owner allow-lists it; the cloud still only ever sees the sealed value.
+    config.cloud.allow_commands = ["secret.set"];
+    const set = await runCommands(fake, [cmd("set", "secret.set", { name: "PLACEHOLDER_API_KEY", sealed: sealForRecipient("placeholder-set-value", machine.publicKey) }), cmd("set-garbled", "secret.set", { name: "OTHER_PLACEHOLDER", sealed: sealForRecipient("x", machineKeyPair().publicKey) })]);
+    expect(set.set).toMatchObject({ ok: true, result: { secret_env: "PLACEHOLDER_API_KEY", set: true } });
+    expect(readEnvFile(paths.envFile).PLACEHOLDER_API_KEY).toBe("placeholder-set-value");
+    expect(set["set-garbled"]).toMatchObject({ ok: false, error: { code: "invalid_args" } });
+    // The same command id again is not run twice, and a sensitive result is not kept for retries.
+    const count = fake.results.length;
+    fake.queueCommand(cmd("gen", "secret.generate", { name: "hello", force: true, recipient_key: requester.publicKey }));
+    await waitUntil(() => fake.results.length === count || fake.requests.length > 0);
+    await sleep(200);
+    expect(readEnvFile(paths.envFile).SKILLHOOK_SECRET_HELLO).toBe(opened);
+  });
+
+  it("streams a watched job's output and uploads a large artifact in chunks", async () => {
+    const { fake, link, store, paths } = await setup({ control: true, cloud: { mode: "control" }, extraEnv: { FAKE_CLAUDE_SLEEP_MS: "2500" } });
+    writeSkill(paths, "slow", "description: slow\nskillhook:\n  env: [FAKE_CLAUDE_SLEEP_MS]");
+    link.start();
+    await waitUntil(() => link.status().state === "connected");
+    const started = await runCommands(fake, [cmd("slow", "skill.run", { name: "slow" })]);
+    const jobId = (started.slow!.result as { job_id: string }).job_id;
+    await waitUntil(() => store.get(jobId)?.status === "running");
+    const watched = await runCommands(fake, [cmd("watch", "job.watch", { id: jobId, ttl_s: 60 })]);
+    expect(watched.watch).toMatchObject({ ok: true, result: { job_id: jobId, stream: "stdout", watching: 1 } });
+    const outputs = () => fake.requests.flatMap((r) => r.events).filter((e): e is EventEnvelope => e.type === "job.output" && (e.data as { job_id: string }).job_id === jobId);
+    await fake.waitFor(() => outputs().some((e) => (e.data as { eof?: boolean }).eof === true), 20_000);
+    const text = outputs().map((e) => (e.data as { chunk: string }).chunk).join("");
+    expect(text).toContain('"subtype":"init"');
+    expect(text).toContain("FAKE OK");
+    expect(outputs().every((e) => e.seq === null)).toBe(true);
+    expect(outputs().at(-1)?.data).toMatchObject({ eof: true, status: "succeeded" });
+    expect(fake.requests.some((r) => r.status.link.watched_jobs === 1)).toBe(true);
+    await waitUntil(() => link.status().watched_jobs === 0);
+
+    // An artifact larger than the inline limit goes up in chunks with its sha256.
+    const stdout = store.pathsFor(jobId).stdout;
+    const big = `${"x".repeat(1024 * 1024 + 100)}\nand ${SECRET} too\n`;
+    writeFileSync(stdout, big);
+    const art = await runCommands(fake, [cmd("art", "job.artifact", { id: jobId, name: "stdout", max_inline_bytes: 1024 }), cmd("small", "job.artifact", { id: jobId, name: "prompt" })]);
+    expect(art.art).toMatchObject({ ok: true, result: { uploaded: true, chunks: 2 } });
+    const uploaded = fake.artifacts.get(`${jobId}/stdout`)!;
+    const data = Buffer.concat(uploaded.chunks).toString("utf8");
+    expect(data).toContain("and [redacted] too");
+    expect(data).not.toContain(SECRET);
+    expect(uploaded.sha256).toBe(createHash("sha256").update(Buffer.from(data)).digest("hex"));
+    expect(uploaded.ranges[0]).toMatch(/^bytes 0-1048575\/\d+$/);
+    expect((art.art!.result as { sha256: string }).sha256).toBe(uploaded.sha256);
+    expect(art.small).toMatchObject({ ok: true, result: { name: "prompt", truncated: false, text: expect.stringContaining("# Skill: slow") } });
   });
 
   it("says goodbye with link.stopped on the way out", async () => {

@@ -11,8 +11,13 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
   deliveries, jobs, progress, schedule, config and health changes (headers redacted, command lines
   dropped, every string scrubbed of every `.env` value; bodies only with `cloud.upload_payloads` and
   at most 256 KiB), snapshots and periodic health reports; runs read commands (health, jobs,
-  deliveries, stats, logs, skills) and refuses control commands unless `cloud.mode: control` (which
-  this version does not implement yet); and replays webhooks that arrived at the machine's hosted
+  deliveries, stats, logs, skills) and, in `cloud.mode: control` or when allow-listed, the ones that
+  act on the machine (run, test, replay and cancel jobs, answer a job waiting for a person, patch the
+  configuration except the bind address, runner commands and the link itself, fire a schedule,
+  install an update, restart a service-run server once the cloud has the answer, write or remove
+  skills, generate a secret returned only sealed to the requester's key, and, allow-listed only, set a
+  secret sealed to the machine's own key); streams a watched job's output (`job.output`) and uploads
+  large artifacts in chunks; and replays webhooks that arrived at the machine's hosted
   URLs to the local server, where the signature is checked with the local secret (`via: "ingress"`
   and `ingress_id` on the delivery record). Events wait in `jobs/.cloud/` while the cloud is
   unreachable. `GET /health` (admin) reports the link as `cloud`, and doctor/health gain a
