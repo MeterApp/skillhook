@@ -63,6 +63,10 @@ describe("skillhook mcp", () => {
       expect(unpaired.text).toContain("not paired with Skillhook Cloud");
       writeConfigFile(paths, { cloud: { enabled: true, url: fake.url, machine_id: fake.machineId } });
       writeEnv(paths, { SKILLHOOK_CLOUD_TOKEN: fake.token, SKILLHOOK_SECRET_HELLO: "placeholder-hello-value" });
+      const preview = await c.call("cloud_report_issue", { title: "Webhooks fail with placeholder-hello-value", diagnostics: false, dry_run: true });
+      expect(preview.data).toEqual({ dry_run: true, url: fake.url, request: { title: "Webhooks fail with [redacted]" } });
+      expect(preview.text).toContain("Nothing was sent");
+      expect(fake.issues).toEqual([]);
       const sent = await c.call("cloud_report_issue", { title: "Webhooks fail with placeholder-hello-value", body: "Since this morning.", kind: "bug", contact_email: "ada@example.com", job_id: "20260929T101500Z-a1b2c3", diagnostics: false });
       expect(sent.isError).toBe(false);
       expect(sent.data).toEqual({ ok: true, issue_id: "iss_41", number: 41, url: `${fake.url}/o/fake/issues/41`, acknowledged: true, cloud_url: fake.url, diagnostics: null });

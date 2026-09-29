@@ -475,7 +475,7 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
     "cloud_report_issue",
     {
       title: "Report an issue to Skillhook",
-      description: "Sends a problem report to the Skillhook team through Skillhook Cloud, from this paired machine (what `skillhook cloud report` does). Use it only when the person asked to report something, and tell them what goes out: the title and body (write them from what the person said), optional kind, severity, contact_email and the job id, delivery id or skill it is about, and unless diagnostics is false the machine's facts: skillhook, Node and OS versions, cloud mode, the link's state, whether each runner is ready and the failing or warning health checks, all scrubbed of every .env value. Never payloads, logs, prompts or job output. Returns the issue number and URL and whether a confirmation email went out. Fails on a machine that is not paired (`skillhook cloud connect`) or under SKILLHOOK_NO_CLOUD.",
+      description: "Sends a problem report to the Skillhook team through Skillhook Cloud, from this paired machine (what `skillhook cloud report` does). Use it only when the person asked to report something, and tell them what goes out (dry_run: true returns exactly that without sending): the title and body (write them from what the person said), optional kind, severity, contact_email and the job id, delivery id or skill it is about, and unless diagnostics is false the machine's facts: skillhook, Node and OS versions, cloud mode, the link's state, whether each runner is ready and the failing or warning health checks, all scrubbed of every .env value. Never payloads, logs, prompts or job output. Returns the issue number and URL and whether a confirmation email went out. Fails on a machine that is not paired (`skillhook cloud connect`) or under SKILLHOOK_NO_CLOUD.",
       inputSchema: z.object({
         title: z.string().min(1).max(200),
         body: z.string().max(20_000).optional(),
@@ -486,10 +486,15 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
         delivery_id: z.string().optional(),
         skill: z.string().optional(),
         diagnostics: z.boolean().optional().describe("attach the machine's facts (default true)"),
+        dry_run: z.boolean().optional().describe("return the report that would be sent, send nothing"),
       }),
     },
-    wrap(async (input) => {
-      const { reportIssue } = await import("./cloud/report.js");
+    wrap(async ({ dry_run, ...input }) => {
+      const { buildIssueReport, reportIssue } = await import("./cloud/report.js");
+      if (dry_run) {
+        const built = await buildIssueReport(paths, env, input);
+        return ok({ dry_run: true, ...built }, `Nothing was sent; this is what would go to ${built.url}/api/agent/issues.`);
+      }
       const { issue, request, url } = await reportIssue(paths, env, input);
       return ok({ ...issue, cloud_url: url, diagnostics: request.diagnostics ?? null }, `Reported as #${issue.number}: ${issue.url}${issue.acknowledged ? " (a confirmation email was sent)" : ""}`);
     }),
