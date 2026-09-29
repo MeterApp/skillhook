@@ -11,7 +11,7 @@ Related: [exposure.md](exposure.md) (public URL), [security.md](security.md) (se
 ```text
 ~/.skillhook/
 ├── skillhook.json          server configuration (JSON Schema: schema/skillhook.schema.json in the package)
-├── .env                    secrets, mode 600: SKILLHOOK_ADMIN_TOKEN, SKILLHOOK_SECRET_<NAME>, provider secrets, API keys
+├── .env                    secrets, mode 600: SKILLHOOK_ADMIN_TOKEN, SKILLHOOK_SECRET_<NAME>, provider secrets, API keys, SKILLHOOK_CLOUD_* (docs/cloud.md)
 ├── server.json             present while a server runs: pid, host, port, started_at, version, public_url
 ├── update-check.json       what npm said at the last daily update check: checked_at, latest, current
 ├── skills/

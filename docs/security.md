@@ -31,7 +31,7 @@ What it does not defend against:
 
 By default skillhook makes one request you did not ask for: the daily update check, `GET https://registry.npmjs.org/@meterapp%2Fskillhook/latest` (no identifiers beyond a `skillhook/<version>` user agent), cached for 24 hours in `<home>/update-check.json` and run only from interactive commands, `doctor` and `serve`. Disable it with `SKILLHOOK_NO_UPDATE_CHECK=1`, `CI=1` or `"update_check": false`; `SKILLHOOK_NPM_REGISTRY` redirects it to a mirror. `skillhook update --install` runs your package manager only when you ask.
 
-The only other connection skillhook opens by itself is the Skillhook Cloud link, and only after you paired the machine with `skillhook cloud connect` (below). Everything else that leaves the machine is a request you configured: the runners talking to Anthropic/OpenAI, `skillhook send`, `expose`, and `doctor`'s probe of your own public URL.
+The only other connection skillhook opens by itself is the Skillhook Cloud link, and only after you paired the machine with `skillhook cloud connect` (below). Everything else that leaves the machine is a request you configured or asked for: the runners talking to Anthropic/OpenAI, `skillhook send`, `expose`, `doctor`'s probe of your own public URL, and the cloud commands you run: `cloud connect` / `disconnect`, `cloud report` (your text and the diagnostics [cloud.md](cloud.md#reporting-a-problem) lists, scrubbed of every `.env` value) and the API-key reads `cloud login|machines|jobs|job`, each one request to `cloud.url` over HTTPS.
 
 ### Skillhook Cloud
 
@@ -42,6 +42,8 @@ What the cloud may make the machine do is decided on the machine: `cloud.mode` (
 Secrets the dashboard asks for are generated here and sent only sealed to the requester's key (X25519 + AES-256-GCM); a secret the dashboard sends (`secret.set`, allow-list only) is sealed to this machine's key, which pairing creates and keeps in `.env`. Neither the cloud nor its database ever holds such a value in the clear.
 
 The kill switches: `cloud.enabled: false`, `SKILLHOOK_NO_CLOUD=1` in the server's environment, `skillhook cloud disconnect` (which also revokes the token and removes the machine's key). Treat the machine token like the admin token: it identifies the machine to the cloud, and whoever holds it can read what the link uploads.
+
+An organisation API key kept with `skillhook cloud login` (`SKILLHOOK_CLOUD_API_KEY` in `.env`, mode 600) reads the whole organisation with the key's scopes; keep a `fleet:read` key on a machine, not an admin one, and revoke it on the dashboard when the machine should stop reading. The machine token is never used for those reads, so pairing alone gives a machine no view of the rest of the organisation.
 
 ## Authentication schemes
 

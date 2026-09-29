@@ -38,6 +38,8 @@ export class CommandError extends Error {
 
 /** Flags that never take a value. Everything else takes the next token unless it starts with `-`. */
 const BOOLEAN_FLAGS = new Set(["json", "help", "h", "dry-run", "follow", "f", "yes", "y", "force", "pretty", "stdin", "public", "serve", "funnel", "result", "prompt", "stdout", "stderr", "exec", "all", "print-config", "quiet", "q", "version", "v", "overwrite", "no-secret", "print", "watch", "verbose", "local", "install", "check", "refresh", "body", "response", "skip-filters", "waiting", "quick", "control", "observe", "keep-token"]);
+/** Switches elsewhere that take a value in one subcommand: `cloud report --body TEXT` (`deliveries show <id> --body` is a switch). */
+const VALUE_FLAGS = new Map([["cloud report", ["body"]]]);
 
 export function parseArgs(argv: string[]): { flags: Flags; positionals: string[] } {
   const flags: Flags = {};
@@ -47,6 +49,7 @@ export function parseArgs(argv: string[]): { flags: Flags; positionals: string[]
     if (existing === undefined || typeof value === "boolean") flags[name] = value;
     else flags[name] = Array.isArray(existing) ? [...existing, value as string] : [existing as string, value as string];
   };
+  const isSwitch = (name: string) => BOOLEAN_FLAGS.has(name) && !VALUE_FLAGS.get(positionals.slice(0, 2).join(" "))?.includes(name);
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i] as string;
     if (token === "--") {
@@ -65,7 +68,7 @@ export function parseArgs(argv: string[]): { flags: Flags; positionals: string[]
         continue;
       }
       const next = argv[i + 1];
-      if (BOOLEAN_FLAGS.has(name) || next === undefined || (next.startsWith("-") && next !== "-")) setFlag(name, true);
+      if (isSwitch(name) || next === undefined || (next.startsWith("-") && next !== "-")) setFlag(name, true);
       else {
         setFlag(name, next);
         i++;
@@ -75,7 +78,7 @@ export function parseArgs(argv: string[]): { flags: Flags; positionals: string[]
     if (token.startsWith("-") && token.length > 1 && token !== "-") {
       const name = token.slice(1);
       const next = argv[i + 1];
-      if (BOOLEAN_FLAGS.has(name) || next === undefined || (next.startsWith("-") && next !== "-")) setFlag(name, true);
+      if (isSwitch(name) || next === undefined || (next.startsWith("-") && next !== "-")) setFlag(name, true);
       else {
         setFlag(name, next);
         i++;

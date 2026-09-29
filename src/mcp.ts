@@ -27,6 +27,7 @@ import { adminRequest, findRunningServer } from "./client.js";
 import { applyUpdate, updateStatusFromCache } from "./update.js";
 import { errorMessage } from "./util.js";
 import { VERSION } from "./version.js";
+import { ISSUE_KINDS, ISSUE_SEVERITIES } from "./cloud/protocol.js";
 
 export const MCP_INSTRUCTIONS = `skillhook turns this machine into a webhook endpoint that runs Agent Skills (SKILL.md files) with Claude Code or Codex.
 Typical flow: skillhook_status → create_skill (or add_example) → set_secret/generate_secret → run_skill to test locally → get_webhook_urls to hand the URL to the sender (Granola, Sentry, GitHub, Zapier…).
@@ -36,7 +37,7 @@ A \`schedule:\` key (cron expression, optional timezone/catch_up/overlap) on any
 Jobs are directories under <home>/jobs/<id> with payload.json, prompt.md, stdout.log, result.md and, when the agent reported one, response.json. A job's \`status\` says how the process ended; its \`outcome\` (completed, partial, needs_human, nothing_to_do, failed, unknown) says whether the task was done, as reported by the agent through response.json or a structured answer (\`response: { mode: structured }\` in the skill).
 Every webhook the server received, including rejected, filtered and duplicate ones, is in the delivery log: list_deliveries and get_delivery show what arrived and why it did not run; replay_delivery (or replay_job) runs it again through the skill as it is now.
 While it runs, an agent reports progress and can ask a person a question through the job API (the job_* tools of \`skillhook mcp --job\`, or \`skillhook job …\`); such jobs show \`progress\`, \`question\` and \`answer\`. list_jobs with waiting: true lists what waits for a person (an open question, or a finished job with outcome needs_human); answer_job delivers the answer to the waiting agent, or starts a new job (trigger \`resume\`) that continues the agent's session with it.
-get_health, get_runners and get_stats answer whether the CLIs, their MCP servers and the skills are healthy and how the jobs went; get_config / update_config / restart_server change the running server. cloud_status tells whether the machine is paired with Skillhook Cloud; pairing itself is only done by the person in a terminal (\`skillhook cloud connect --code …\`), never by an agent.`;
+get_health, get_runners and get_stats answer whether the CLIs, their MCP servers and the skills are healthy and how the jobs went; get_config / update_config / restart_server change the running server. cloud_status tells whether the machine is paired with Skillhook Cloud; pairing itself is only done by the person in a terminal (\`skillhook cloud connect --code …\`), never by an agent. cloud_report_issue sends a problem report to the Skillhook team from a paired machine, when the person asks for one.`;
 
 type ToolResult = { content: { type: "text"; text: string }[]; structuredContent?: Record<string, unknown>; isError?: boolean };
 
@@ -467,6 +468,35 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
         },
       });
       return ok({ ok: true, ...done }, `${done.was_enabled ? "Disconnected from" : "Was not connected to"} ${done.url}${done.revoked ? "; token revoked" : ""}`);
+    }),
+  );
+
+  server.registerTool(
+    "cloud_report_issue",
+    {
+      title: "Report an issue to Skillhook",
+      description: "Sends a problem report to the Skillhook team through Skillhook Cloud, from this paired machine (what `skillhook cloud report` does). Use it only when the person asked to report something, and tell them what goes out (dry_run: true returns exactly that without sending): the title and body (write them from what the person said), optional kind, severity, contact_email and the job id, delivery id or skill it is about, and unless diagnostics is false the machine's facts: skillhook, Node and OS versions, cloud mode, the link's state, whether each runner is ready and the failing or warning health checks, all scrubbed of every .env value. Never payloads, logs, prompts or job output. Returns the issue number and URL and whether a confirmation email went out. Fails on a machine that is not paired (`skillhook cloud connect`) or under SKILLHOOK_NO_CLOUD.",
+      inputSchema: z.object({
+        title: z.string().min(1).max(200),
+        body: z.string().max(20_000).optional(),
+        kind: z.enum(ISSUE_KINDS).optional().describe("default bug"),
+        severity: z.enum(ISSUE_SEVERITIES).optional().describe("default normal"),
+        contact_email: z.string().optional().describe("where the Skillhook team answers"),
+        job_id: z.string().optional().describe("this machine's job id the report is about"),
+        delivery_id: z.string().optional(),
+        skill: z.string().optional(),
+        diagnostics: z.boolean().optional().describe("attach the machine's facts (default true)"),
+        dry_run: z.boolean().optional().describe("return the report that would be sent, send nothing"),
+      }),
+    },
+    wrap(async ({ dry_run, ...input }) => {
+      const { buildIssueReport, reportIssue } = await import("./cloud/report.js");
+      if (dry_run) {
+        const built = await buildIssueReport(paths, env, input);
+        return ok({ dry_run: true, ...built }, `Nothing was sent; this is what would go to ${built.url}/api/agent/issues.`);
+      }
+      const { issue, request, url } = await reportIssue(paths, env, input);
+      return ok({ ...issue, cloud_url: url, diagnostics: request.diagnostics ?? null }, `Reported as #${issue.number}: ${issue.url}${issue.acknowledged ? " (a confirmation email was sent)" : ""}`);
     }),
   );
 
