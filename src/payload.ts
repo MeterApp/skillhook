@@ -115,8 +115,9 @@ export function deliveryFingerprint(input: FingerprintInput): string {
   return hash.digest("hex");
 }
 
-/** `webhook`: a delivery to `/hooks/<skill>`; `api`: `POST /skills/<skill>/run`; `cli`: `skillhook run`; `mcp`: the MCP `run_skill` tool in-process; `schedule`: the scheduler fired a `schedule:` slot. */
-export type Trigger = "webhook" | "cli" | "mcp" | "api" | "schedule";
+/** `webhook`: a delivery to `/hooks/<skill>`; `api`: `POST /skills/<skill>/run`; `cli`: `skillhook run`; `mcp`: the MCP `run_skill` tool in-process; `schedule`: the scheduler fired a `schedule:` slot; `replay`: an operator replayed an earlier delivery or job; `test`: a SKILL.md supplied with the request (`POST /skills/test`, `skillhook run --file`). */
+export type Trigger = "webhook" | "cli" | "mcp" | "api" | "schedule" | "replay" | "test" | "resume";
+export const TRIGGERS: Trigger[] = ["webhook", "cli", "mcp", "api", "schedule", "replay", "test", "resume"];
 
 /** Everything the skill learns about one delivery. Persisted as `event.json` in the job directory. */
 export interface WebhookEvent {

@@ -12,7 +12,9 @@ const PASSTHROUGH_EXACT = ["NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "HTTPS_PROXY"
 /** From the server's own environment only these credential variables pass; never a parent Claude Code session's CLAUDE_CODE_* state. */
 const PROCESS_CREDENTIAL_KEYS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_HOME", "CLAUDE_CONFIG_DIR", ...PASSTHROUGH_EXACT];
 /** Never forwarded unless a skill lists them explicitly. */
-const NEVER_IMPLICIT = /^(SKILLHOOK_ADMIN_TOKEN|SKILLHOOK_SECRET_)/;
+const NEVER_IMPLICIT = /^(SKILLHOOK_ADMIN_TOKEN|SKILLHOOK_SECRET_|SKILLHOOK_CLOUD_)/;
+/** Never forwarded at all: the cloud link's token, key and URL stay in the server process (docs/cloud.md). */
+const NEVER_EXPLICIT = /^SKILLHOOK_CLOUD_/;
 
 export function defaultPathEntries(home = homedir()): string[] {
   return [
@@ -48,7 +50,12 @@ export interface RunEnvInput {
   processEnv?: NodeJS.ProcessEnv;
 }
 
-export function buildRunEnv(input: RunEnvInput): Record<string, string> {
+/**
+ * The environment every run starts from, before a skill's own `env:` names and the job variables: session basics, the
+ * merged PATH and the runner credentials. Also what the health probes run `claude`/`codex` with, so `CLAUDE_CONFIG_DIR`,
+ * `CODEX_HOME` or an API key in `.env` apply to the diagnosis exactly as to the jobs.
+ */
+export function baseRunEnv(input: Pick<RunEnvInput, "secrets" | "fileSecrets" | "processEnv">): Record<string, string> {
   const processEnv = input.processEnv ?? process.env;
   const env: Record<string, string> = {};
   for (const key of BASE_KEYS) {
@@ -64,8 +71,14 @@ export function buildRunEnv(input: RunEnvInput): Record<string, string> {
     const value = processEnv[key];
     if (typeof value === "string" && env[key] === undefined) env[key] = value;
   }
+  return env;
+}
+
+export function buildRunEnv(input: RunEnvInput): Record<string, string> {
+  const env = baseRunEnv(input);
   const explicit = [...input.config.env_passthrough, ...(input.skill.config.env ?? [])];
   for (const key of explicit) {
+    if (NEVER_EXPLICIT.test(key)) continue;
     const value = input.secrets[key];
     if (typeof value === "string") env[key] = value;
   }

@@ -1,15 +1,32 @@
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { unlinkSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, statSync, unlinkSync } from "node:fs";
+import path from "node:path";
 import { parseAuthorizationScheme, safeEqual, verifyRequest, type InboundRequest } from "./auth.js";
-import type { Config } from "./config.js";
+import { ConfigError, configExists, HOT_CONFIG_KEYS, RESTART_CONFIG_KEYS, updateConfig, type Config, type ConfigRef } from "./config.js";
+import { DELIVERY_OUTCOMES, readDeliveryBody, type DeliveryLog, type DeliveryOutcome } from "./delivery-log.js";
 import { ADMIN_TOKEN_ENV, type Secrets } from "./env.js";
+import { EVENT_TYPES, type Events } from "./events.js";
+import type { LinkStatusView } from "./cloud/link.js";
+import { INGRESS_ID_HEADER } from "./cloud/ingress.js";
+import type { HealthCache } from "./health.js";
+import type { ReadinessCache } from "./readiness.js";
+import { readServiceLog, serviceStatus as readServiceStatus, type ServiceStatus } from "./service.js";
+import { applyUpdate, type ApplyUpdateResult } from "./update.js";
+import { FAILURE_KINDS, type FailureKind } from "./runners/failure.js";
 import { describeCondition, evaluateConditions } from "./filters.js";
 import { newJobId } from "./ids.js";
-import type { JobRecord, JobStatus, JobStore } from "./jobs.js";
+import { AnswerError, answerJob, type AnswerJobResult } from "./answer.js";
+import { isTerminal, isWaitingForHuman, JOB_ARTIFACTS, JOB_STATUSES, type JobArtifact, type JobRecord, type JobStatus, type JobStore } from "./jobs.js";
 import type { Logger } from "./logger.js";
-import { deliveryFingerprint, parseBody, redactHeaders, type Trigger, type WebhookEvent } from "./payload.js";
+import { createAdhocJob, createManualJob } from "./manual.js";
+import { deliveryFingerprint, parseBody, redactHeaders, TRIGGERS, type BodyKind, type Trigger, type WebhookEvent } from "./payload.js";
+import { readProgress } from "./progress.js";
+import { collectStats, parseSince } from "./stats.js";
+import { planReplay, ReplayError, replayOfFor, type ReplayPlan } from "./replay.js";
+import { JOB_OUTCOMES, jobOutcome, type JobOutcome } from "./response.js";
 import type { JobQueue } from "./queue.js";
 import { resolveRunSettings } from "./run.js";
+import { RunnerNameSchema } from "./config.js";
 import type { SkillRegistry } from "./registry.js";
 import { nextRun } from "./schedule.js";
 import type { ScheduleStatus } from "./scheduler.js";
@@ -29,6 +46,25 @@ export interface ServerDeps {
   logger: Logger;
   /** Live schedule state for `/health` (admin); absent when the server runs without a scheduler. */
   schedules?: () => ScheduleStatus[];
+  /** The cached health report behind `GET /health/checks` and `GET /doctor` (built by `serve`; absent means 404). */
+  health?: HealthCache;
+  /** Runner readiness behind `GET /runners` (the queue's pre-flight shares it). */
+  readiness?: ReadinessCache;
+  /** The live config behind `GET /config`, `PATCH /config` and `POST /config/reload` (built by `serve`). */
+  configRef?: ConfigRef;
+  /** `POST /control/restart` (built by `serve`; absent means 404). */
+  control?: ServerControl;
+  /** The cloud link's status for `GET /health` (admin), when `serve` runs one. */
+  cloud?: () => LinkStatusView | undefined;
+  /** Injectable for tests: the launchd / systemd status and the service log behind `GET /service` and `GET /logs`. */
+  serviceStatus?: () => Promise<ServiceStatus>;
+  serviceLog?: (lines: number) => string;
+  /** Injectable for tests: the update check and install behind `POST /update`. */
+  applyUpdate?: (options: { install: boolean }) => Promise<ApplyUpdateResult>;
+  /** The process-wide event bus: `GET /events` streams it and `GET /jobs/<id>/events` follows one job on it. */
+  events?: Events;
+  /** Where every `/hooks/<skill>` request is recorded; `GET /deliveries` reads it. Absent: nothing is recorded. */
+  deliveryLog?: DeliveryLog;
 }
 
 export interface ServerState {
@@ -54,10 +90,13 @@ class HttpError extends Error {
 /** Fixed-window counter per key; good enough to blunt brute force and accidental floods. */
 export class RateLimiter {
   private buckets = new Map<string, { count: number; resetAt: number }>();
+  private readonly limit: () => number;
   constructor(
-    private readonly limit: number,
+    limit: number | (() => number),
     private readonly windowMs = 60_000,
-  ) {}
+  ) {
+    this.limit = typeof limit === "number" ? () => limit : limit; // a getter follows config reloads
+  }
   hit(key: string, now = Date.now()): boolean {
     const bucket = this.buckets.get(key);
     if (!bucket || bucket.resetAt <= now) {
@@ -66,8 +105,15 @@ export class RateLimiter {
       return true;
     }
     bucket.count++;
-    return bucket.count <= this.limit;
+    return bucket.count <= this.limit();
   }
+}
+
+/** What `POST /control/restart` needs from `serve`: whether a supervisor brings the server back, and the stop itself. */
+export interface ServerControl {
+  supervised(): Promise<boolean>;
+  /** Stops accepting requests, lets running jobs finish (or kills them when forced), exits 0. Called after the response was sent. */
+  restart(options: { force: boolean; waitSeconds: number }): void;
 }
 
 function lowerHeaders(req: IncomingMessage): Record<string, string> {
@@ -118,6 +164,24 @@ function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
   });
 }
 
+/**
+ * Reads the body of a request that was refused before its body was needed (an unknown skill), so the delivery log can
+ * still keep it for replay. Gives up quietly on chunked or oversized bodies and after `timeoutMs`.
+ */
+function drainBody(req: IncomingMessage, maxBytes: number, timeoutMs = 2_000): Promise<Buffer | undefined> {
+  if (req.readableEnded || req.destroyed) return Promise.resolve(undefined);
+  const declared = Number(req.headers["content-length"]);
+  if (!Number.isFinite(declared) || declared <= 0 || declared > maxBytes) return Promise.resolve(undefined);
+  return Promise.race([readBody(req, maxBytes).catch(() => undefined), new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), timeoutMs).unref())]);
+}
+
+/** `?limit=` for list routes: a positive integer, `fallback` when absent or invalid, never above `cap`. */
+function pageLimit(url: URL, fallback = 50, cap = 500): number {
+  const raw = Number(url.searchParams.get("limit") ?? fallback);
+  const limit = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
+  return Math.min(limit, cap);
+}
+
 function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   const text = typeof body === "string" ? body : `${JSON.stringify(body, null, 2)}\n`;
   res.writeHead(status, {
@@ -128,6 +192,87 @@ function send(res: ServerResponse, status: number, body: unknown, headers: Recor
     ...headers,
   });
   res.end(text);
+}
+
+/** How often `GET /jobs/<id>/events` looks for new output and a finished job. */
+const STREAM_POLL_MS = 250;
+/** A stream of a job that already produced more than this starts at the tail. */
+const STREAM_TAIL_MAX = 512 * 1024;
+const SSE_HEARTBEAT_MS = 15_000;
+
+interface EventStream {
+  send(message: { id?: string; event?: string; data: unknown }): void;
+  /** Runs when the client goes away or `close()` is called. */
+  onClose(fn: () => void): void;
+  close(): void;
+  readonly closed: boolean;
+}
+
+/** Starts a `text/event-stream` response: headers now, one `data:` block per message, a comment every 15 s to keep proxies awake. */
+function openEventStream(req: IncomingMessage, res: ServerResponse): EventStream {
+  res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "x-accel-buffering": "no" });
+  res.flushHeaders();
+  res.write(": connected\n\n");
+  let closed = false;
+  const cleanups: (() => void)[] = [];
+  const heartbeat = setInterval(() => {
+    if (!closed) res.write(": ping\n\n");
+  }, SSE_HEARTBEAT_MS);
+  heartbeat.unref();
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(heartbeat);
+    for (const fn of cleanups.splice(0)) {
+      try {
+        fn();
+      } catch {
+        /* cleanup must not throw */
+      }
+    }
+    res.end();
+  };
+  res.on("close", close);
+  req.on("error", close);
+  return {
+    send(message) {
+      if (closed) return;
+      let text = "";
+      if (message.id !== undefined) text += `id: ${message.id}\n`;
+      if (message.event) text += `event: ${message.event}\n`;
+      text += `data: ${JSON.stringify(message.data)}\n\n`;
+      res.write(text);
+    },
+    onClose(fn) {
+      if (closed) fn();
+      else cleanups.push(fn);
+    },
+    close,
+    get closed() {
+      return closed;
+    },
+  };
+}
+
+/** `length` bytes of `file` from `offset`, as text. */
+function readFrom(file: string, offset: number, length: number): string {
+  if (length <= 0) return "";
+  const fd = openSync(file, "r");
+  try {
+    const buffer = Buffer.alloc(length);
+    const read = readSync(fd, buffer, 0, length, offset);
+    return buffer.subarray(0, read).toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function fileSize(file: string): number | undefined {
+  try {
+    return statSync(file).size;
+  } catch {
+    return undefined;
+  }
 }
 
 function parseWait(url: URL, headers: Record<string, string>, max: number): number {
@@ -171,8 +316,8 @@ export function skillSummary(skill: Skill, config: Config, secrets: Secrets): Re
 
 export function createServer(deps: ServerDeps): Server {
   const { config, store, queue, registry, logger } = deps;
-  const requests = new RateLimiter(config.rate_limit.requests_per_minute);
-  const authFailures = new RateLimiter(config.rate_limit.auth_failures_per_minute);
+  const requests = new RateLimiter(() => config.rate_limit.requests_per_minute);
+  const authFailures = new RateLimiter(() => config.rate_limit.auth_failures_per_minute);
   const startedAt = Date.now();
 
   /** Admin = a valid admin token, or a direct loopback connection with no proxy headers and no token (the CLI on this machine). */
@@ -214,9 +359,87 @@ export function createServer(deps: ServerDeps): Server {
     return skill;
   }
 
-  async function handleWebhook(req: IncomingMessage, res: ServerResponse, url: URL, skillName: string, headers: Record<string, string>, ip: string): Promise<void> {
+  interface DeliveryDraft {
+    skill: string;
+    received_at: string;
+    ip: string;
+    method: string;
+    path: string;
+    query: Record<string, string>;
+    headers: Record<string, string>;
+    user_agent?: string;
+    content_type: string | null;
+    /** The declared length until the body has been read. */
+    bytes: number;
+    body_kind?: BodyKind;
+    rawBody?: Buffer;
+    /** Set when the cloud link handed the delivery over from a hosted URL. */
+    via?: "http" | "ingress";
+    ingress_id?: string;
+  }
+
+  type RecordDelivery = (outcome: DeliveryOutcome, httpStatus: number, extra?: { code?: string; reason?: string; job_id?: string; delivery_id?: string }) => void;
+
+  /**
+   * Every `POST|PUT /hooks/<skill>` comes through here: `deliver` decides and answers the sender, and exactly one delivery
+   * record is written whatever the outcome (a thrown HttpError included), then `delivery.received` is published.
+   */
+  async function handleWebhook(req: IncomingMessage, res: ServerResponse, url: URL, skillName: string, headers: Record<string, string>, ip: string, limited: boolean): Promise<void> {
+    const started = Date.now();
+    const query = Object.fromEntries(url.searchParams);
+    delete query.token;
+    delete query.wait;
+    // A hosted-ingress delivery is handed over by the link through the loopback address with the cloud's id; only a loopback peer may claim that.
+    const peer = req.socket.remoteAddress ?? "";
+    const ingressId = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1" ? headers[INGRESS_ID_HEADER]?.slice(0, 200) : undefined;
+    const draft: DeliveryDraft = { skill: skillName.slice(0, 200), received_at: nowIso(), ip, method: req.method ?? "POST", path: url.pathname, query, headers: redactHeaders(headers), user_agent: headers["user-agent"], content_type: headers["content-type"] ?? null, bytes: Number(headers["content-length"] ?? 0) || 0, ...(ingressId ? { via: "ingress" as const, ingress_id: ingressId } : {}) };
+    let recorded = false;
+    const record: RecordDelivery = (outcome, httpStatus, extra = {}) => {
+      if (recorded || !deps.deliveryLog) return;
+      recorded = true;
+      const saved = deps.deliveryLog.record({
+        skill: draft.skill,
+        received_at: draft.received_at,
+        outcome,
+        http_status: httpStatus,
+        code: extra.code,
+        reason: extra.reason,
+        delivery_id: extra.delivery_id,
+        job_id: extra.job_id,
+        ip: draft.ip,
+        method: draft.method,
+        path: draft.path,
+        query: draft.query,
+        headers: draft.headers,
+        user_agent: draft.user_agent,
+        content_type: draft.content_type,
+        bytes: draft.rawBody?.length ?? draft.bytes,
+        body_kind: draft.body_kind,
+        duration_ms: Date.now() - started,
+        rawBody: draft.rawBody,
+        ...(draft.via ? { via: draft.via, ingress_id: draft.ingress_id } : {}),
+      });
+      deps.events?.emit("delivery.received", { delivery: saved });
+    };
+    try {
+      if (limited) throw new HttpError(429, "rate_limited", "too many requests");
+      await deliver(req, res, url, skillName, headers, ip, draft, record);
+    } catch (error) {
+      if (error instanceof HttpError) {
+        // Refused before the body was needed (unknown or invalid skill): read it anyway so the delivery can be replayed later.
+        if (!draft.rawBody && config.deliveries.store_bodies && error.status !== 413 && error.status !== 429) draft.rawBody = await drainBody(req, Math.min(config.max_body_bytes, config.deliveries.body_max_bytes));
+        record("rejected", error.status, { code: error.code, reason: error.message });
+      } else {
+        record("error", 500, { code: "internal_error", reason: errorMessage(error) });
+      }
+      throw error;
+    }
+  }
+
+  async function deliver(req: IncomingMessage, res: ServerResponse, url: URL, skillName: string, headers: Record<string, string>, ip: string, draft: DeliveryDraft, record: RecordDelivery): Promise<void> {
     const skill = loadWebhookSkill(skillName);
     const rawBody = await readBody(req, config.max_body_bytes);
+    draft.rawBody = rawBody;
     const inbound: InboundRequest = { headers, rawBody, query: url.searchParams, ip };
     const verdict = verifyRequest(skill.auth, deps.secrets(), inbound);
     if (!verdict.ok) {
@@ -231,7 +454,9 @@ export function createServer(deps: ServerDeps): Server {
     if (skill.auth.type === "none") logger.warn("unauthenticated skill triggered", { skill: skill.name, ip });
 
     const { payload, kind } = parseBody(headers["content-type"], rawBody);
+    draft.body_kind = kind;
     if (skill.auth.type === "slack" && isPlainObject(payload) && payload.type === "url_verification" && typeof payload.challenge === "string") {
+      record("challenge", 200, { code: "challenge" });
       return send(res, 200, { challenge: payload.challenge });
     }
 
@@ -245,17 +470,18 @@ export function createServer(deps: ServerDeps): Server {
       const existing = store.seenDelivery(skill.name, deliveryId);
       if (existing) {
         logger.info("duplicate delivery ignored", { skill: skill.name, delivery_id: deliveryId, job: existing });
+        record("duplicate", 200, { code: "duplicate", delivery_id: deliveryId, job_id: existing });
         return send(res, 200, { ok: true, duplicate: true, job_id: existing, status_url: `/jobs/${existing}` });
       }
     }
 
-    const query = Object.fromEntries(url.searchParams);
-    delete query.token;
-    delete query.wait;
+    const query = draft.query;
     const filter = evaluateConditions(skill.config.when, { payload, headers, query });
     if (!filter.ok) {
+      const reason = `${describeCondition(filter.condition)}: ${filter.reason}`;
       logger.info("delivery skipped by filter", { skill: skill.name, condition: describeCondition(filter.condition), reason: filter.reason });
-      return send(res, 200, { ok: true, skipped: true, reason: `${describeCondition(filter.condition)}: ${filter.reason}` });
+      record("skipped", 200, { code: "skipped", reason, delivery_id: deliveryId });
+      return send(res, 200, { ok: true, skipped: true, reason });
     }
 
     const wait = parseWait(url, headers, config.max_wait_seconds);
@@ -267,12 +493,14 @@ export function createServer(deps: ServerDeps): Server {
         const current = store.get(inFlight.id) ?? inFlight;
         logger.info("identical delivery already in flight; not queued again", { skill: skill.name, job: current.id, status: current.status, ip, delivery_id: deliveryId });
         if (deliveryId) store.rememberDelivery(skill.name, deliveryId, current.id);
+        record("in_flight", 200, { code: "in_flight", delivery_id: deliveryId, job_id: current.id });
         if (wait > 0) return respondWithJob(res, current, wait, { duplicate: true, in_flight: true });
         return send(res, 200, { ok: true, duplicate: true, in_flight: true, job_id: current.id, status: current.status, status_url: `/jobs/${current.id}` });
       }
     }
 
     const job = createJob({ skill, trigger: "webhook", payload, kind, rawBody, headers, query, ip, method: req.method ?? "POST", path: url.pathname, deliveryId, fingerprint });
+    record("accepted", 202, { delivery_id: deliveryId, job_id: job.id });
     await respondWithJob(res, job, wait);
   }
 
@@ -321,6 +549,7 @@ export function createServer(deps: ServerDeps): Server {
       source: { ip: args.ip, method: args.method, path: args.path, content_type: event.content_type, user_agent: args.headers["user-agent"] },
       delivery_id: args.deliveryId,
       fingerprint: args.fingerprint,
+      skill_file: args.skill.file,
       event,
       rawBody: args.rawBody,
     });
@@ -330,11 +559,103 @@ export function createServer(deps: ServerDeps): Server {
     return job;
   }
 
+  /** `POST /deliveries/<id>/replay` and `POST /jobs/<id>/replay`: the original request again, through the skill as it is now, as a new job. */
+  async function replay(req: IncomingMessage, res: ServerResponse, url: URL, headers: Record<string, string>, source: "delivery" | "job", id: string): Promise<void> {
+    const rawBody = await readBody(req, config.max_body_bytes);
+    const body = rawBody.length ? (parseBody(headers["content-type"], rawBody).payload as Record<string, unknown>) : {};
+    if (!isPlainObject(body)) throw new HttpError(400, "bad_request", "expected a JSON object body");
+    if (body.runner !== undefined && !RunnerNameSchema.safeParse(body.runner).success) throw new HttpError(400, "bad_request", "runner must be claude, codex or shell");
+    let plan: ReplayPlan;
+    try {
+      plan = planReplay({ config, store, registry, deliveryLog: deps.deliveryLog }, { source, id, skipFilters: body.skip_filters === true, force: body.force === true, overrides: { runner: body.runner as RunnerName | undefined, model: body.model as string | undefined, effort: body.effort as string | undefined } });
+    } catch (error) {
+      if (error instanceof ReplayError) throw new HttpError(error.status, error.code, error.message);
+      throw error;
+    }
+    const replayOf = replayOfFor(plan.origin);
+    if (!plan.ok) {
+      logger.info("replay skipped by filter", { skill: plan.skill.name, replay_of: replayOf, reason: plan.reason });
+      return send(res, 200, { ok: true, skipped: true, reason: plan.reason, replay_of: replayOf });
+    }
+    const job = createManualJob({ config, store }, plan.input);
+    logger.info("replay accepted", { skill: job.skill, job: job.id, replay_of: replayOf, trigger: job.trigger });
+    queue.enqueue(job);
+    const wait = Math.min(Number(body.wait ?? 0) || parseWait(url, headers, config.max_wait_seconds), config.max_wait_seconds);
+    return respondWithJob(res, job, wait, { replay_of: replayOf });
+  }
+
+  /** `GET /jobs/<id>/events`: a `status` snapshot, then `stdout`/`stderr` chunks as the files grow and `status` updates from the bus, then `end`. */
+  function streamJob(req: IncomingMessage, res: ServerResponse, url: URL, job: JobRecord): void {
+    const wanted = (url.searchParams.get("streams") ?? "stdout").split(",").map((s) => s.trim()).filter(Boolean);
+    for (const name of wanted) if (name !== "stdout" && name !== "stderr") throw new HttpError(400, "bad_request", `unknown stream "${name}" (stdout, stderr)`);
+    const streams = wanted as ("stdout" | "stderr")[];
+    const files = store.pathsFor(job.id);
+    const offsets: Record<"stdout" | "stderr", number> = { stdout: 0, stderr: 0 };
+    const stream = openEventStream(req, res);
+    const pump = () => {
+      for (const name of streams) {
+        const size = fileSize(files[name]);
+        if (size === undefined || size <= offsets[name]) continue;
+        if (offsets[name] === 0 && size > STREAM_TAIL_MAX) offsets[name] = size - STREAM_TAIL_MAX;
+        const chunk = readFrom(files[name], offsets[name], size - offsets[name]);
+        offsets[name] = size;
+        stream.send({ event: name, data: chunk });
+      }
+    };
+    let ended = false;
+    const end = (final: JobRecord) => {
+      if (ended) return;
+      ended = true;
+      pump();
+      stream.send({ event: "end", data: publicJob(final) });
+      stream.close();
+    };
+    stream.send({ event: "status", data: publicJob(job) });
+    if (isTerminal(job.status)) return end(job);
+    const timer = setInterval(() => {
+      pump();
+      const current = store.get(job.id);
+      if (!current) return end(job);
+      if (isTerminal(current.status)) end(current);
+    }, STREAM_POLL_MS);
+    stream.onClose(() => clearInterval(timer));
+    if (deps.events) {
+      const off = deps.events.onAny((event) => {
+        if (!event.type.startsWith("job.")) return;
+        const data = event.data as { job?: JobRecord };
+        if (data.job?.id !== job.id) return;
+        if (event.type === "job.finished") end(data.job);
+        else stream.send({ event: "status", data: publicJob(data.job) });
+      });
+      stream.onClose(off);
+    }
+  }
+
+  /** `GET /jobs/<id>/artifacts/<name>`: the raw file, optionally only its last `?tail=` bytes. */
+  function sendArtifact(res: ServerResponse, url: URL, job: JobRecord, name: string): void {
+    if (!(JOB_ARTIFACTS as string[]).includes(name)) throw new HttpError(404, "unknown_artifact", `unknown artifact "${name}" (${JOB_ARTIFACTS.join(", ")})`);
+    const file = store.pathsFor(job.id)[name as JobArtifact];
+    const size = fileSize(file);
+    if (size === undefined) throw new HttpError(404, "unknown_artifact", `artifact "${name}" has not been written`);
+    const tailParam = Number(url.searchParams.get("tail") ?? 0);
+    const tailBytes = Number.isFinite(tailParam) && tailParam > 0 ? Math.floor(tailParam) : 0;
+    const offset = tailBytes && size > tailBytes ? size - tailBytes : 0;
+    let isJson = name === "event";
+    if (name === "payload") {
+      try {
+        isJson = store.readEvent(job.id).body_kind === "json";
+      } catch {
+        isJson = false;
+      }
+    }
+    send(res, 200, readFrom(file, offset, size - offset), { "content-type": isJson ? "application/json; charset=utf-8" : "text/plain; charset=utf-8", "x-artifact-bytes": String(size), ...(offset ? { "x-artifact-truncated": "true" } : {}) });
+  }
+
   async function respondWithJob(res: ServerResponse, job: JobRecord, wait: number, extra: Record<string, unknown> = {}): Promise<void> {
     if (wait > 0) {
       const finished = await queue.waitFor(job.id, wait * 1000);
       if (finished && finished.status !== "queued" && finished.status !== "running") {
-        return send(res, 200, { ok: finished.status === "succeeded", ...extra, job_id: finished.id, status: finished.status, result: finished.result ?? null, error: finished.error ?? null, job: publicJob(finished) });
+        return send(res, 200, { ok: finished.status === "succeeded", ...extra, job_id: finished.id, status: finished.status, outcome: finished.outcome ?? null, result: finished.result ?? null, error: finished.error ?? null, response: finished.response ?? null, job: publicJob(finished) });
       }
       const current = finished ?? job;
       return send(res, 202, { ok: true, ...extra, job_id: current.id, status: current.status, status_url: `/jobs/${current.id}`, note: `still ${current.status} after ${wait}s` });
@@ -349,29 +670,196 @@ export function createServer(deps: ServerDeps): Server {
     const method = req.method ?? "GET";
     const segments = url.pathname.split("/").filter(Boolean);
 
-    if (!requests.hit(`req:${ip}`)) throw new HttpError(429, "rate_limited", "too many requests");
+    // A webhook over the limit is still recorded (as rejected), so the limiter's verdict travels into handleWebhook.
+    const limited = !requests.hit(`req:${ip}`);
+    const isDelivery = segments[0] === "hooks" && segments.length === 2 && (method === "POST" || method === "PUT");
+    if (limited && !isDelivery) throw new HttpError(429, "rate_limited", "too many requests");
 
     if (segments.length === 0) {
       return send(res, 200, `skillhook ${VERSION}\n\nPOST /hooks/<skill> to trigger a skill.\n`);
     }
     if (segments[0] === "health" && segments.length === 1) {
       // Public callers learn only that the server is up; queue details need admin access.
-      return send(res, 200, isAdmin(headers, req, viaProxy) ? { ok: true, version: VERSION, uptime_seconds: Math.round((Date.now() - startedAt) / 1000), queue: queue.stats(), ...(deps.schedules ? { schedules: deps.schedules() } : {}) } : { ok: true, version: VERSION });
+      return send(res, 200, isAdmin(headers, req, viaProxy) ? { ok: true, version: VERSION, uptime_seconds: Math.round((Date.now() - startedAt) / 1000), queue: queue.stats(), ...(deps.schedules ? { schedules: deps.schedules() } : {}), ...(deps.deliveryLog ? { deliveries: deps.deliveryLog.stats() } : {}), cloud: deps.cloud?.() ?? null } : { ok: true, version: VERSION });
+    }
+    if ((segments[0] === "health" && segments.length === 2 && segments[1] === "checks") || (segments[0] === "doctor" && segments.length === 1)) {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (method !== "GET") throw new HttpError(405, "method_not_allowed", "use GET");
+      if (!deps.health) throw new HttpError(404, "not_found", "this server has no health checks");
+      const quick = segments[0] === "doctor";
+      const deep = quick ? false : url.searchParams.get("deep") !== "0";
+      // The server never asks the registry or probes the public URL unless told to: doctor by default, health on request.
+      const network = quick ? url.searchParams.get("network") !== "0" : url.searchParams.get("network") === "1";
+      const { report, cached } = await deps.health.get({ deep, network, refresh: url.searchParams.get("refresh") === "1" });
+      return send(res, 200, { ...report, cached });
+    }
+    if (segments[0] === "config" && (segments.length === 1 || (segments.length === 2 && segments[1] === "reload"))) {
+      requireAdmin(headers, req, viaProxy, ip);
+      const describe = (reload?: { applied: string[]; restart_required: string[]; pending_restart: string[] }) => ({ config: deps.configRef?.get() ?? config, file: deps.paths.configFile, exists: configExists(deps.paths), hot_keys: HOT_CONFIG_KEYS, restart_keys: RESTART_CONFIG_KEYS, pending_restart: reload?.pending_restart ?? deps.configRef?.pendingRestart() ?? [] });
+      if (segments.length === 1 && method === "GET") return send(res, 200, describe());
+      if (segments.length === 2 && method === "POST") {
+        if (!deps.configRef) throw new HttpError(404, "not_found", "this server does not reload its config");
+        let reload: ReturnType<ConfigRef["reload"]>;
+        try {
+          reload = deps.configRef.reload();
+        } catch (error) {
+          if (error instanceof ConfigError) throw new HttpError(400, "config_invalid", error.message);
+          throw error;
+        }
+        logger.info("config reloaded", { applied: reload.applied, restart_required: reload.restart_required });
+        return send(res, 200, { ok: true, changed: reload.changed, applied: reload.applied, restart_required: reload.restart_required.length > 0, restart_required_keys: reload.restart_required, ...describe(reload) });
+      }
+      if (segments.length === 1 && method === "PATCH") {
+        const rawBody = await readBody(req, config.max_body_bytes);
+        const body = rawBody.length ? (parseBody(headers["content-type"], rawBody).payload as Record<string, unknown>) : {};
+        if (!isPlainObject(body)) throw new HttpError(400, "bad_request", "expected a JSON object body");
+        if (body.set !== undefined && !isPlainObject(body.set)) throw new HttpError(400, "bad_request", "set must be an object of dotted keys");
+        if (body.unset !== undefined && !(Array.isArray(body.unset) && body.unset.every((k) => typeof k === "string"))) throw new HttpError(400, "bad_request", "unset must be an array of dotted keys");
+        const patch = { set: body.set as Record<string, unknown> | undefined, unset: body.unset as string[] | undefined };
+        if (!Object.keys(patch.set ?? {}).length && !patch.unset?.length) throw new HttpError(400, "bad_request", "nothing to change: give set and/or unset");
+        try {
+          updateConfig(deps.paths, patch);
+        } catch (error) {
+          if (error instanceof ConfigError) throw new HttpError(400, error.message.includes("Invalid config key") || error.message.includes("$schema") ? "config_key_not_allowed" : "config_invalid", error.message);
+          throw error;
+        }
+        const reload = deps.configRef?.reload();
+        logger.info("config updated", { set: Object.keys(patch.set ?? {}), unset: patch.unset ?? [], applied: reload?.applied, restart_required: reload?.restart_required });
+        return send(res, 200, { ok: true, applied: reload?.applied ?? [], restart_required: (reload?.restart_required.length ?? 0) > 0, restart_required_keys: reload?.restart_required ?? [], ...describe(reload), ...(deps.configRef ? {} : { note: "written to the file; this server has no live config, restart it" }) });
+      }
+      throw new HttpError(405, "method_not_allowed", "use GET, PATCH or POST /config/reload");
+    }
+    if (segments[0] === "control" && segments.length === 2 && segments[1] === "restart") {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (method !== "POST") throw new HttpError(405, "method_not_allowed", "use POST");
+      if (!deps.control) throw new HttpError(404, "not_found", "this server cannot restart itself");
+      const rawBody = await readBody(req, config.max_body_bytes);
+      const body = rawBody.length ? (parseBody(headers["content-type"], rawBody).payload as Record<string, unknown>) : {};
+      if (!isPlainObject(body)) throw new HttpError(400, "bad_request", "expected a JSON object body");
+      const force = body.force === true;
+      const waitSeconds = Math.min(600, Math.max(0, Math.floor(Number(body.wait_seconds ?? 30)) || 0));
+      if (!(await deps.control.supervised())) throw new HttpError(409, "not_a_service", "this server is not run by launchd or systemd, so nothing would start it again; restart it yourself");
+      logger.warn("restart requested through the admin API", { force, wait_seconds: waitSeconds, ip, running: queue.stats().running });
+      send(res, 202, { ok: true, restarting: true, force, wait_seconds: waitSeconds, running: queue.stats().running });
+      setImmediate(() => deps.control?.restart({ force, waitSeconds }));
+      return;
+    }
+    if (segments[0] === "service" && segments.length === 1) {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (method !== "GET") throw new HttpError(405, "method_not_allowed", "use GET");
+      const service = await (deps.serviceStatus ?? (() => readServiceStatus(deps.paths)))();
+      return send(res, 200, { service, this_pid: process.pid, supervised: service.running && service.pid === process.pid });
+    }
+    if (segments[0] === "logs" && segments.length === 1) {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (method !== "GET") throw new HttpError(405, "method_not_allowed", "use GET");
+      const wanted = Number(url.searchParams.get("lines") ?? 200);
+      const count = Number.isFinite(wanted) && wanted > 0 ? Math.min(2000, Math.floor(wanted)) : 200;
+      const text = (deps.serviceLog ?? ((n: number) => readServiceLog(deps.paths, n)))(count);
+      const file = path.join(deps.paths.logsDir, "service.log");
+      return send(res, 200, { file, exists: existsSync(file), lines: text ? text.replace(/\n$/, "").split("\n") : [] });
+    }
+    if (segments[0] === "update" && segments.length === 1) {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (method !== "POST") throw new HttpError(405, "method_not_allowed", "use POST");
+      const rawBody = await readBody(req, config.max_body_bytes);
+      const body = rawBody.length ? (parseBody(headers["content-type"], rawBody).payload as Record<string, unknown>) : {};
+      if (!isPlainObject(body)) throw new HttpError(400, "bad_request", "expected a JSON object body");
+      const install = body.install === true;
+      if (install) logger.warn("update install requested through the admin API", { ip });
+      // The server never restarts itself here: a restart is its own request (POST /control/restart).
+      const result = await (deps.applyUpdate ?? ((o: { install: boolean }) => applyUpdate(deps.paths, { install: o.install, restartService: false })))({ install });
+      return send(res, 200, result);
+    }
+    if (segments[0] === "stats" && segments.length === 1) {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (method !== "GET") throw new HttpError(405, "method_not_allowed", "use GET");
+      const sinceRaw = url.searchParams.get("since") ?? undefined;
+      const since = parseSince(sinceRaw);
+      if (sinceRaw && !since) throw new HttpError(400, "bad_request", "since must be like 24h, 7d, 2w or an ISO-8601 instant");
+      const untilRaw = url.searchParams.get("until") ?? undefined;
+      const until = parseSince(untilRaw);
+      if (untilRaw && !until) throw new HttpError(400, "bad_request", "until must be an ISO-8601 instant");
+      return send(res, 200, collectStats(store, deps.deliveryLog, { since, until, skill: url.searchParams.get("skill") ?? undefined }));
+    }
+    if (segments[0] === "runners" && segments.length === 1) {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (method !== "GET") throw new HttpError(405, "method_not_allowed", "use GET");
+      if (!deps.readiness) throw new HttpError(404, "not_found", "this server has no runner checks");
+      const runners = await deps.readiness.all({ refresh: url.searchParams.get("refresh") === "1" });
+      return send(res, 200, { runners, default_runner: config.defaults.runner });
+    }
+    if (segments[0] === "events" && segments.length === 1) {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (method !== "GET") throw new HttpError(405, "method_not_allowed", "use GET");
+      if (!deps.events) throw new HttpError(404, "not_found", "this server has no event stream");
+      const types = (url.searchParams.get("types") ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+      for (const type of types) if (!(EVENT_TYPES as string[]).includes(type)) throw new HttpError(400, "bad_request", `unknown event type "${type}"`);
+      const stream = openEventStream(req, res);
+      const off = deps.events.onAny((event) => {
+        if (types.length && !types.includes(event.type)) return;
+        stream.send({ id: String(event.seq), event: event.type, data: event });
+      });
+      stream.onClose(off);
+      return;
     }
     if (segments[0] === "hooks" && segments.length === 2) {
-      const skillName = decodeURIComponent(segments[1] as string);
-      if (method === "POST" || method === "PUT") return handleWebhook(req, res, url, skillName, headers, ip);
+      let skillName: string;
+      try {
+        skillName = decodeURIComponent(segments[1] as string);
+      } catch {
+        throw new HttpError(404, "unknown_skill", "unknown skill");
+      }
+      if (method === "POST" || method === "PUT") return handleWebhook(req, res, url, skillName, headers, ip, limited);
       if (method === "GET" || method === "HEAD") {
         loadWebhookSkill(skillName);
         return send(res, 200, `skillhook: POST your webhook to this URL.\n`);
       }
       throw new HttpError(405, "method_not_allowed", "use POST");
     }
+    if (segments[0] === "deliveries") {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (!deps.deliveryLog) throw new HttpError(404, "not_found", "this server keeps no delivery log");
+      if (segments.length === 1 && method === "GET") {
+        const outcome = url.searchParams.get("outcome") ?? undefined;
+        if (outcome && !(DELIVERY_OUTCOMES as string[]).includes(outcome)) throw new HttpError(400, "bad_request", `unknown outcome "${outcome}" (${DELIVERY_OUTCOMES.join(", ")})`);
+        const since = url.searchParams.get("since") ?? undefined;
+        if (since && Number.isNaN(Date.parse(since))) throw new HttpError(400, "bad_request", "since must be an ISO-8601 instant");
+        return send(res, 200, deps.deliveryLog.list({ skill: url.searchParams.get("skill") ?? undefined, outcome: outcome as DeliveryOutcome | undefined, since, after: url.searchParams.get("after") ?? undefined, limit: pageLimit(url) }));
+      }
+      if (segments.length === 3 && segments[2] === "replay" && method === "POST") return replay(req, res, url, headers, "delivery", segments[1] as string);
+      if (segments.length === 2 && method === "GET") {
+        const delivery = deps.deliveryLog.get(segments[1] as string);
+        if (!delivery) throw new HttpError(404, "unknown_delivery", "unknown delivery");
+        const include = (url.searchParams.get("include") ?? "").split(",").filter(Boolean);
+        return send(res, 200, { delivery, ...(include.includes("body") ? { body: readDeliveryBody(deps.deliveryLog, store, delivery) ?? null } : {}) });
+      }
+      throw new HttpError(404, "not_found", "not found");
+    }
     if (segments[0] === "skills") {
       requireAdmin(headers, req, viaProxy, ip);
       if (segments.length === 1 && method === "GET") {
         const loaded = registry.list();
         return send(res, 200, { skills: loaded.skills.map((s) => skillSummary(s, config, deps.secrets())), errors: loaded.errors });
+      }
+      if (segments.length === 2 && segments[1] === "test" && method === "POST") {
+        // A SKILL.md that is not installed: validated, kept in the job directory, run from there.
+        const rawBody = await readBody(req, config.max_body_bytes);
+        const body = rawBody.length ? (parseBody(headers["content-type"], rawBody).payload as Record<string, unknown>) : {};
+        if (!isPlainObject(body) || typeof body.skill_md !== "string" || !body.skill_md.trim()) throw new HttpError(400, "bad_request", "expected a JSON object with a non-empty skill_md string (the SKILL.md text)");
+        if (body.runner !== undefined && !RunnerNameSchema.safeParse(body.runner).success) throw new HttpError(400, "bad_request", "runner must be claude, codex or shell");
+        const extraHeaders = isPlainObject(body.headers) ? Object.fromEntries(Object.entries(body.headers).map(([k, v]) => [k.toLowerCase(), String(v)])) : {};
+        let created: ReturnType<typeof createAdhocJob>;
+        try {
+          created = createAdhocJob({ config, store }, { skillMd: body.skill_md, payload: body.payload ?? {}, headers: { ...extraHeaders, "user-agent": headers["user-agent"] ?? "skillhook-api" }, overrides: { runner: body.runner as RunnerName | undefined, model: body.model as string | undefined, effort: body.effort as string | undefined, cwd: typeof body.cwd === "string" ? body.cwd : undefined } });
+        } catch (error) {
+          if (error instanceof SkillError) throw new HttpError(400, "invalid_skill_document", error.message);
+          throw error;
+        }
+        logger.info("test run accepted", { skill: created.job.skill, job: created.job.id, file: created.skill.file, ip });
+        queue.enqueue(created.job);
+        const wait = Math.min(Number(body.wait ?? 0) || parseWait(url, headers, config.max_wait_seconds), config.max_wait_seconds);
+        return respondWithJob(res, created.job, wait, { adhoc: true });
       }
       if (segments.length === 3 && segments[2] === "run" && method === "POST") {
         const skill = loadSkill(decodeURIComponent(segments[1] as string));
@@ -391,9 +879,20 @@ export function createServer(deps: ServerDeps): Server {
     if (segments[0] === "jobs") {
       requireAdmin(headers, req, viaProxy, ip);
       if (segments.length === 1 && method === "GET") {
-        const status = url.searchParams.get("status") as JobStatus | null;
-        const jobs = store.list({ skill: url.searchParams.get("skill") ?? undefined, status: status ?? undefined, limit: Number(url.searchParams.get("limit") ?? 50) || 50 });
-        return send(res, 200, { jobs: jobs.map(publicJob), queue: queue.stats() });
+        const status = url.searchParams.get("status") ?? undefined;
+        if (status && !(JOB_STATUSES as string[]).includes(status)) throw new HttpError(400, "bad_request", `unknown status "${status}" (${JOB_STATUSES.join(", ")})`);
+        const trigger = url.searchParams.get("trigger") ?? undefined;
+        if (trigger && !(TRIGGERS as string[]).includes(trigger)) throw new HttpError(400, "bad_request", `unknown trigger "${trigger}" (${TRIGGERS.join(", ")})`);
+        const outcome = url.searchParams.get("outcome") ?? undefined;
+        if (outcome && !(JOB_OUTCOMES as string[]).includes(outcome)) throw new HttpError(400, "bad_request", `unknown outcome "${outcome}" (${JOB_OUTCOMES.join(", ")})`);
+        const since = url.searchParams.get("since") ?? undefined;
+        if (since && Number.isNaN(Date.parse(since))) throw new HttpError(400, "bad_request", "since must be an ISO-8601 instant");
+        const failure = url.searchParams.get("failure") ?? undefined;
+        if (failure && !(FAILURE_KINDS as string[]).includes(failure)) throw new HttpError(400, "bad_request", `unknown failure kind "${failure}" (${FAILURE_KINDS.join(", ")})`);
+        const waitingParam = url.searchParams.get("waiting");
+        const waiting = waitingParam === "1" || waitingParam === "true" ? true : undefined;
+        const page = store.listPage({ skill: url.searchParams.get("skill") ?? undefined, status: status as JobStatus | undefined, trigger: trigger as Trigger | undefined, outcome: outcome as JobOutcome | undefined, failure: failure as FailureKind | undefined, waiting, since, after: url.searchParams.get("after") ?? undefined, limit: pageLimit(url) });
+        return send(res, 200, { jobs: page.jobs.map(publicJob), queue: queue.stats(), next_after: page.next_after });
       }
       const id = segments[1] as string;
       const job = store.get(id);
@@ -404,6 +903,32 @@ export function createServer(deps: ServerDeps): Server {
         for (const name of include) artifacts[name] = store.readArtifact(id, name);
         return send(res, 200, { job: publicJob(job), ...(include.length ? { artifacts } : {}) });
       }
+      if (segments.length === 3 && segments[2] === "events" && method === "GET") return streamJob(req, res, url, job);
+      if (segments.length === 3 && segments[2] === "replay" && method === "POST") return replay(req, res, url, headers, "job", id);
+      if (segments.length === 3 && segments[2] === "progress" && method === "GET") {
+        const limit = Number(url.searchParams.get("limit") ?? 200);
+        return send(res, 200, { job_id: id, status: job.status, outcome: jobOutcome(job) ?? null, waiting: isWaitingForHuman(job), ...readProgress(store.pathsFor(id).dir, { timelineLimit: Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 2000) : 200 }) });
+      }
+      if (segments.length === 3 && segments[2] === "answer" && method === "POST") {
+        const rawBody = await readBody(req, config.max_body_bytes);
+        const body = rawBody.length ? (parseBody(headers["content-type"], rawBody).payload as Record<string, unknown>) : {};
+        if (!isPlainObject(body)) throw new HttpError(400, "bad_request", "expected a JSON object body");
+        const text = typeof body.answer === "string" ? body.answer : typeof body.text === "string" ? body.text : "";
+        if (!text.trim()) throw new HttpError(400, "bad_request", "answer is required");
+        if (body.resume !== undefined && body.resume !== "auto" && body.resume !== "never") throw new HttpError(400, "bad_request", "resume must be auto or never");
+        let result: AnswerJobResult;
+        try {
+          result = answerJob({ config, store, registry }, { jobId: id, text, option: typeof body.option === "string" ? body.option : undefined, by: typeof body.by === "string" ? body.by : undefined, resume: body.resume as "auto" | "never" | undefined }, { queue, events: deps.events });
+        } catch (error) {
+          if (error instanceof AnswerError) throw new HttpError(error.status, error.code, error.message);
+          throw error;
+        }
+        logger.info("job answered", { job: id, delivered: result.delivered, resume_job: result.resumeJob?.id, by: result.answer.by });
+        const wait = Math.min(Number(body.wait ?? 0) || parseWait(url, headers, config.max_wait_seconds), config.max_wait_seconds);
+        const resumeJob = result.resumeJob && wait > 0 ? ((await queue.waitFor(result.resumeJob.id, wait * 1000)) ?? result.resumeJob) : result.resumeJob;
+        return send(res, 200, { ok: true, job_id: id, delivered: result.delivered, answer: result.answer, resume_job_id: resumeJob?.id ?? null, ...(resumeJob ? { resume_job: publicJob(resumeJob) } : {}), job: publicJob(result.job) });
+      }
+      if (segments.length === 4 && segments[2] === "artifacts" && method === "GET") return sendArtifact(res, url, job, segments[3] as string);
       if (segments.length === 3 && segments[2] === "cancel" && method === "POST") {
         const cancelled = queue.cancel(id);
         return send(res, cancelled ? 200 : 409, { ok: cancelled, job_id: id, status: store.get(id)?.status });

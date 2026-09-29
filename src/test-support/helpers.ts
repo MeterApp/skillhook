@@ -2,6 +2,7 @@ import { mkdtempSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { SseParser, type StreamedEvent } from "../client.js";
 import { pathsFor, type Paths } from "../paths.js";
 import { ensureDir } from "../util.js";
 
@@ -30,4 +31,30 @@ export function writeEnv(paths: Paths, vars: Record<string, string>): void {
 
 export function writeConfigFile(paths: Paths, config: Record<string, unknown>): void {
   writeFileSync(paths.configFile, JSON.stringify(config, null, 2));
+}
+
+/** Reads a `text/event-stream` response until `until` returns true (then cancels it), the server ends it, or `timeoutMs` passes. */
+export async function readSse(response: Response, until: (event: StreamedEvent, all: StreamedEvent[]) => boolean, timeoutMs = 15_000): Promise<StreamedEvent[]> {
+  if (!response.body) throw new Error(`no body (status ${response.status})`);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parser = new SseParser();
+  const events: StreamedEvent[] = [];
+  const timer = setTimeout(() => void reader.cancel(), timeoutMs);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      for (const event of parser.push(decoder.decode(value, { stream: true }))) {
+        events.push(event);
+        if (until(event, events)) {
+          await reader.cancel();
+          return events;
+        }
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+  return events;
 }

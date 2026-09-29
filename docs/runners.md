@@ -35,11 +35,17 @@ claude -p --output-format stream-json --verbose \
   [--allowedTools <allowed-tools + claude.allowed_tools, comma-joined>] \
   [--disallowedTools <claude.disallowed_tools>] \
   [--max-budget-usd <claude.max_budget_usd>] \
+  [--json-schema <response schema>]                # response.mode: structured
+  [--mcp-config '{"mcpServers":{"skillhook-job":{"command":"<node>","args":["<cli.js>","mcp","--job","--dir","<home>"],"env":{…}}}}']   # agent_api: mcp
+  [--resume <session id>]                          # trigger: resume
   --append-system-prompt "<guardrails>\n\n<claude.append_system_prompt>" \
   <runners.claude.args…> <claude.args…>
 ```
 
 - The prompt (`# Skill: <name>` + rendered body [+ event block]) is written to the process's stdin, so payload size is not limited by argv.
+- `response: { mode: structured }` adds `--json-schema` with the skill's schema (default `{outcome, summary, links, data}`); the result event's `structured_output` becomes `job.response` and `response.json` ([skills.md](skills.md#reporting-the-outcome)).
+- `agent_api: mcp` (the default) adds `--mcp-config` with the per-run job API server (`skillhook mcp --job`, started as `<node> <cli.js>` of this installation, or `SKILLHOOK_BIN` from the server's environment) and `mcp__skillhook-job` to `--allowedTools`, so `job_progress`, `job_ask_human`, `job_set_outcome`, `job_note` and `job_context` work under every permission mode ([skills.md](skills.md#reporting-progress-and-asking-a-person)). The user's own MCP servers stay available.
+- A job with `trigger: resume` (a person answered an earlier job) adds `--resume <session id>` and sends only the `<human_answer>` block as the prompt; the session files under `~/.claude/projects` must still exist, so runs never use `--no-session-persistence`.
 - `--add-dir` is skipped for a directory that is already the cwd.
 - Default permission mode is `bypassPermissions` so unattended runs never stall. `--permission-prompts none` is always set; with `acceptEdits`, `dontAsk` or `plan` a tool that would have prompted is denied instead, which is how `allowed_tools` becomes an allow-list.
 - Model: aliases (`opus`, `sonnet`, `haiku`) or full ids. Effort: passed verbatim to `--effort`.
@@ -82,12 +88,27 @@ codex exec --json --skip-git-repo-check \
   [-m <model>] [-c model_reasoning_effort="<effort>"] \
   [-p <codex.profile>] \
   --add-dir <skill dir> --add-dir <job dir> [--add-dir <codex.add_dirs…>] \
+  [--output-schema <job dir>/response.schema.json]   # response.mode: structured
+  [-c mcp_servers.skillhook_job.command="<node>" -c 'mcp_servers.skillhook_job.args=["<cli.js>", "mcp", "--job", "--dir", "<home>"]' -c 'mcp_servers.skillhook_job.env={ SKILLHOOK_JOB_ID = "…", … }']   # agent_api: mcp
   <runners.codex.args…> <codex.args…> -
 ```
 
+A job with `trigger: resume` continues the thread instead:
+
+```text
+codex exec resume <thread id> --json --skip-git-repo-check \
+  -c sandbox_mode="<sandbox>" -c approval_policy="<runners.codex.approval_policy>" -o <job dir>/last-message.md \
+  [-c sandbox_workspace_write.network_access=true] [-m <model>] [-c model_reasoning_effort="<effort>"] [-p <profile>] \
+  [--output-schema …] [-c mcp_servers.skillhook_job.…] <runners.codex.args…> <codex.args…> -
+```
+
+`codex exec resume` takes neither `-C`, `-s` nor `--add-dir`: the sandbox travels as `-c sandbox_mode`, the working directory is the one the process is started in (the original job's), and the extra directories are those the thread already had.
+
 - The trailing `-` makes Codex read the prompt from stdin. Codex has no system-prompt flag, so the guardrails are prepended to the prompt, separated by a blank line.
+- `response: { mode: structured }` writes the skill's schema to `response.schema.json` in the job directory and passes `--output-schema`; the final agent message is then parsed as JSON into `job.response` (its `summary` becomes `job.result`) and written to `response.json` ([skills.md](skills.md#reporting-the-outcome)).
 - Defaults: sandbox `workspace-write`, `network_access: true` (webhook automations usually need to call APIs; Codex's own default is no network in that sandbox), `approval_policy: never`.
 - `-o <file>` makes Codex write its final message to `last-message.md`; skillhook reads it when the JSON stream did not contain an `agent_message`.
+- `agent_api: mcp` (the default) configures the per-run job API server through `-c mcp_servers.skillhook_job.*` for this run only; nothing is written to `~/.codex/config.toml`.
 
 Output handling: `thread.started` provides the `thread_id` (stored as `session_id`), `item.completed` with `type: agent_message` provides the result, `turn.completed` provides `usage`, and `turn.failed` / `error` mark the job `failed`. Codex does not report cost, so `cost_usd` is absent for Codex jobs.
 
@@ -130,6 +151,47 @@ The rendered prompt is still written to `prompt.md`, so a shell command can hand
 
 In a repository's `skillhook.yaml` a shell hook is written as `run: <command>` (string or array) and runs in the repository by default; see [projects.md](projects.md#run-hooks).
 
+## Readiness
+
+Before a job spawns, skillhook checks that its runner is usable: installed (`runners.<name>.command` resolves) and logged in, or given an API key (`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`). The check runs `claude auth status` / `codex login status` with the same environment as a job and its answer is trusted for `health.readiness_cache_seconds` (60), then re-checked; a run that fails to authenticate forgets it at once. `skillhook runners [--refresh] [--local]`, `GET /runners?refresh=1` and the MCP tool `get_runners` show the answer per runner (`found`, `version`, `authenticated`, `method`: `subscription` or `api_key`, `detail`, `hint`, `ready`), and `runners.changed` is published on the event stream when it changes. The shell runner is always ready; `skillhook health` checks each shell skill's binary.
+
+A job whose runner is not ready never starts: it fails at once with `error: <runner> is not ready: …`, `failure.kind: auth` (or `not_found`), no `command` and no process, unless a [fallback](#fallback-and-retry) runner is ready.
+
+## Failure kinds
+
+Every job that ends `failed` or `timed_out` carries `failure: {kind, code?, retryable, message?}`, classified from what the runner printed (the captured real lines are the fixtures; the kind never changes the job's `status`):
+
+| `kind` | When | `retryable` |
+|---|---|---|
+| `auth` | not logged in, an expired OAuth session, an invalid API key, a `401`; also a job refused by the readiness check | no |
+| `usage_limit` | the subscription's usage or quota is exhausted (`You've hit your usage limit`) | no |
+| `rate_limit` | a `429`, "rate limit", "overloaded", "too many requests" | yes |
+| `budget` | Claude's `error_max_budget_usd` (`claude.max_budget_usd`) | no |
+| `max_turns` | Claude's `error_max_turns` | no |
+| `not_found` | the command could not be started (`ENOENT`) | no |
+| `timeout` | `timeout_seconds` elapsed | no |
+| `crash` | a signal or a non-zero exit with no recognisable reason | yes |
+| `unknown` | the runner reported an error skillhook does not recognise | no |
+
+`code` is Claude's result `subtype` when it is not `success`. `skillhook jobs list` shows the kind next to the status (`failed (auth)`), `--failure <kind>` (`GET /jobs?failure=`, MCP `list_jobs {failure}`) filters by it.
+
+## Fallback and retry
+
+```yaml
+skillhook:
+  fallback:
+    runners: [codex]              # in order of preference; shell only for a skill with shell.command
+    on: [not_ready]               # default; add auth, usage_limit, rate_limit, crash to re-run a failed job on the next runner
+  retry:
+    attempts: 1                   # more runs on the same runner (1–3)
+    on: [rate_limit, crash]       # default
+    backoff_seconds: 30           # default
+```
+
+`fallback` names other runners for when this one cannot run. With the default `on: [not_ready]` it acts only before the run: the readiness check fails, the first ready runner of the list takes over, and the job records `runner` (the one that ran), `runner_requested` (the one asked for) and `runner_reason` (`fallback: claude not logged in`). `defaults.fallback` in `skillhook.json` applies to every skill that sets none.
+
+The other triggers (`auth`, `usage_limit`, `rate_limit`, `crash`) and `retry` act after a run failed that way, **only when the agent had not produced anything yet** (no assistant message): the failed run becomes an entry of `attempts` (`{runner, started_at, finished_at, status, error, failure}`), the next run starts on the same runner (`retry`, after `backoff_seconds`) or on the next ready fallback runner, and the job record is the last attempt. A run that had already started acting is never repeated, because a repeat could redo its side effects; both features are off by default and belong on idempotent skills only. Each attempt gets the full `timeout_seconds`; `stdout.log` / `stderr.log` keep every attempt, separated by `--- attempt N (<runner>) ---`.
+
 ## Environment
 
 Every runner gets a freshly built environment:
@@ -140,7 +202,7 @@ Every runner gets a freshly built environment:
 | `PATH` | The server's `PATH` followed by `~/.local/bin`, `~/.npm-global/bin`, `~/.bun/bin`, `~/.cargo/bin`, `/opt/homebrew/bin`, `/opt/homebrew/sbin`, `/usr/local/bin`, `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`, so launchd's minimal PATH still finds `claude`, `codex`, `gh`, `node`. |
 | Runner credentials | Every variable whose name starts with `ANTHROPIC_`, `CLAUDE_`, `OPENAI_` or `CODEX_`, plus `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `https_proxy`, `http_proxy`, `no_proxy`. Values come from `.env` merged with the server environment. |
 | Explicit | Names listed in `env_passthrough` (config) and the skill's `env:`. |
-| Job | `SKILLHOOK_JOB_ID`, `SKILLHOOK_JOB_DIR`, `SKILLHOOK_SKILL`, `SKILLHOOK_SKILL_DIR`, `SKILLHOOK_PAYLOAD_PATH`, `SKILLHOOK_EVENT_PATH`, `SKILLHOOK_PROMPT_PATH`, `SKILLHOOK_TRIGGER` (`webhook`/`cli`/`mcp`/`api`), `SKILLHOOK_RUNNER`. |
+| Job | `SKILLHOOK_JOB_ID`, `SKILLHOOK_JOB_DIR`, `SKILLHOOK_SKILL`, `SKILLHOOK_SKILL_DIR`, `SKILLHOOK_PAYLOAD_PATH`, `SKILLHOOK_EVENT_PATH`, `SKILLHOOK_PROMPT_PATH`, `SKILLHOOK_RESPONSE_PATH` (where the agent reports the outcome), `SKILLHOOK_TRIGGER` (`webhook`/`cli`/`mcp`/`api`/`schedule`/`replay`/`test`/`resume`), `SKILLHOOK_RUNNER`, `SKILLHOOK_HOME`, `SKILLHOOK_HUMAN_WAIT_SECONDS`, and `SKILLHOOK_BIN` (the command line that runs this very skillhook, for `$SKILLHOOK_BIN job …`; absent when running from an unbuilt source checkout without `SKILLHOOK_BIN` in the server's environment). |
 | Never implicit | `SKILLHOOK_ADMIN_TOKEN`, `SKILLHOOK_SECRET_*` (only if a skill lists them in `env:`). |
 
 A `skillhook serve` started from inside an interactive Claude Code session does not leak that session's `CLAUDE_CODE_*` variables to child runs: prefix passthrough applies to `.env` only, and only the credential names listed above are copied from the server's environment.
@@ -155,10 +217,11 @@ A `skillhook serve` started from inside an interactive Claude Code session does 
 ## Timeouts, cancellation, concurrency
 
 - Processes are spawned detached in their own process group. On timeout (`timeout_seconds`), cancel (`POST /jobs/<id>/cancel`, `skillhook jobs cancel`, MCP `cancel_job`) or server shutdown, the whole group gets `SIGTERM`, then `SIGKILL` 10 seconds later.
-- Resulting statuses: `timed_out` (error `timed out after Ns`), `cancelled`, `interrupted` (server shut down or restarted while running; a queued job survives a restart and is re-queued).
+- Resulting statuses: `timed_out` (error `timed out after Ns`), `cancelled`, `interrupted` (server shut down or restarted while running; a queued job survives a restart and is re-queued). A `failed` or `timed_out` job also says why in `failure.kind` ([Failure kinds](#failure-kinds)).
 - The queue is FIFO with a global cap of `concurrency` (default 2) running jobs and one job per skill at a time unless the skill sets `concurrency`. A job whose skill is at its limit is skipped in favour of the next eligible job.
-- The `session_id`/`resume_command` are stored as soon as they appear, so an interrupted Claude or Codex run can be picked up with `skillhook jobs resume <id>`.
+- The `session_id`/`resume_command` are stored as soon as they appear, so an interrupted Claude or Codex run can be picked up with `skillhook jobs resume <id>`, and a person's answer can continue it as a new job (`skillhook jobs answer`).
+- The timeout clock stops while the agent waits for a person (`job_ask_human` / `skillhook job ask`) and restarts with the remaining time on the answer, or by itself thirty seconds after the question's `wait_until` when no answer came. A waiting job keeps its concurrency slot.
 
 ## Cost and usage
 
-`job.json` records `cost_usd`, `usage` and `num_turns` when the runner reports them (Claude does; Codex reports `usage` only). `skillhook jobs list` shows duration, `jobs show` shows cost, and the `?wait=` HTTP response and the MCP `get_job` tool include the full record.
+`job.json` records `cost_usd`, `usage` and `num_turns` when the runner reports them (Claude does; Codex reports `usage` only), and `outcome` / `response` (whether the task was done, as the agent reported it; [skills.md](skills.md#reporting-the-outcome)). `skillhook jobs list` shows duration and outcome, `jobs show` shows cost and the reported summary, and the `?wait=` HTTP response and the MCP `get_job` tool include the full record.

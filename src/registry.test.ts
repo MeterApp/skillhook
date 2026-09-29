@@ -1,7 +1,7 @@
-import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { configProjects, SkillRegistry } from "./registry.js";
+import { configProjects, SkillRegistry, type SkillChange } from "./registry.js";
 import { tempHome, writeConfigFile, writeSkill } from "./test-support/helpers.js";
 
 function touchLater(file: string, seconds: number): void {
@@ -83,6 +83,37 @@ describe("SkillRegistry", () => {
     const missingDir = new SkillRegistry(paths.skillsDir, { projects: () => [path.join(paths.home, "gone")] }).list();
     expect(missingDir.errors[0]?.error).toContain("not a directory");
     expect(missingDir.projects[0]?.error).toContain("not a directory");
+  });
+
+  it("reports skills that appear, change or disappear once a first list() has primed it", () => {
+    const paths = tempHome();
+    const dir = writeSkill(paths, "alpha", "description: a1");
+    const repo = makeProject(paths.home, "repo", "hooks:\n  h:\n    run: echo one\n");
+    const changes: SkillChange[] = [];
+    const registry = new SkillRegistry(paths.skillsDir, { projects: () => [repo], onChange: (change) => changes.push(change) });
+    expect(registry.get("alpha")?.description).toBe("a1");
+    expect(registry.get("h")?.name).toBe("h");
+    expect(changes).toEqual([]); // nothing is reported before the first list()
+    registry.list();
+    expect(changes).toEqual([]); // and the inventory itself is not a change
+    const seen: string[] = [];
+    const off = registry.onChange((change) => seen.push(`${change.action}:${change.name}`));
+    writeFileSync(path.join(dir, "SKILL.md"), "---\nname: alpha\ndescription: a2\n---\nbody");
+    touchLater(path.join(dir, "SKILL.md"), 5);
+    expect(registry.get("alpha")?.description).toBe("a2");
+    expect(changes.at(-1)).toEqual({ name: "alpha", action: "changed", source: { type: "home" } });
+    writeSkill(paths, "beta", "description: b");
+    writeFileSync(path.join(repo, "skillhook.yaml"), "hooks:\n  h:\n    run: echo two\n");
+    touchLater(path.join(repo, "skillhook.yaml"), 10);
+    rmSync(dir, { recursive: true, force: true });
+    expect(registry.list().skills.map((s) => s.name)).toEqual(["beta", "h"]);
+    expect(seen).toEqual(["changed:alpha", "added:beta", "changed:h", "removed:alpha"]);
+    expect(changes.filter((change) => change.name === "h").at(-1)?.source).toMatchObject({ type: "project", dir: repo });
+    off();
+    writeSkill(paths, "gamma", "description: g");
+    registry.list();
+    expect(seen).toHaveLength(4);
+    expect(changes.at(-1)).toEqual({ name: "gamma", action: "added", source: { type: "home" } });
   });
 
   it("reads the project list from skillhook.json and notices edits", () => {

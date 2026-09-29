@@ -21,6 +21,13 @@ export function isJobId(value: string): boolean {
   return JOB_ID_RE.test(value);
 }
 
+/** The UTC instant a job id encodes (`20260915T221501Z-k3x9q2` → 2026-09-15T22:15:01Z), or undefined for anything else. */
+export function idToDate(id: string): Date | undefined {
+  if (!JOB_ID_RE.test(id)) return undefined;
+  const date = new Date(`${id.slice(0, 4)}-${id.slice(4, 6)}-${id.slice(6, 8)}T${id.slice(9, 11)}:${id.slice(11, 13)}:${id.slice(13, 15)}Z`);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
 /** URL-safe random secret (43 chars for 32 bytes). */
 export function generateSecret(bytes = 32): string {
   return randomBytes(bytes).toString("base64url");

@@ -6,6 +6,19 @@ export interface RunPaths {
   eventPath: string;
   promptPath: string;
   lastMessagePath: string;
+  /** Where the agent may write its `{outcome, summary, links, data}` (also `SKILLHOOK_RESPONSE_PATH`). */
+  responsePath: string;
+  /** The JSON Schema written for `response: { mode: structured }` runs (Codex reads it from disk). */
+  responseSchemaPath: string;
+}
+
+/** The per-run MCP server the agent talks to (`skillhook mcp --job`), when the skill's `agent_api` is `mcp`. */
+export interface AgentApiServer {
+  /** Server name as the agent sees it (`skillhook-job`). */
+  name: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
 }
 
 export interface RunContext {
@@ -21,6 +34,9 @@ export interface RunContext {
   effort?: string;
   timeoutSeconds: number;
   paths: RunPaths;
+  agentApi?: AgentApiServer;
+  /** Continue an earlier session (a person answered the agent's question) instead of starting a new one. */
+  resume?: { sessionId: string };
 }
 
 export interface RunnerInvocation {
@@ -38,6 +54,7 @@ export interface StreamState {
   failed?: string;
   usage?: unknown;
   resultEvent?: Record<string, unknown>;
+  structuredOutput?: unknown;
 }
 
 export interface RunnerOutcome {
@@ -48,6 +65,8 @@ export interface RunnerOutcome {
   usage?: unknown;
   numTurns?: number;
   error?: string;
+  /** The JSON answer of a `response: { mode: structured }` run, as the runner returned it. */
+  structuredOutput?: unknown;
 }
 
 export interface RunnerIO {

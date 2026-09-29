@@ -19,7 +19,7 @@ function ctx(frontmatter = "", overrides: Partial<RunContext> = {}): RunContext 
     cwd: "/work",
     env: { PATH: "/bin" },
     timeoutSeconds: 10,
-    paths: { payloadPath: "/jobs/j1/payload.json", eventPath: "/jobs/j1/event.json", promptPath: "/jobs/j1/prompt.md", lastMessagePath: "/jobs/j1/last-message.md" },
+    paths: { payloadPath: "/jobs/j1/payload.json", eventPath: "/jobs/j1/event.json", promptPath: "/jobs/j1/prompt.md", lastMessagePath: "/jobs/j1/last-message.md", responsePath: "/jobs/j1/response.json", responseSchemaPath: "/jobs/j1/response.schema.json" },
     ...overrides,
   };
 }
@@ -40,6 +40,19 @@ describe("claude runner", () => {
     expect(inv.args[inv.args.indexOf("--append-system-prompt") + 1]).toBe("GUARD");
     expect(inv.stdin).toBe("PROMPT");
     expect(inv.cwd).toBe("/work");
+  });
+
+  it("injects the job API as an MCP server and resumes a session when asked", () => {
+    const agentApi = { name: "skillhook-job", command: "/usr/bin/node", args: ["/opt/skillhook/dist/cli.js", "mcp", "--job", "--dir", "/home/me/.skillhook"], env: { SKILLHOOK_JOB_ID: "j1", SKILLHOOK_JOB_DIR: "/jobs/j1" } };
+    const inv = claudeRunner.build(ctx("allowed-tools: Read", { agentApi }));
+    const config = JSON.parse(inv.args[inv.args.indexOf("--mcp-config") + 1] as string) as { mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }> };
+    expect(config.mcpServers["skillhook-job"]).toEqual({ command: "/usr/bin/node", args: ["/opt/skillhook/dist/cli.js", "mcp", "--job", "--dir", "/home/me/.skillhook"], env: { SKILLHOOK_JOB_ID: "j1", SKILLHOOK_JOB_DIR: "/jobs/j1" } });
+    expect(inv.args[inv.args.indexOf("--allowedTools") + 1]).toBe("Read,mcp__skillhook-job");
+    expect(inv.args).not.toContain("--resume");
+    const resumed = claudeRunner.build(ctx("", { resume: { sessionId: "sess-123" } }));
+    expect(resumed.args[resumed.args.indexOf("--resume") + 1]).toBe("sess-123");
+    expect(resumed.args).not.toContain("--mcp-config");
+    expect(resumed.args).not.toContain("--allowedTools");
   });
 
   it("supports array commands and skips --add-dir for the cwd", () => {
@@ -80,6 +93,26 @@ describe("claude runner", () => {
     const outcome = claudeRunner.parse({ stdout: "", stderr: "boom\nreal error here", exitCode: 2, signal: null, state: {} }, ctx());
     expect(outcome).toMatchObject({ ok: false, error: "boom\nreal error here" });
   });
+
+  it("asks for structured output only when the skill wants it, and reads it back", () => {
+    expect(claudeRunner.build(ctx()).args).not.toContain("--json-schema");
+    const c = ctx("skillhook:\n  response:\n    mode: structured");
+    const inv = claudeRunner.build(c);
+    const schema = JSON.parse(inv.args[inv.args.indexOf("--json-schema") + 1] as string) as { required: string[]; properties: Record<string, unknown> };
+    expect(schema.required).toEqual(["outcome", "summary"]);
+    expect(Object.keys(schema.properties)).toEqual(["outcome", "summary", "links", "data"]);
+    const state: StreamState = {};
+    const line = JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "", session_id: "s", structured_output: { outcome: "needs_human", summary: "Ask Bob", links: ["https://x"] } });
+    claudeRunner.onLine?.(line, state);
+    expect(state.structuredOutput).toMatchObject({ outcome: "needs_human" });
+    const outcome = claudeRunner.parse({ stdout: line, stderr: "", exitCode: 0, signal: null, state }, c);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.structuredOutput).toEqual({ outcome: "needs_human", summary: "Ask Bob", links: ["https://x"] });
+    expect(outcome.result).toBe("Ask Bob");
+    const custom = ctx("skillhook:\n  response:\n    mode: structured\n    schema:\n      type: object\n      properties:\n        ticket: { type: string }");
+    const customInv = claudeRunner.build(custom);
+    expect(JSON.parse(customInv.args[customInv.args.indexOf("--json-schema") + 1] as string)).toEqual({ type: "object", properties: { ticket: { type: "string" } } });
+  });
 });
 
 describe("codex runner", () => {
@@ -99,6 +132,26 @@ describe("codex runner", () => {
     expect(joined).toContain("--add-dir /skills/demo --add-dir /jobs/j1 --add-dir /extra");
     expect(inv.args[inv.args.length - 1]).toBe("-");
     expect(inv.stdin).toBe("GUARD\n\nPROMPT");
+  });
+
+  it("configures the job API through -c and continues a thread with exec resume", () => {
+    const agentApi = { name: "skillhook-job", command: "/usr/bin/node", args: ["/opt/cli.js", "mcp", "--job"], env: { SKILLHOOK_JOB_ID: "j1", SKILLHOOK_JOB_DIR: "/jobs/j1" } };
+    const inv = codexRunner.build(ctx("", { agentApi }));
+    const joined = inv.args.join(" ");
+    expect(joined).toContain('-c mcp_servers.skillhook_job.command="/usr/bin/node"');
+    expect(joined).toContain('-c mcp_servers.skillhook_job.args=["/opt/cli.js", "mcp", "--job"]');
+    expect(joined).toContain('-c mcp_servers.skillhook_job.env={ SKILLHOOK_JOB_ID = "j1", SKILLHOOK_JOB_DIR = "/jobs/j1" }');
+    // `codex exec resume` takes neither -C, -s nor --add-dir: the sandbox travels as -c sandbox_mode, cwd is the spawn cwd.
+    const resumed = codexRunner.build(ctx("skillhook:\n  codex:\n    sandbox: workspace-write\n    add_dirs: [/extra]", { resume: { sessionId: "thread-9" } }));
+    expect(resumed.args.slice(0, 5)).toEqual(["exec", "resume", "thread-9", "--json", "--skip-git-repo-check"]);
+    const joinedResume = resumed.args.join(" ");
+    expect(joinedResume).toContain('-c sandbox_mode="workspace-write"');
+    expect(joinedResume).toContain("-c sandbox_workspace_write.network_access=true");
+    expect(joinedResume).not.toContain("-C ");
+    expect(joinedResume).not.toContain("-s ");
+    expect(joinedResume).not.toContain("--add-dir");
+    expect(resumed.args[resumed.args.length - 1]).toBe("-");
+    expect(resumed.cwd).toBe("/work");
   });
 
   it("omits network override outside workspace-write", () => {
@@ -131,6 +184,26 @@ describe("codex runner", () => {
     for (const line of lines) codexRunner.onLine?.(line, state);
     const outcome = codexRunner.parse({ stdout: lines.join("\n"), stderr: "", exitCode: 0, signal: null, state }, ctx());
     expect(outcome).toMatchObject({ ok: true, result: "pong", sessionId: "t1", usage: { input_tokens: 5, output_tokens: 1 } });
+  });
+
+  it("passes a schema file when the skill wants structured output and parses the JSON answer", () => {
+    expect(codexRunner.build(ctx()).args).not.toContain("--output-schema");
+    const c = ctx("skillhook:\n  runner: codex\n  response:\n    mode: structured");
+    const inv = codexRunner.build(c);
+    expect(inv.args.join(" ")).toContain("--output-schema /jobs/j1/response.schema.json");
+    expect(inv.args[inv.args.length - 1]).toBe("-");
+    const lines = [
+      JSON.stringify({ type: "thread.started", thread_id: "t2" }),
+      JSON.stringify({ type: "item.completed", item: { id: "i", type: "agent_message", text: JSON.stringify({ outcome: "nothing_to_do", summary: "Nothing changed" }) } }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } }),
+    ];
+    const state: StreamState = {};
+    for (const line of lines) codexRunner.onLine?.(line, state);
+    const outcome = codexRunner.parse({ stdout: lines.join("\n"), stderr: "", exitCode: 0, signal: null, state }, c);
+    expect(outcome).toMatchObject({ ok: true, result: "Nothing changed", structuredOutput: { outcome: "nothing_to_do", summary: "Nothing changed" } });
+    const prose = codexRunner.parse({ stdout: "", stderr: "", exitCode: 0, signal: null, state: { lastMessage: "just prose" } }, c);
+    expect(prose).toMatchObject({ ok: true, result: "just prose" });
+    expect(prose.structuredOutput).toBeUndefined();
   });
 });
 

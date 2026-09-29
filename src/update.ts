@@ -2,7 +2,10 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { findRunningServer } from "./client.js";
 import type { Paths } from "./paths.js";
+import { restartService, serviceStatus } from "./service.js";
+import { run } from "./tailscale.js";
 import { isDirectory, readJsonFileOr, trimTrailing, writeJsonFile } from "./util.js";
 import { PACKAGE, VERSION } from "./version.js";
 
@@ -230,6 +233,62 @@ export function releaseNotesUrl(version: string): string {
 export function formatUpdateNotice(status: UpdateStatus, install: InstallInfo = detectInstall()): string {
   const how = install.command ? `skillhook update --install   (or: ${install.display})` : install.display;
   return [`Update available: ${PACKAGE.name} ${status.current} → ${status.latest}`, `  ${how}`, `  ${releaseNotesUrl(status.latest ?? "")}`].join("\n");
+}
+
+export interface ApplyUpdateOptions {
+  env?: NodeJS.ProcessEnv;
+  /** Run the package manager that installed skillhook (only when a newer version exists). */
+  install?: boolean;
+  /** After an install, restart the background service when it runs and has no jobs in progress (default true; the server's own route passes false). */
+  restartService?: boolean;
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
+  /** Injectable for tests. */
+  runInstall?: (target: InstallInfo) => Promise<{ code: number; stdout: string; stderr: string }>;
+}
+
+export interface ApplyUpdateResult {
+  ok: boolean;
+  current: string;
+  latest: string | null;
+  available: boolean;
+  checked_at: string | null;
+  registry: string;
+  cached: boolean;
+  install: { method: InstallInfo["method"]; command: string };
+  release_notes: string | null;
+  installed: boolean;
+  service_restarted: boolean;
+  service_note: string | null;
+  /** Why nothing could be installed (the registry did not answer, a source checkout, the package manager failed). */
+  error?: string;
+}
+
+/** The update check and, when asked, the upgrade: what `skillhook update`, `POST /update` and the MCP tool `check_update` share. */
+export async function applyUpdate(paths: Paths, options: ApplyUpdateOptions = {}): Promise<ApplyUpdateResult> {
+  const env = options.env ?? process.env;
+  const registry = registryUrl(env);
+  const status = await checkForUpdate(paths, { env, force: true, timeoutMs: options.timeoutMs ?? 8_000, fetchImpl: options.fetchImpl });
+  const install = detectInstall();
+  const result: ApplyUpdateResult = { ok: true, current: status.current, latest: status.latest, available: status.available, checked_at: status.checked_at, registry, cached: status.cached, install: { method: install.method, command: install.display }, release_notes: status.latest ? releaseNotesUrl(status.latest) : null, installed: false, service_restarted: false, service_note: null };
+  if (status.latest === null) return { ...result, ok: false, error: `could not reach ${registry} to check for updates` };
+  if (!options.install || !status.available) return result;
+  const target = detectInstall(undefined, status.latest);
+  if (!target.command) return { ...result, ok: false, error: `skillhook ${VERSION} runs from ${target.method === "npx" ? "the npx cache" : "a source checkout"}; upgrade with: ${target.display}` };
+  const runInstall = options.runInstall ?? ((t: InstallInfo) => run(t.command![0] as string, t.command!.slice(1), { timeoutMs: 300_000 }));
+  const output = await runInstall(target);
+  if (output.code !== 0) return { ...result, ok: false, error: `${target.display} failed (exit ${output.code}):\n${(output.stderr || output.stdout).trim()}` };
+  result.installed = true;
+  result.install = { method: target.method, command: target.display };
+  // A running service keeps executing the old code until it restarts; do that only when no job would be interrupted.
+  const service = await serviceStatus(paths);
+  if (!service.running) return result;
+  if (options.restartService === false) return { ...result, service_note: `The background service still runs ${VERSION}; restart it to run ${status.latest} (POST /control/restart, or: skillhook service restart)` };
+  const running = await findRunningServer(paths);
+  const busy = running?.health.queue ? running.health.queue.running + running.health.queue.queued : 0;
+  if (busy > 0) return { ...result, service_note: `The background service still runs ${VERSION} and has ${busy} job(s) in progress; restart it later with: skillhook service restart` };
+  const restart = await restartService();
+  return { ...result, service_restarted: restart.ok, service_note: restart.ok ? `Background service restarted; it now runs ${status.latest}.` : `Could not restart the background service (${restart.output}). Run: skillhook service restart` };
 }
 
 /** For the end of a CLI command: the notice to print (when a newer version is already known) and whether the cache needs a refresh. */

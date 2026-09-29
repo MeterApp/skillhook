@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { JobStore } from "./jobs.js";
+import { isWaitingForHuman, JobStore } from "./jobs.js";
 import type { WebhookEvent } from "./payload.js";
 import { tempHome } from "./test-support/helpers.js";
 
@@ -47,6 +47,47 @@ describe("JobStore", () => {
     expect(s.list({ skill: "a" }).map((j) => j.id)).toEqual([a.id]);
     expect(s.list({ status: ["failed"] }).map((j) => j.id)).toEqual([b.id]);
     expect(s.list({ limit: 1 })).toHaveLength(1);
+    expect(s.list({ trigger: "webhook" })).toHaveLength(2);
+    expect(s.list({ trigger: ["cli", "api"] })).toEqual([]);
+    expect(s.list({ outcome: "failed" }).map((j) => j.id)).toEqual([b.id]); // derived from status for records without one
+    expect(s.list({ outcome: ["unknown", "completed"] })).toEqual([]); // a is still queued
+    s.update(a.id, { status: "succeeded", outcome: "needs_human" });
+    expect(s.list({ outcome: "needs_human" }).map((j) => j.id)).toEqual([a.id]);
+    s.update(b.id, { failure: { kind: "rate_limit", retryable: true } });
+    expect(s.list({ failure: "rate_limit" }).map((j) => j.id)).toEqual([b.id]);
+    expect(s.list({ failure: ["auth", "crash"] })).toEqual([]);
+    const page = s.listPage({ limit: 1 });
+    expect(page.jobs.map((j) => j.id)).toEqual([b.id]);
+    expect(page.next_after).toBe(b.id);
+    const rest = s.listPage({ limit: 1, after: b.id });
+    expect(rest.jobs.map((j) => j.id)).toEqual([a.id]);
+    expect(rest.next_after).toBe(a.id);
+    expect(s.listPage({ limit: 1, after: a.id })).toEqual({ jobs: [], next_after: null });
+    expect(s.listPage({ since: b.created_at }).jobs.map((j) => j.id)).toEqual([b.id]);
+    expect(s.listPage({ until: a.created_at }).jobs.map((j) => j.id)).toEqual([a.id]);
+    expect(s.listPage({ since: "nonsense" }).jobs).toHaveLength(2);
+  });
+
+  it("knows which jobs wait for a person", () => {
+    const s = store();
+    const src = { ip: "", method: "POST", path: "", content_type: null };
+    const asked = s.create({ skill: "a", trigger: "webhook", runner: "claude", source: src, event: event("a", {}) });
+    const needy = s.create({ skill: "b", trigger: "webhook", runner: "claude", source: src, event: event("b", {}) });
+    const done = s.create({ skill: "c", trigger: "webhook", runner: "claude", source: src, event: event("c", {}) });
+    expect(s.list({ waiting: true })).toEqual([]);
+    const question = { id: "q1", text: "A or B?", asked_at: "2026-09-28T12:00:00.000Z" };
+    s.update(asked.id, { status: "running", question });
+    s.update(needy.id, { status: "succeeded", outcome: "needs_human", response: { outcome: "needs_human", summary: "Need a decision" } });
+    s.update(done.id, { status: "succeeded", outcome: "completed" });
+    expect(s.list({ waiting: true }).map((j) => j.id).sort()).toEqual([asked.id, needy.id].sort());
+    expect(isWaitingForHuman(s.get(done.id)!)).toBe(false);
+    // An answer, or a resume job, ends the wait.
+    s.update(asked.id, { question: { ...question, answered_at: "2026-09-28T12:01:00.000Z" }, answer: { question_id: "q1", text: "A", at: "2026-09-28T12:01:00.000Z" } });
+    s.update(needy.id, { resolved_by: "20260928T120100Z-resume" });
+    expect(s.list({ waiting: true })).toEqual([]);
+    // A finished job whose question was never answered still waits.
+    s.update(asked.id, { status: "succeeded", outcome: "needs_human", question, answer: undefined });
+    expect(s.list({ waiting: true }).map((j) => j.id)).toEqual([asked.id]);
   });
 
   it("remembers deliveries within the window", () => {

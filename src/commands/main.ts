@@ -9,10 +9,16 @@ import { skillsCommand } from "./skills.js";
 import { secretCommand } from "./secret.js";
 import { runCommand } from "./run.js";
 import { sendCommand } from "./send.js";
+import { healthCommand } from "./health.js";
+import { jobCommand } from "./job.js";
 import { jobsCommand } from "./jobs.js";
+import { runnersCommand } from "./runners.js";
+import { statsCommand } from "./stats.js";
+import { deliveriesCommand } from "./deliveries.js";
 import { exposeCommand, urlCommand } from "./expose.js";
 import { serviceCommand } from "./service.js";
 import { doctorCommand } from "./doctor.js";
+import { cloudCommand } from "./cloud.js";
 import { configCommand } from "./config.js";
 import { mcpCommand } from "./mcp.js";
 import { updateCommand } from "./update.js";
@@ -28,6 +34,8 @@ Usage: skillhook <command> [options]
 Setup
   init [--runner claude|codex|shell] [--model M] [--port N] [--force]   Create ~/.skillhook: config, secrets, hello skill
   doctor                                                   Check node, config, secrets, skills, claude/codex login, Tailscale, server, service
+  health [--quick] [--refresh] [--no-network] [--local]     Doctor plus MCP servers, plugins, codex doctor, disk and last runs, grouped; via the running server when there is one
+  runners [--refresh] [--local]                            Is each runner installed and logged in: what every job checks before it starts
   serve [--port N] [--host H] [--log-level L] [--pretty]   Run the webhook server in the foreground
   service install|uninstall|status|restart|logs [--lines N] [--follow]   Run the server at login (launchd / systemd --user)
   expose tailscale [--serve] [--port N] | status | off     Permanent HTTPS URL via Tailscale Funnel (or tailnet-only Serve)
@@ -45,14 +53,23 @@ Projects (a repository's skillhook.yaml: webhook name → shell command, SKILL.m
 
 Running
   run <skill> [--payload JSON|@file|-] [--header "K: v"]... [--runner R] [--model M] [--effort E] [--cwd DIR] [--wait S] [--dry-run]
+  run --file SKILL.md | --stdin [same options]             Run a SKILL.md that is not installed (kept with the job)
   send <skill> [--payload …] [--wait S] [--url BASE|--public|--local] [--header "K: v"]...   POST a signed test webhook
   schedules list | next <name> [--count N] | run <name> [--wait S]   Skills with a schedule: next and last runs; fire one now
-  jobs list [--skill S] [--status ST] [--limit N] | show <id> [--result|--prompt|--stdout|--stderr] | logs <id> [-f]
-  jobs cancel <id> | resume <id> [--exec] | path <id> | prune [--keep N]
+  jobs list [--skill S] [--status ST] [--outcome O] [--failure K] [--trigger T] [--waiting] [--since ISO] [--after ID] [--limit N] | show <id> [--result|--prompt|--stdout|--stderr] | logs <id> [-f]
+  jobs answer <id> "<answer>" [--option X] [--by NAME] [--no-resume] [--wait S]   Answer a job that asked (live) or ended needs_human (resumes the session)
+  jobs cancel <id> | replay <id> [--skip-filters] [--wait S] | resume <id> [--exec] | path <id> | prune [--keep N]
+  deliveries list [--skill S] [--outcome O] [--since ISO] [--after ID] [--limit N] | show <id> [--body]   Every webhook received, whatever became of it
+  deliveries replay <id> [--force] [--skip-filters] [--runner R] [--model M] [--wait S]   Run a recorded delivery again (no signature check)
+  stats [--since 24h|7d|ISO] [--until ISO] [--skill S]      Jobs by status, outcome, runner and failure; durations, cost, tokens; deliveries; per skill
 
 Agents
   mcp [--print-config]                                     MCP server over stdio (tools for Claude Code, Codex, Cursor, …)
-  config show | get <key> | set <key> <value> | unset <key> | path
+  mcp --job                                                The per-run job API as an MCP server (the runners start it; needs $SKILLHOOK_JOB_ID/$SKILLHOOK_JOB_DIR)
+  job progress "<msg>" [--state working|blocked] [--percent N] | ask "<question>" [--option A]... [--wait S] | outcome <o> [--summary S] | note "<text>" | context
+                                                           Inside a run: report progress, ask a person (waits for the answer), report the outcome
+  config show | get <key> | set <key> <value> | unset <key> | reload | path   set/unset tell the running server; most keys apply live, host/port at the next start
+  cloud connect --code XXXX-XXXX [--control] | disconnect | status   Pair this machine with Skillhook Cloud (opt-in; docs/cloud.md)
 
 Global options: --dir <path> (default $SKILLHOOK_HOME or ~/.skillhook), --json, --help, --version
 Each subcommand prints its own usage on a mistake. Docs: https://github.com/MeterApp/skillhook
@@ -70,13 +87,19 @@ const COMMANDS: Record<string, Command> = {
   run: runCommand,
   send: sendCommand,
   jobs: jobsCommand,
-  job: jobsCommand,
+  job: jobCommand,
+  deliveries: deliveriesCommand,
+  delivery: deliveriesCommand,
   expose: exposeCommand,
   url: urlCommand,
   urls: urlCommand,
   service: serviceCommand,
   doctor: doctorCommand,
+  health: healthCommand,
+  runners: runnersCommand,
+  stats: statsCommand,
   config: configCommand,
+  cloud: cloudCommand,
   mcp: mcpCommand,
   update: updateCommand,
   upgrade: updateCommand,

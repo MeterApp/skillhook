@@ -4,6 +4,8 @@ const LEVELS: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error:
 
 export interface Logger {
   level: LogLevel;
+  /** Changes the threshold in place (a config reload). */
+  setLevel(level: LogLevel): void;
   debug(msg: string, fields?: Record<string, unknown>): void;
   info(msg: string, fields?: Record<string, unknown>): void;
   warn(msg: string, fields?: Record<string, unknown>): void;
@@ -20,7 +22,7 @@ export interface LoggerOptions {
 }
 
 export function createLogger(options: LoggerOptions = {}): Logger {
-  const level = options.level ?? (process.env.SKILLHOOK_LOG_LEVEL as LogLevel | undefined) ?? "info";
+  let level = options.level ?? (process.env.SKILLHOOK_LOG_LEVEL as LogLevel | undefined) ?? "info";
   const format = options.format ?? "json";
   const stream = options.stream ?? process.stderr;
   const base = options.base ?? {};
@@ -39,6 +41,10 @@ export function createLogger(options: LoggerOptions = {}): Logger {
 
   const logger: Logger = {
     level,
+    setLevel(next) {
+      level = next;
+      logger.level = next;
+    },
     debug: (msg, fields) => write("debug", msg, fields),
     info: (msg, fields) => write("info", msg, fields),
     warn: (msg, fields) => write("warn", msg, fields),
@@ -50,6 +56,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
 
 export const silentLogger: Logger = {
   level: "error",
+  setLevel() {},
   debug() {},
   info() {},
   warn() {},

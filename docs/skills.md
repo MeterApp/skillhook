@@ -79,6 +79,11 @@ Unknown top-level keys are allowed. Unknown keys inside `skillhook:` are rejecte
 | `claude` | object | — | Claude-only options, below. |
 | `codex` | object | — | Codex-only options, below. |
 | `shell` | `{ command: string \| string[] }` | — | Required when `runner: shell`. |
+| `response` | `{ mode?: text \| file \| structured, schema?: object }` | `{ mode: text }` | How the job's task outcome is read: the agent may write `response.json` (`text`), is asked to (`file`), or must answer with JSON matching `schema` (`structured`, through `claude --json-schema` / `codex --output-schema`). See [Reporting the outcome](#reporting-the-outcome). |
+| `fallback` | `{ runners: [codex \| claude \| shell], on?: [not_ready \| auth \| usage_limit \| rate_limit \| crash] }` | `defaults.fallback` in `skillhook.json`, else none | Other runners for when this one is not installed or not logged in (`not_ready`, checked before the run) or, with the other triggers, failed that way before the agent produced anything. See [runners.md](runners.md#fallback-and-retry). |
+| `retry` | `{ attempts: 1–3, on?: [failure kinds], backoff_seconds?: n }` | none | Run again on the same runner after a `rate_limit` or `crash` (default kinds) that happened before the agent produced anything. Idempotent skills only. |
+| `agent_api` | `mcp` \| `cli` \| `none` | `mcp` (`cli` for `runner: shell`) | How the running agent reaches the job API (progress reports, asking a person, the outcome): `mcp` injects a per-run MCP server with `job_*` tools, `cli` relies on `skillhook job …` (always available), `none` mentions neither. See [Reporting progress and asking a person](#reporting-progress-and-asking-a-person). |
+| `human_wait_seconds` | integer 1–86400 | 300 | How long `job_ask_human` / `skillhook job ask` waits for a person's answer by default. The job's timeout clock is paused meanwhile. |
 | `enabled` | boolean | `true` | `false` makes the webhook answer `404 unknown_skill`; `skills list` shows `(disabled)`. |
 | `schedule` | string, object or `false` | none | Also run on a cron schedule: `"5 * * * *"` (UTC) or `{ cron, timezone, catch_up, overlap, payload }`; `false` cancels a schedule inherited from a SKILL.md. See [schedules.md](schedules.md). |
 | `webhook` | boolean | `true` | `false` makes a scheduled skill schedule-only: `POST /hooks/<name>` answers `404 schedule_only` and no secret is required. |
@@ -235,6 +240,7 @@ The Markdown body is rendered with a minimal template engine before it is sent t
 | `{{payload_json}}` | The payload as compact single-line JSON (not truncated). |
 | `{{payload_path}}` | Absolute path of `payload.json` in the job directory. |
 | `{{event_path}}` | Absolute path of `event.json`. |
+| `{{response_path}}` | Absolute path of `response.json` in the job directory, where the agent reports the outcome (see [Reporting the outcome](#reporting-the-outcome)). |
 | `{{headers}}` | Redacted request headers as pretty JSON (see below). |
 | `{{headers.x-github-event}}` | One header (case-insensitive). |
 | `{{query.foo}}` | One query-string parameter. |
@@ -245,7 +251,7 @@ The Markdown body is rendered with a minimal template engine before it is sent t
 | `{{received_at}}` | ISO-8601 timestamp of the delivery. |
 | `{{source_ip}}` | Client IP (taken from `X-Forwarded-For`, `X-Real-IP` or `CF-Connecting-IP` when the request came through a loopback proxy such as Tailscale). |
 | `{{delivery_id}}` | Delivery id (empty when none). |
-| `{{trigger}}` | `webhook`, `cli` (`skillhook run`), `mcp` (MCP `run_skill` without a server), `api` (`POST /skills/<name>/run`, including MCP runs through a running server) or `schedule` (a `schedule:` slot fired; the payload is then skillhook's `{scheduled_for, schedule}` object, see [schedules.md](schedules.md)). |
+| `{{trigger}}` | `webhook`, `cli` (`skillhook run`), `mcp` (MCP `run_skill` without a server), `api` (`POST /skills/<name>/run`, including MCP runs through a running server), `schedule` (a `schedule:` slot fired; the payload is then skillhook's `{scheduled_for, schedule}` object, see [schedules.md](schedules.md)) `replay` (an operator replayed an earlier delivery or job; the headers carry `x-skillhook-replay-of`), `test` (a SKILL.md supplied with the request: `skillhook run --file`, `POST /skills/test`) or `resume` (a person answered an earlier job's question; the run continues that job's session, see [Reporting progress and asking a person](#reporting-progress-and-asking-a-person)). |
 
 Unknown placeholders render as an empty string. Headers whose name matches `signature`, `token`, `secret`, `api-key`/`apikey`, `authorization`, `cookie` or `password` are removed before they reach `{{headers}}`, `event.json` or the agent.
 
@@ -294,10 +300,80 @@ Independently of the body, every run carries the guardrails (as `--append-system
 | Working directory | `cwd` (skill, then `defaults.cwd`, then the skill directory), `~` expanded. |
 | Extra directories | The skill directory and the job directory are added with `--add-dir` (Claude and Codex) unless one of them is the cwd; plus `claude.add_dirs` / `codex.add_dirs`. |
 | Files | `<job_dir>/payload.json` (pretty JSON or raw text), `<job_dir>/event.json` (method, path, query, redacted headers, source IP, content type, delivery id, payload), `<job_dir>/prompt.md`; `body.bin` for binary bodies. |
-| Environment | `SKILLHOOK_JOB_ID`, `SKILLHOOK_JOB_DIR`, `SKILLHOOK_SKILL`, `SKILLHOOK_SKILL_DIR`, `SKILLHOOK_PAYLOAD_PATH`, `SKILLHOOK_EVENT_PATH`, `SKILLHOOK_PROMPT_PATH`, `SKILLHOOK_TRIGGER`, `SKILLHOOK_RUNNER`; the variables listed in `env:` and in `env_passthrough`; runner credentials (`ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*`) and basic session variables. `SKILLHOOK_SECRET_*` and `SKILLHOOK_ADMIN_TOKEN` are never forwarded unless listed in `env:`. Full table in [runners.md](runners.md#environment). |
-| Result | The agent's final message becomes `result.md` and `job.result`; with `?wait=` it is returned in the HTTP response. |
+| Environment | `SKILLHOOK_JOB_ID`, `SKILLHOOK_JOB_DIR`, `SKILLHOOK_SKILL`, `SKILLHOOK_SKILL_DIR`, `SKILLHOOK_PAYLOAD_PATH`, `SKILLHOOK_EVENT_PATH`, `SKILLHOOK_PROMPT_PATH`, `SKILLHOOK_RESPONSE_PATH`, `SKILLHOOK_TRIGGER`, `SKILLHOOK_RUNNER`, `SKILLHOOK_HOME`, `SKILLHOOK_BIN` (how to run `skillhook` itself, for `skillhook job …`), `SKILLHOOK_HUMAN_WAIT_SECONDS`; the variables listed in `env:` and in `env_passthrough`; runner credentials (`ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*`) and basic session variables. `SKILLHOOK_SECRET_*` and `SKILLHOOK_ADMIN_TOKEN` are never forwarded unless listed in `env:`. Full table in [runners.md](runners.md#environment). |
+| Result | The agent's final message becomes `result.md` and `job.result`; what it reports in `response.json` (or as a structured answer) becomes `job.response` and `job.outcome`. With `?wait=` all of them are returned in the HTTP response. |
+| Job API | The `job_*` tools of a per-run MCP server (Claude and Codex, `agent_api: mcp`) or `$SKILLHOOK_BIN job progress\|ask\|outcome\|note\|context`: progress reports, questions to a person, the outcome. See [Reporting progress and asking a person](#reporting-progress-and-asking-a-person). |
 
 Request bodies are parsed by content type: JSON (`*/json`, `*+json`, or anything that looks like JSON) becomes the payload object; `application/x-www-form-urlencoded` becomes an object (GitHub's legacy `payload=<json>` form is unwrapped); `text/*` and XML stay strings; anything else that is valid UTF-8 up to 256 KiB is kept as text; other bodies are stored as `body.bin` and the payload is `{"binary": true, "bytes": N, "content_type": "…"}`.
+
+## Reporting the outcome
+
+A job's `status` says how the runner process ended (`succeeded`, `failed`, `timed_out`, …). Whether the *task* was done is a separate field, `outcome`, set when the job ends:
+
+| `outcome` | Meaning |
+|---|---|
+| `completed` | The task is done. |
+| `partial` | Some of it is; the summary says what remains. |
+| `needs_human` | A person must decide or act before it can be finished. |
+| `nothing_to_do` | The event needed no action. |
+| `failed` | The task could not be done. Also every job whose status is not `succeeded`. |
+| `unknown` | The run succeeded but the agent reported nothing. |
+
+The agent reports it by writing `response.json` in the job directory (`{{response_path}}`, `SKILLHOOK_RESPONSE_PATH`):
+
+```json
+{
+  "outcome": "needs_human",
+  "summary": "Reproduced the crash. The fix touches billing and needs a review before I open the PR.",
+  "links": ["https://github.com/acme/api/issues/42"],
+  "data": { "branch": "fix/42" }
+}
+```
+
+`outcome` and `summary` (one paragraph for a person) are what matter; `links` and `data` are optional. The object becomes `job.response`, its outcome `job.outcome`, and both are in the `?wait=` response, in `GET /jobs?outcome=needs_human`, in `skillhook jobs list --outcome needs_human` and in the MCP `list_jobs` tool. A shell command that exits 0 counts as `completed` unless it writes `response.json`.
+
+`response.mode` chooses how firmly skillhook asks for it:
+
+- `text` (default): the guardrails mention the file; a skill that never writes it ends with `outcome: unknown`.
+- `file`: the guardrails ask the agent to write it before finishing.
+- `structured`: the runner is made to answer with JSON. Claude Code runs with `--json-schema` and returns the validated object as `structured_output`; Codex runs with `--output-schema <job dir>/response.schema.json` and its final message is the JSON. skillhook writes the answer to `response.json` too. The default schema is `{outcome, summary, links, data}` with `outcome` limited to the five values above; `response.schema` replaces it with your own JSON Schema, in which case the whole object is kept as `response.data` and the outcome is `completed` (or `failed` when the run failed) unless your schema has an `outcome` field.
+
+```yaml
+skillhook:
+  response:
+    mode: structured
+```
+
+## Reporting progress and asking a person
+
+Nobody watches an unattended run, but the agent is not cut off: every job has a small API through which it reports what it is doing and, when it must, asks a person a question and waits for the answer. The guardrails describe it; nothing needs to be set up.
+
+| What | MCP tool (`agent_api: mcp`, the default for Claude and Codex) | CLI (`agent_api: cli`, the default for `runner: shell`; also works alongside `mcp`) |
+|---|---|---|
+| Progress | `job_progress {message, state?: working\|blocked, percent?, step?}` | `$SKILLHOOK_BIN job progress "<message>" [--state blocked] [--percent N] [--step S]` |
+| Ask a person | `job_ask_human {question, options?, context?, wait_seconds?}` → `{answered, answer, option, by}` | `$SKILLHOOK_BIN job ask "<question>" [--option A]... [--context TEXT] [--wait S]` (prints JSON; exit code 3 when no answer came) |
+| Outcome | `job_set_outcome {outcome, summary, links?, data?}` (same as writing `response.json`) | `$SKILLHOOK_BIN job outcome <outcome> [--summary S] [--link URL]... [--data JSON]` |
+| Note | `job_note {text}` | `$SKILLHOOK_BIN job note "<text>"` |
+| Context | `job_context {}`: the job, the files, earlier questions and answers | `$SKILLHOOK_BIN job context` |
+
+The MCP server is `skillhook mcp --job`, started by the runner for each job (Claude Code with `--mcp-config`, Codex with `-c mcp_servers.skillhook_job.…`) with `SKILLHOOK_JOB_ID` and `SKILLHOOK_JOB_DIR` in its environment; under a restricted Claude `permission_mode` its tools are allowed automatically (`mcp__skillhook-job`), while the CLI path needs `Bash` to be permitted. Both front ends write the same files in the job directory (`progress.jsonl`, `progress.json`, `question.json`, `answer.json`, mode 600), so a shell script can do the same with a text editor's worth of JSON, and the server watches those files for every running job: they become `job.progress`, `job.waiting_human` and `job.answered` events, the `progress`, `question` and `answer` fields of the job record, `skillhook jobs show <id>` (timeline) and `GET /jobs/<id>/progress`.
+
+Asking blocks the agent for up to `human_wait_seconds` (default 300; `wait_seconds` / `--wait` per call, at most a day). The job's timeout clock stops while it waits and resumes with the remaining time once the answer arrives, so a `timeout_seconds: 600` skill that waits ten minutes for a person still gets its ten minutes of work. A waiting job keeps its concurrency slot: for long waits the guardrails tell the agent to finish instead with outcome `needs_human`, stating exactly what is needed.
+
+A person answers with `skillhook jobs answer <id> "<answer>" [--option X] [--by NAME]`, `POST /jobs/<id>/answer` or the MCP tool `answer_job`; `skillhook jobs list --waiting` (`GET /jobs?waiting=1`, `list_jobs {waiting: true}`) shows what is waiting: jobs with an open question, and finished jobs whose outcome is `needs_human`. Two things can happen:
+
+- **Live**: the job is still running and waiting; the answer reaches the blocked `ask` call and the agent continues in the same session (`delivered: live`).
+- **Resumed**: the job already ended (the wait timed out, or the agent finished with `needs_human` without asking). A new job with `trigger: resume` continues the agent's session: Claude Code runs `claude -p --resume <session_id>`, Codex `codex exec resume <thread_id>`, in the same working directory, with a prompt that is only the question and the answer in a `<human_answer>` block. The original job records `resolved_by`, the new one `resume_of`, `resume` (the session) and the `question`/`answer` (`delivered: resumed`, `resume_job_id`). Without a session to reopen (a shell run, a crash before the id was captured) the skill runs afresh with the answer appended to the normal prompt and `runner_reason` says so. `--no-resume` / `resume: never` only records the answer.
+
+A run that ends with its question unanswered and nothing reported counts as `needs_human`: a person can answer it later and the session continues from there.
+
+```yaml
+skillhook:
+  agent_api: mcp          # mcp (default) | cli | none
+  human_wait_seconds: 900 # wait up to 15 minutes for an answer
+```
+
+Skill bodies do not need to mention any of this; the guardrails already tell the agent when to report progress, when to ask and what to do when no answer comes. Mention it only to set policy, for example "ask before deleting anything" or "never wait for a person: finish with needs_human".
 
 ## Creating skills
 
@@ -324,6 +400,15 @@ skillhook run hello --payload '{"name":"world"}' --dry-run
 ```
 
 `--dry-run` prints the resolved runner command, the environment variable names, the guardrails and the exact prompt without starting the agent. Drop `--dry-run` to run it in-process (no HTTP, no authentication); the job is recorded under `jobs/` like any other. `--payload` accepts inline JSON, `@file`, a path, or `-` for stdin; `--header "Name: value"` simulates request headers for `when` filters and `{{headers.*}}`; `--runner`, `--model`, `--effort` and `--cwd` override the skill for this run.
+
+A SKILL.md does not have to be installed to be tried:
+
+```bash
+skillhook run --file drafts/sentry-triage/SKILL.md --payload @sample.json --dry-run
+cat SKILL.md | skillhook run --stdin --payload '{"name":"world"}'
+```
+
+The document is validated, copied to `jobs/<id>/skill/<name>/SKILL.md` and run from there (`trigger: test`, `adhoc: true` on the job; its default working directory is that copy's directory), so a draft can be iterated on without touching `~/.skillhook/skills`. The same is available over the admin API as `POST /skills/test` ([api.md](api.md#post-skillstest)) and to agents as the MCP tool `test_skill`.
 
 With the server running, exercise the real HTTP path (auth, filters, queue):
 

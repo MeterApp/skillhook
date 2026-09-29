@@ -5,6 +5,7 @@
 // or the repeated hour of a fall-back day never fires it twice. State lives in `jobs/.schedules.json`.
 import path from "node:path";
 import type { Config } from "./config.js";
+import type { Events } from "./events.js";
 import type { JobRecord, JobStatus, JobStore } from "./jobs.js";
 import type { Logger } from "./logger.js";
 import { createManualJob } from "./ops.js";
@@ -131,6 +132,8 @@ export interface SchedulerDeps {
   /** The clock; tests pass a fixed one. */
   now?: () => Date;
   tickMs?: number;
+  /** Where `schedule.registered`, `schedule.fired` and `schedule.skipped` are published. */
+  events?: Events;
 }
 
 export class Scheduler {
@@ -225,7 +228,9 @@ export class Scheduler {
         // A schedule seen for the first time waits for its next slot; catch-up only covers gaps after that.
         state.last_slot = now.toISOString();
         dirty = true;
-        this.deps.logger.info("schedule registered", { skill: skill.name, cron: schedule.cron, timezone: schedule.timezone, next_due: nextRun(schedule.spec, now, schedule.timezone)?.toISOString() ?? null });
+        const nextDue = nextRun(schedule.spec, now, schedule.timezone)?.toISOString() ?? null;
+        this.deps.logger.info("schedule registered", { skill: skill.name, cron: schedule.cron, timezone: schedule.timezone, next_due: nextDue });
+        this.deps.events?.emit("schedule.registered", { skill: skill.name, cron: schedule.cron, timezone: schedule.timezone, next_due: nextDue });
         continue;
       }
       const lastSlot = new Date(state.last_slot);
@@ -263,6 +268,7 @@ export class Scheduler {
       }
       state.skipped = (state.skipped ?? 0) + skipped.length;
       result.skipped.push(...skipped);
+      for (const entry of skipped) this.deps.events?.emit("schedule.skipped", entry);
       state.last_slot = latest.toISOString();
     }
     if (dirty) this.save();
@@ -285,6 +291,7 @@ export class Scheduler {
     state.last_status = "queued";
     this.deps.logger.info("schedule fired", { skill: skill.name, job: job.id, slot: key, cron: schedule.cron, timezone: schedule.timezone, caught_up: caughtUp });
     this.deps.queue.enqueue(job);
+    this.deps.events?.emit("schedule.fired", { skill: skill.name, slot: slot.toISOString(), job, caught_up: caughtUp });
     return { job };
   }
 }

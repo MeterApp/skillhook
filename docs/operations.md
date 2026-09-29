@@ -18,7 +18,10 @@ Related: [exposure.md](exposure.md) (public URL), [security.md](security.md) (se
 │   └── <name>/SKILL.md     one directory per skill, plus any files the skill needs
 ├── jobs/
 │   ├── .deliveries.json    delivery-id index for replay protection (also the slots the scheduler fired)
+│   ├── .delivery-log/      every webhook received (deliveries.jsonl) and the bodies of refused ones (bodies/), see Delivery log
 │   ├── .schedules.json     per schedule: last slot handled, last job and its status
+│   ├── .cloud/             the Skillhook Cloud link's spool: outbox.jsonl + state.json (events not yet acknowledged), commands.json, ingress.json
+│   ├── .removed-skills/    skills removed from the Skillhook Cloud dashboard (skill.delete), kept for restoring
 │   └── <job id>/           one directory per job (see Jobs)
 └── logs/
     └── service.log         server output when run by launchd / systemd
@@ -103,8 +106,13 @@ Lifecycle: `queued` → `running` → one of `succeeded`, `failed`, `timed_out`,
 | `prompt.md` | The exact prompt sent to the runner (not written by `--dry-run`). |
 | `stdout.log`, `stderr.log` | Raw runner output (`stream-json` / JSONL for the agent runners). |
 | `result.md` | The final agent message, complete. |
+| `response.json` | The outcome the agent reported (`{outcome, summary, links, data}`), written by the agent, or by skillhook from a structured answer. See [skills.md](skills.md#reporting-the-outcome). |
+| `response.schema.json` | The JSON Schema handed to the runner for `response: { mode: structured }`. |
 | `last-message.md` | Codex only, written by `codex exec -o`. |
 | `body.bin` | The raw request body when it was binary. |
+| `skill/<name>/SKILL.md` | Ad-hoc runs only (`skillhook run --file`, `POST /skills/test`, MCP `test_skill`): the document that was run, kept with the job. |
+| `progress.jsonl`, `progress.json` | What the agent reported through the job API: the timeline (progress, notes, questions, answers, outcome) and the current state. See [skills.md](skills.md#reporting-progress-and-asking-a-person). |
+| `question.json`, `answer.json` | The question the agent asked a person, and the answer (`skillhook jobs answer`, `POST /jobs/<id>/answer`, MCP `answer_job`). |
 
 All files are mode 600. Job ids are `YYYYMMDDTHHMMSSZ-<6 random chars>` (UTC), so `ls jobs/` sorts chronologically.
 
@@ -123,7 +131,15 @@ skillhook jobs logs <id> [--follow] [--stderr]
 ```
 
 ```bash
+skillhook jobs answer <id> "<answer>" [--option X] [--by NAME] [--no-resume] [--wait S]   # answer a job that asked, or ended needs_human
+```
+
+```bash
 skillhook jobs cancel <id>           # via the running server's admin API
+```
+
+```bash
+skillhook jobs replay <id> [--skip-filters] [--runner R] [--model M] [--effort E] [--wait S]   # the same request again, as a new job
 ```
 
 ```bash
@@ -139,6 +155,30 @@ skillhook jobs prune [--keep N]
 ```
 
 `jobs cancel` needs the server that owns the job; a job started by `skillhook run` belongs to that CLI process (stop it with Ctrl-C).
+
+`jobs list` also takes `--outcome completed|partial|needs_human|nothing_to_do|failed|unknown` (whether the task was done, as the agent reported), `--waiting` (only jobs waiting for a person: an open question, or outcome `needs_human` not yet answered or resumed), `--trigger webhook|api|cli|mcp|schedule|replay|test|resume`, `--since <ISO-8601>` and `--after <id>` (the `next_after` printed under a full page). `jobs show <id>` prints the agent's progress timeline, its pending question and the answer; `--response` prints the reported `response.json`.
+
+`jobs answer` goes through the running server when there is one (a live answer reaches the waiting agent; otherwise a new job with `trigger: resume` continues the session there) and otherwise runs the resume job in the CLI process, like `skillhook run`.
+
+### Delivery log
+
+Jobs only exist for deliveries that were accepted. Everything else the server answered on `/hooks/<skill>` (a wrong secret, an unknown skill, a `when` filter that did not match, a duplicate, an oversized body, a rate limit) used to be a log line; now every request is a record in `jobs/.delivery-log/deliveries.jsonl` with its outcome (`accepted`, `duplicate`, `in_flight`, `skipped`, `rejected`, `challenge`, `error`), the HTTP status and error code the sender got, the reason, the redacted headers, the client IP and, for accepted deliveries, the job id. Refused deliveries (`rejected`, `skipped`, `error`) keep their body in `jobs/.delivery-log/bodies/<id>.bin` so you can see what arrived and replay it later (`deliveries.store_bodies: false` turns that off; `deliveries.body_max_bytes`, 64 KiB, caps it). The log keeps the newest `deliveries.max` (2000) records; older ones and their bodies are dropped. All files are mode 600.
+
+```bash
+skillhook deliveries list [--skill NAME] [--outcome accepted|duplicate|in_flight|skipped|rejected|challenge|error] [--since ISO] [--after ID] [--limit N]
+```
+
+```bash
+skillhook deliveries show <id> [--body]
+```
+
+```bash
+skillhook deliveries replay <id> [--force] [--skip-filters] [--runner R] [--model M] [--effort E] [--wait S]
+```
+
+When a sender reports failures, `skillhook deliveries list --outcome rejected` shows what arrived and why it was refused; `--json` gives the records, `GET /deliveries` the same over the admin API ([api.md](api.md#get-deliveries)), and the MCP tools `list_deliveries` / `get_delivery` the same to an agent. The running server also publishes each record as a `delivery.received` event.
+
+Once the cause is fixed (a secret pasted, a filter corrected, a skill installed), `deliveries replay <id>` runs the recorded request again through the skill as it is now: a new job with `trigger: replay` and `replay_of`, the original payload, headers and query, no signature check (`--force` for a delivery that was rejected, since its body was never verified), `when` filters applied unless `--skip-filters`, never de-duplicated. `jobs replay <id>` does the same for any earlier job. Both go through the running server when there is one (`POST /deliveries/<id>/replay`, `POST /jobs/<id>/replay`; MCP `replay_delivery`, `replay_job`) and run in the CLI process otherwise. The agent is told it is replaying, so a well-written skill checks what earlier runs already did before repeating side effects.
 
 ## Configuration
 
@@ -173,10 +213,26 @@ skillhook jobs prune [--keep N]
 | `jobs.dedupe_window_seconds` | `86400` | Replay window. |
 | `jobs.dedupe_in_flight` | `true` | Fold a delivery identical to a queued or running job of the same skill into that job; skills override with `dedupe.in_flight`. |
 | `jobs.inline_payload_max_bytes` | `200000` | Payload size inlined in prompts. |
+| `defaults.fallback` | none | `{ "runners": ["codex"], "on": ["not_ready"] }`: fallback runners for every skill that sets no `fallback:` of its own ([runners.md](runners.md#fallback-and-retry)). |
+| `health.readiness_cache_seconds` | `60` | How long a runner's readiness (installed, logged in) is trusted before a job re-checks it. |
+| `health.cache_seconds` | `60` | How long the running server reuses a health report (`GET /health/checks`, `skillhook health`, MCP `get_health`) before probing again; `refresh` bypasses it. |
+| `health.probe_timeout_seconds` | `20` | How long one slow probe may take (`claude mcp list` connects to every server; `codex doctor`). |
+| `deliveries.max` | `2000` | Records kept in the delivery log (`jobs/.delivery-log`). |
+| `deliveries.store_bodies` | `true` | Keep the body of refused deliveries (rejected, filtered) for inspection and replay. |
+| `deliveries.body_max_bytes` | `65536` | How much of such a body is kept. |
 | `env_passthrough` | `[]` | Extra env var names copied into every run. |
 | `projects` | `[]` | Linked repositories (absolute paths, `~` allowed; a directory holding `skillhook.yaml`, or the file itself). Written by `skillhook link` / `unlink`; re-read without a restart. See [projects.md](projects.md). |
+| `cloud.*` | `enabled: false`, `mode: observe`, … | The opt-in link to Skillhook Cloud, written by `skillhook cloud connect`: [cloud.md](cloud.md). Nothing leaves the machine while `cloud.enabled` is false. |
 | `log_level` | `"info"` | `debug`, `info`, `warn`, `error`. |
 | `update_check` | `true` | Daily check of the npm registry for a newer skillhook (`SKILLHOOK_NO_UPDATE_CHECK=1` and `CI` disable it as well). |
+
+### Changing it while the server runs
+
+The running server holds one live configuration. `skillhook config set` / `unset` (and the MCP tool `update_config`, and `PATCH /config`) write the file and tell the server, which re-reads it at once; a file edited by hand is noticed within five seconds, or right away with `skillhook config reload` (`POST /config/reload`). Every key but `host` and `port` applies live: concurrency, defaults, limits, rate limits, retention, health and delivery settings, `log_level`, `env_passthrough`, `projects`, the runner commands. `host` and `port` are the bind address and wait for a restart; the server reports them as `pending_restart` (`GET /config`, `skillhook config set` prints `restart required for: port`). A file that does not validate is refused: `config set` refuses to write it, and a hand-edited invalid file is logged and ignored until it parses again. Each reload that changed something is a `config.changed` event on `GET /events`.
+
+### Restarting the server
+
+`skillhook service restart` restarts the service now. `POST /control/restart` (MCP `restart_server`) is the gentle version for a server run as the service: it stops taking requests, lets running jobs finish (up to `wait_seconds`, default 30; `force` terminates them) and exits, and launchd / systemd starts it again; queued jobs survive. A `skillhook serve` in a terminal answers `409 not_a_service` (nothing would bring it back): stop it with Ctrl-C instead.
 
 Examples:
 
@@ -199,20 +255,47 @@ skillhook config set defaults.model sonnet
 | Check | ok | warn | fail |
 |---|---|---|---|
 | `node` | Node >= 22 | | older Node |
+| `disk` | more than 2 GiB free where the home lives | less than 2 GiB | less than 512 MiB (`skip` when it cannot be read) |
 | `version` | this is the latest skillhook | a newer version is on npm (hint: `skillhook update --install`) | (`skip` when the check is disabled or the registry does not answer) |
 | `home` / `config` | home exists and `skillhook.json` parses (or defaults apply) | | home missing; invalid config |
 | `secrets` | `.env` has mode 600 | `.env` missing or another mode | |
 | `admin token` | `SKILLHOOK_ADMIN_TOKEN` set | unset (admin API localhost-only) | |
 | `skills` | all `SKILL.md` files parse | no skills yet | one or more invalid |
-| `skill <name>` | runner, model, auth type, schedule and cwd (and the `skillhook.yaml` it comes from); a `webhook: false` skill needs no secret | `auth: none` | secret missing (`webhooks will get 503`); cwd does not exist |
+| `skill <name>` | runner, model, auth type, schedule and cwd (and the `skillhook.yaml` it comes from); a `webhook: false` skill needs no secret | `auth: none`; a name in `env:` that is not set | secret missing (`webhooks will get 503`); cwd does not exist; a shell command whose binary is not on PATH |
 | `schedules` | every enabled `schedule:` with its next run | | (`skip` when there is none) |
 | `sleep` (macOS, when schedules exist) | `pmset` reports `sleep 0` | the Mac may sleep; schedules only fire while it is awake | (`skip` when `pmset` is unavailable) |
 | `project <dir>` | the linked repository's `skillhook.yaml` parses; hooks listed | | file missing or invalid; a hook that does not compile (`skip` when nothing is linked) |
-| `claude` / `codex` | CLI found and logged in, or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` present | | not on PATH; not logged in (checked only for runners a skill or the default uses) |
+| `claude` / `codex` | CLI found (version shown) and logged in, or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` present | | not on PATH; not logged in (checked only for runners a skill or the default uses; probed with the same environment the jobs get, so `CLAUDE_CONFIG_DIR` / `CODEX_HOME` in `.env` apply) |
 | `tailscale` | the configured port is exposed via Funnel or Serve (URL shown) | CLI missing; not running; port not exposed | |
 | `public url` | `<public_url>/health` answers | did not answer (certificate still provisioning, or the server is down) | |
 | `server` | running (version, queue) | not running | |
 | `service` | running (pid) | installed but not running | (`skip` when not installed or unsupported platform) |
+| `cloud link` | connected (URL, machine, mode, last sync) | no running server keeps it; degraded; events dropped | enabled without `SKILLHOOK_CLOUD_TOKEN`; not https; token revoked or machine disabled (`skip` when not connected or `SKILLHOOK_NO_CLOUD` is set) |
+
+Every check carries a `group` (`system`, `skillhook`, `runners`, `tools`, `skills`, `exposure`) and, where useful, `data` with the facts behind the line (versions, paths, the last job).
+
+## Health
+
+`skillhook health` is the doctor plus the slow probes, grouped: it is what answers "is everything this machine's agents depend on working". Through the running server when there is one (its cached report; `--refresh` probes again), otherwise in-process; `--quick` leaves the deep checks out (the doctor's set), `--no-network` skips the npm registry and the public URL, `--local` never asks the server. `--json` returns `{checks, ok, summary, groups, generated_at, duration_ms, deep, network, public_url, server}`. The same report is `GET /health/checks` ([api.md](api.md#get-healthchecks)) and the MCP tool `get_health`.
+
+The deep checks, in the `tools` and `skills` groups:
+
+| Check | ok | warn | fail |
+|---|---|---|---|
+| `claude mcp <name>` (one per server `claude mcp list` knows) | connected | needs authentication (hint: authenticate in an interactive session; unattended runs cannot) | failed to connect, with the CLI's reason |
+| `claude mcp config` | | the CLI's own diagnostics: missing environment variables, conflicting scopes | |
+| `claude plugins` | installed plugins with versions; disabled ones marked | `claude plugin list` failed | (`skip` when none) |
+| `codex mcp <name>` (from `codex mcp list --json`) | configured (Codex does not connect at list time; `auth_status` shown) | not logged in (hint: `codex mcp login <name>`) | (`skip` when disabled) |
+| `codex doctor` | every check of `codex doctor --json` ok | it reports warnings (each listed, first remediation as the hint) | it reports errors |
+| `skill <name>` | as in the doctor, plus the last run (`status (outcome) finished_at`) | | |
+
+Probes run with the job environment (`baseRunEnv`): a `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or API key in `.env` applies exactly as it does to runs. `claude mcp list` connects to every server and is the slow one; `health.probe_timeout_seconds` (20) bounds it, and a listing that timed out is reported as incomplete rather than wrong.
+
+The server keeps one report per flavour for `health.cache_seconds` (60) and publishes `health.changed` on the event stream when a check changes status (or on the first report), so a dashboard can watch logins expire and MCP servers fail without polling.
+
+## Stats
+
+`skillhook stats [--since 24h|7d|2w|ISO] [--until ISO] [--skill NAME]` sums up the job directories and the delivery log: jobs by status, outcome, trigger, runner and failure kind, success and completion rates, duration and queue-wait percentiles, cost and tokens, deliveries by outcome and HTTP status, and the same per skill. It reads the files directly (no server needed); the same report is `GET /stats` ([api.md](api.md#get-stats)) and the MCP tool `get_stats`. Without `--since` the newest 5000 jobs and deliveries are counted.
 
 ## Keeping a Mac awake
 
@@ -270,6 +353,10 @@ The directory name and `name:` differ, the name has uppercase letters or undersc
 
 The server (or the machine) stopped while the agent was running; the process was terminated and the job marked `interrupted` with `server restarted while the job was running` or `server shut down while the job was running`. If a session id was captured, `skillhook jobs resume <id>` reopens the agent session; otherwise re-send the delivery (`skillhook send <skill> --payload @<home>/jobs/<id>/payload.json`).
 
+### Job fails at once with `<runner> is not ready`
+
+The readiness check found the runner not installed or not logged in (`failure.kind: auth` or `not_found`, no process was started). `skillhook runners` shows what it saw and the hint; `claude login` / `codex login` as the user that runs the server, or an API key in `.env`, fixes it, and a `fallback:` runner in the skill (or `defaults.fallback`) keeps such jobs running meanwhile.
+
 ### Job fails at once with `Working directory does not exist`
 
 The skill's `cwd` (or `defaults.cwd`) points at a missing directory on this machine. `skillhook doctor` flags it per skill.
@@ -305,6 +392,14 @@ The agent exceeded `timeout_seconds` (skill, else `defaults.timeout_seconds`, de
 ### Public URL does not answer
 
 Right after `expose`, Tailscale may still be issuing the certificate: wait a minute and run `skillhook expose status` or `skillhook doctor` (the `public url` check). Otherwise confirm the server is running and the mapping targets the right port.
+
+### `cloud link` is `disconnected (token_revoked)` or `(machine_disabled)`
+
+The cloud refused the machine token: it was revoked on the dashboard, or the machine was disabled there. The link waits for the configuration or the token to change; pair again with a new code (`skillhook cloud connect --code … --force`) or stop it (`skillhook cloud disconnect`). `upgrade_required` means the cloud needs a newer skillhook (`skillhook update --install`). `skillhook cloud status` shows the last error.
+
+### A job says `WAITING FOR A PERSON`
+
+The agent asked a question (`skillhook jobs show <id>` prints it) or finished with outcome `needs_human`. `skillhook jobs answer <id> "<answer>"` delivers the answer: to the running agent when it is still waiting, otherwise as a new job that continues the session. `skillhook jobs list --waiting` lists everything waiting.
 
 ### A schedule did not fire
 

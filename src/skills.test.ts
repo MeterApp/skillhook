@@ -74,6 +74,40 @@ describe("dedupe options", () => {
   });
 });
 
+describe("response options", () => {
+  it("accepts mode and schema and rejects anything else", () => {
+    const doc = (block: string) => `---\nname: r\ndescription: r\nskillhook:\n  response:\n${block}\n---\nBody\n`;
+    expect(parseSkillDocument(doc("    mode: structured"), "/tmp/r").config.response).toEqual({ mode: "structured" });
+    expect(parseSkillDocument(doc("    mode: file"), "/tmp/r").config.response).toEqual({ mode: "file" });
+    expect(parseSkillDocument(doc("    schema:\n      type: object"), "/tmp/r").config.response).toEqual({ schema: { type: "object" } });
+    expect(parseSkillDocument(`---\nname: r\ndescription: r\n---\nBody\n`, "/tmp/r").config.response).toBeUndefined();
+    expect(() => parseSkillDocument(doc("    mode: loud"), "/tmp/r")).toThrow(/Invalid SKILL.md frontmatter/);
+    expect(() => parseSkillDocument(doc("    format: json"), "/tmp/r")).toThrow(/Invalid SKILL.md frontmatter/);
+  });
+});
+
+describe("agent API options", () => {
+  it("accepts agent_api and human_wait_seconds within bounds", () => {
+    const doc = (block: string) => `---\nname: a\ndescription: a\nskillhook:\n${block}\n---\nBody\n`;
+    expect(parseSkillDocument(doc("  agent_api: cli\n  human_wait_seconds: 900"), "/tmp/a").config).toMatchObject({ agent_api: "cli", human_wait_seconds: 900 });
+    expect(parseSkillDocument(doc("  agent_api: none"), "/tmp/a").config.agent_api).toBe("none");
+    expect(() => parseSkillDocument(doc("  agent_api: http"), "/tmp/a")).toThrow(/agent_api/);
+    expect(() => parseSkillDocument(doc("  human_wait_seconds: 0"), "/tmp/a")).toThrow(/human_wait_seconds/);
+    expect(() => parseSkillDocument(doc("  human_wait_seconds: 100000"), "/tmp/a")).toThrow(/human_wait_seconds/);
+  });
+});
+
+describe("fallback and retry options", () => {
+  it("accepts runner lists and failure kinds and rejects anything else", () => {
+    const doc = (block: string) => `---\nname: f\ndescription: f\nskillhook:\n${block}\n---\nBody\n`;
+    expect(parseSkillDocument(doc("  fallback:\n    runners: [codex, shell]\n    on: [not_ready, rate_limit]"), "/tmp/f").config.fallback).toEqual({ runners: ["codex", "shell"], on: ["not_ready", "rate_limit"] });
+    expect(parseSkillDocument(doc("  retry:\n    attempts: 2\n    on: [crash]\n    backoff_seconds: 5"), "/tmp/f").config.retry).toEqual({ attempts: 2, on: ["crash"], backoff_seconds: 5 });
+    expect(() => parseSkillDocument(doc("  fallback:\n    runners: [gemini]"), "/tmp/f")).toThrow(/fallback/);
+    expect(() => parseSkillDocument(doc("  fallback:\n    runners: [codex]\n    on: [timeout]"), "/tmp/f")).toThrow(/fallback/);
+    expect(() => parseSkillDocument(doc("  retry:\n    attempts: 0"), "/tmp/f")).toThrow(/retry/);
+  });
+});
+
 describe("loadSkills / SkillRegistry", () => {
   it("loads valid skills and reports broken ones", () => {
     const paths = tempHome();
