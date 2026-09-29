@@ -27,6 +27,8 @@ export const LIMITS = {
   max_watched_jobs: 5,
   /** How long the cloud may hold an idle sync request. */
   long_poll_seconds: 25,
+  /** One `POST /api/agent/issues` body (a problem report from `skillhook cloud report`). */
+  max_issue_report_bytes: 64 * 1024,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -461,6 +463,62 @@ export const PairResponseSchema = z
   })
   .strict();
 export type PairResponse = z.infer<typeof PairResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Issue reports
+// ---------------------------------------------------------------------------
+
+export const ISSUE_KINDS = ["bug", "question", "feature", "other"] as const;
+export type IssueKind = (typeof ISSUE_KINDS)[number];
+export const ISSUE_SEVERITIES = ["low", "normal", "high", "urgent"] as const;
+export type IssueSeverity = (typeof ISSUE_SEVERITIES)[number];
+
+/** Facts the machine already has, attached to a report unless the person says no; scrubbed of every `.env` value. Never payloads, logs, prompts or job output. */
+export const IssueDiagnosticsSchema = z
+  .object({
+    skillhook_version: z.string().max(64).optional(),
+    node_version: z.string().max(64).optional(),
+    os: z.string().max(64).optional(),
+    arch: z.string().max(32).optional(),
+    mode: z.enum(MACHINE_MODES).optional(),
+    link: z.object({ state: z.enum(LINK_STATES), reason: z.enum(LINK_REASONS).optional(), last_error: z.string().max(500).optional() }).loose().optional(),
+    runners: z.array(z.object({ runner, ready: z.boolean() }).loose()).max(3).optional(),
+    /** The health summary and the checks that fail or warn (`id` is the check's name, `message` its detail). */
+    health: z.object({ ok: z.boolean(), summary, failing: z.array(z.object({ id: z.string().max(200), status: z.enum(CHECK_STATUSES), message: z.string().max(500).optional() }).loose()).max(50).optional() }).loose().optional(),
+  })
+  .loose();
+export type IssueDiagnostics = z.infer<typeof IssueDiagnosticsSchema>;
+
+/** `POST /api/agent/issues` with the machine token: a person on a paired machine reports a problem to the Skillhook team. */
+export const IssueReportRequestSchema = z
+  .object({
+    title: z.string().min(1).max(200),
+    body: z.string().max(20_000).optional(),
+    /** The cloud files a report without one as `bug`. */
+    kind: z.enum(ISSUE_KINDS).optional(),
+    /** The cloud files a report without one as `normal`. */
+    severity: z.enum(ISSUE_SEVERITIES).optional(),
+    contact_email: z.string().email().max(320).optional(),
+    /** The machine's own job id. */
+    job_id: id.optional(),
+    delivery_id: id.optional(),
+    skill: name.optional(),
+    diagnostics: IssueDiagnosticsSchema.optional(),
+  })
+  .strict();
+export type IssueReportRequest = z.infer<typeof IssueReportRequestSchema>;
+
+export const IssueReportResponseSchema = z
+  .object({
+    ok: z.literal(true),
+    issue_id: id,
+    number: z.number().int().min(1),
+    url: z.string().url().max(2048),
+    /** A confirmation email went out. */
+    acknowledged: z.boolean(),
+  })
+  .strict();
+export type IssueReportResponse = z.infer<typeof IssueReportResponseSchema>;
 
 /** Parses `args` for a command type; `undefined` for an unknown type. */
 export function parseCommandArgs(type: string, args: unknown): { ok: true; args: unknown } | { ok: false; message: string } | undefined {

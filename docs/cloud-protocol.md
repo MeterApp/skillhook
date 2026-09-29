@@ -12,6 +12,7 @@ Outbound HTTPS from the machine only:
 | `POST /api/agent/sync` | `SyncRequest` → `SyncResponse` (or `SyncError`). The machine's heartbeat, event upload, command channel and hosted-ingress channel, all in one; `wait: true` lets the cloud hold the request up to `LIMITS.long_poll_seconds` (25) when it has nothing to say. `Authorization: Bearer <machine_token>`, `x-skillhook-protocol: 1`. |
 | `PUT /api/agent/artifacts/<job>/<name>` | Chunked upload of a job artifact for `job.artifact`: `application/octet-stream` bodies of `LIMITS.artifact_chunk_bytes` (1 MiB), in order, each with `Content-Range: bytes <start>-<end>/<total>` and `x-skillhook-sha256` (hex SHA-256 of the whole, already scrubbed, file); at most `LIMITS.max_artifact_bytes` (32 MiB). |
 | `POST /api/agent/disconnect` | Revoke the token (`skillhook cloud disconnect`). |
+| `POST /api/agent/issues` | `IssueReportRequest` → `IssueReportResponse`: a problem report from a person on the machine (`skillhook cloud report`, MCP `cloud_report_issue`), never from the link. `Authorization: Bearer <machine_token>`, a JSON body of at most `LIMITS.max_issue_report_bytes` (64 KiB). See [Issue reports](#issue-reports). |
 
 ## `SyncRequest`
 
@@ -62,6 +63,22 @@ Events carry a per-machine `seq`; the cloud de-duplicates on `(machine_id, seq)`
 ## Command classes and policy
 
 `COMMAND_CLASS` says what each command type needs: `read` (both modes), `control` (`cloud.mode: control` or an entry in `cloud.allow_commands`) or `allow_list` (`secret.set`: only with an explicit entry). `cloud.deny_commands` wins over everything; patterns are exact types, `prefix.*` or `*`. `commandAllowed(type, policy)` in `src/cloud/config.ts` is the single implementation.
+
+## Issue reports
+
+`POST {cloud.url}/api/agent/issues` with `Authorization: Bearer <machine_token>` and a JSON `IssueReportRequest` of at most `LIMITS.max_issue_report_bytes` (64 KiB), which the machine sends only when a person asks for it:
+
+| Field | Content |
+|---|---|
+| `title` | 1 to 200 characters. |
+| `body?` | At most 20,000 characters. |
+| `kind?` | `ISSUE_KINDS`: `bug`, `question`, `feature`, `other`; the cloud defaults to `bug`. |
+| `severity?` | `ISSUE_SEVERITIES`: `low`, `normal`, `high`, `urgent`; the cloud defaults to `normal`. |
+| `contact_email?` | An email address, at most 320 characters. |
+| `job_id?`, `delivery_id?`, `skill?` | What the report is about: the machine's own job id, a delivery id, a skill name. References only. |
+| `diagnostics?` | `IssueDiagnostics`: `skillhook_version`, `node_version`, `os`, `arch`, `mode`, `link {state, reason?, last_error? (≤ 500)}`, `runners [{runner, ready}]` (≤ 3), `health {ok, summary {ok, warn, fail, skip}, failing? [{id (≤ 200), status, message? (≤ 500)}] (≤ 50)}`; every field optional, unknown fields kept (`.loose()`). |
+
+The request is strict (unknown fields are refused). The machine scrubs every `.env` value from the title, the body and the diagnostics before sending, like everything the link uploads, and never attaches payloads, logs, prompts or job output. The answer is `IssueReportResponse` `{ok: true, issue_id, number, url, acknowledged}`: the issue's id, its number and URL on the dashboard, and whether a confirmation email went out. Errors have the agent API's shape (`{ok: false, error, message, retry_after_ms?}`, as `SyncError`): `401 invalid_token`, `403 machine_disabled`, `400 invalid_request`, `413 payload_too_large`, `429 rate_limited` (with `retry_after_ms`), `500 server_error`. The endpoint and its schemas are additive, so `PROTOCOL_VERSION` stays 1; a cloud without the route answers `404`, which the CLI reports as such.
 
 ## Sealed values
 

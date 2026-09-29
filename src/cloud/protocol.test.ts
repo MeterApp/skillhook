@@ -9,7 +9,7 @@ import { RUNNER_NAMES } from "../readiness.js";
 import { JOB_OUTCOMES } from "../response.js";
 import { FAILURE_KINDS } from "../runners/failure.js";
 import * as protocol from "./protocol.js";
-import { CLOUD_EVENT_TYPES, COMMAND_ARGS, COMMAND_CLASS, COMMAND_TYPES, CommandResultSchema, EventEnvelopeSchema, IngressItemSchema, LIMITS, PAIRING_CODE_RE, PairRequestSchema, PairResponseSchema, parseCommandArgs, PROTOCOL_VERSION, SyncErrorSchema, SyncRequestSchema, SyncResponseSchema } from "./protocol.js";
+import { CLOUD_EVENT_TYPES, COMMAND_ARGS, COMMAND_CLASS, COMMAND_TYPES, CommandResultSchema, EventEnvelopeSchema, IngressItemSchema, IssueDiagnosticsSchema, IssueReportRequestSchema, IssueReportResponseSchema, LIMITS, PAIRING_CODE_RE, PairRequestSchema, PairResponseSchema, parseCommandArgs, PROTOCOL_VERSION, SyncErrorSchema, SyncRequestSchema, SyncResponseSchema } from "./protocol.js";
 
 const machine = { id: "m_1", hostname: "mac.local", os: "darwin", arch: "arm64", skillhook_version: "0.5.0", node_version: "22.0.0", started_at: "2026-09-28T12:00:00.000Z" };
 const status = { queue: { running: 1, queued: 0 }, running_jobs: ["20260928T120000Z-abcdef"], link: { state: "connected" as const, mode: "observe" as const, outbox_depth: 0, dropped_total: 0, watched_jobs: 0 } };
@@ -33,6 +33,10 @@ describe("protocol vocabulary", () => {
     expect(Object.keys(COMMAND_CLASS).sort()).toEqual([...COMMAND_TYPES].sort());
     expect(PROTOCOL_VERSION).toBe(1);
     expect(LIMITS.max_events_per_sync).toBe(200);
+    // Issue reports are additive: new vocabulary and a limit, the version stays 1.
+    expect([...protocol.ISSUE_KINDS]).toEqual(["bug", "question", "feature", "other"]);
+    expect([...protocol.ISSUE_SEVERITIES]).toEqual(["low", "normal", "high", "urgent"]);
+    expect(LIMITS.max_issue_report_bytes).toBe(64 * 1024);
   });
 
   it("validates command arguments per type", () => {
@@ -93,5 +97,59 @@ describe("protocol messages", () => {
     expect(PAIRING_CODE_RE.test("ABCD-0123")).toBe(false); // no 0/1/I/O
     const response = PairResponseSchema.parse({ ok: true, machine_id: "m_9", machine_token: "x".repeat(40), mode: "control", account: { org: "Meter", plan: "free" }, dashboard_url: "https://cloud.example/o/meter", protocol_version: 1, min_protocol_version: 1 });
     expect(response.account).toMatchObject({ org: "Meter", plan: "free" });
+  });
+
+  it("carries an issue report within its limits", () => {
+    const diagnostics = {
+      skillhook_version: "0.6.0",
+      node_version: "22.12.0",
+      os: "darwin",
+      arch: "arm64",
+      mode: "observe",
+      link: { state: "degraded", reason: "network", last_error: "fetch failed" },
+      runners: [
+        { runner: "claude", ready: true },
+        { runner: "codex", ready: false },
+      ],
+      health: { ok: false, summary: { ok: 9, warn: 1, fail: 1, skip: 3 }, failing: [{ id: "claude", status: "fail", message: "not logged in" }, { id: "server", status: "warn" }] },
+    };
+    const report = { title: "Deliveries fail since the update", body: "Every GitHub delivery gets 401.", kind: "bug", severity: "high", contact_email: "ada@example.com", job_id: "20260929T101500Z-a1b2c3", delivery_id: "d_1", skill: "triage", diagnostics };
+    expect(IssueReportRequestSchema.parse(report)).toEqual(report);
+    expect(IssueReportRequestSchema.parse({ title: "Only a title" })).toEqual({ title: "Only a title" }); // kind and severity default on the cloud
+    // Diagnostics keep what a newer machine adds; the request itself is strict.
+    expect(IssueDiagnosticsSchema.parse({ ...diagnostics, uptime_seconds: 60, link: { ...diagnostics.link, since: "x" } })).toMatchObject({ uptime_seconds: 60, link: { since: "x" } });
+    expect(IssueDiagnosticsSchema.parse({})).toEqual({});
+    const invalid: [string, unknown][] = [
+      ["empty title", { title: "" }],
+      ["long title", { title: "t".repeat(201) }],
+      ["long body", { title: "t", body: "b".repeat(20_001) }],
+      ["unknown kind", { title: "t", kind: "complaint" }],
+      ["unknown severity", { title: "t", severity: "critical" }],
+      ["not an email", { title: "t", contact_email: "ada at example" }],
+      ["long email", { title: "t", contact_email: `${"a".repeat(310)}@example.com` }],
+      ["long skill name", { title: "t", skill: "s".repeat(65) }],
+      ["empty job id", { title: "t", job_id: "" }],
+      ["unknown field", { title: "t", payload: { a: 1 } }],
+      ["unknown link state", { title: "t", diagnostics: { link: { state: "online" } } }],
+      ["long link error", { title: "t", diagnostics: { link: { state: "degraded", last_error: "e".repeat(501) } } }],
+      ["unknown runner", { title: "t", diagnostics: { runners: [{ runner: "gemini", ready: true }] } }],
+      ["four runners", { title: "t", diagnostics: { runners: [...diagnostics.runners, ...diagnostics.runners] } }],
+      ["summary with extra counts", { title: "t", diagnostics: { health: { ok: true, summary: { ok: 1, warn: 0, fail: 0, skip: 0, info: 1 } } } }],
+      ["51 failing checks", { title: "t", diagnostics: { health: { ok: false, summary: { ok: 0, warn: 51, fail: 0, skip: 0 }, failing: Array.from({ length: 51 }, (_, i) => ({ id: `c${i}`, status: "warn" })) } } }],
+      ["long check message", { title: "t", diagnostics: { health: { ok: false, summary: { ok: 0, warn: 1, fail: 0, skip: 0 }, failing: [{ id: "c", status: "warn", message: "m".repeat(501) }] } } }],
+      ["long check id", { title: "t", diagnostics: { health: { ok: false, summary: { ok: 0, warn: 1, fail: 0, skip: 0 }, failing: [{ id: "c".repeat(201), status: "warn" }] } } }],
+      ["long version", { title: "t", diagnostics: { skillhook_version: "v".repeat(65) } }],
+      ["long arch", { title: "t", diagnostics: { arch: "a".repeat(33) } }],
+    ];
+    for (const [what, value] of invalid) expect(IssueReportRequestSchema.safeParse(value).success, what).toBe(false);
+    const answer = { ok: true, issue_id: "iss_42", number: 42, url: "https://cloud.example/o/meter/issues/42", acknowledged: true };
+    expect(IssueReportResponseSchema.parse(answer)).toEqual(answer);
+    expect(IssueReportResponseSchema.safeParse({ ...answer, number: 0 }).success).toBe(false);
+    expect(IssueReportResponseSchema.safeParse({ ...answer, url: "not a url" }).success).toBe(false);
+    expect(IssueReportResponseSchema.safeParse({ ...answer, acknowledged: undefined }).success).toBe(false);
+    expect(IssueReportResponseSchema.safeParse({ ...answer, ok: false }).success).toBe(false);
+    expect(IssueReportResponseSchema.safeParse({ ...answer, extra: 1 }).success).toBe(false);
+    // Errors have the agent API's shape.
+    expect(SyncErrorSchema.parse({ ok: false, error: "rate_limited", message: "at most 10 reports an hour", retry_after_ms: 90_000 }).retry_after_ms).toBe(90_000);
   });
 });

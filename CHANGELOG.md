@@ -4,6 +4,11 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- The protocol gains the report, additively (`PROTOCOL_VERSION` stays 1): `IssueReportRequestSchema`,
+  `IssueReportResponseSchema`, `IssueDiagnosticsSchema`, `ISSUE_KINDS`, `ISSUE_SEVERITIES` and
+  `LIMITS.max_issue_report_bytes` (64 KiB), documented in
+  [docs/cloud-protocol.md](docs/cloud-protocol.md#issue-reports).
+
 ## 0.5.0 (2026-09-28)
 
 - The cloud link checks the runners as soon as it connects, so the dashboard shows whether `claude` and
