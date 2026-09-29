@@ -26,7 +26,7 @@ describe("skillhook mcp", () => {
   it("offers the tools of this version, and no way for an agent to pair the machine with a cloud account", async () => {
     const c = await client(tempHome("skillhook-mcp-"));
     const tools = await c.tools();
-    for (const name of ["answer_job", "get_health", "get_runners", "get_stats", "get_config", "update_config", "restart_server", "check_update", "cloud_status", "cloud_disconnect", "test_skill", "replay_job", "list_deliveries"]) expect(tools).toContain(name);
+    for (const name of ["answer_job", "get_health", "get_runners", "get_stats", "get_config", "update_config", "restart_server", "check_update", "cloud_status", "cloud_disconnect", "cloud_report_issue", "test_skill", "replay_job", "list_deliveries"]) expect(tools).toContain(name);
     expect(tools).not.toContain("cloud_connect");
     expect((c.init.result as { instructions: string }).instructions).toContain("never by an agent");
   });
@@ -48,6 +48,33 @@ describe("skillhook mcp", () => {
       expect(env).not.toContain("SKILLHOOK_CLOUD_TOKEN");
       expect(env).not.toContain("SKILLHOOK_CLOUD_PRIVATE_KEY");
       expect((await c.call("cloud_status")).data).toMatchObject({ enabled: false, token_present: false });
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("reports an issue for the person from a paired machine, and says why it cannot from one that is not", async () => {
+    const fake = await FakeCloud.start();
+    try {
+      const paths = tempHome("skillhook-mcp-");
+      const c = await client(paths);
+      const unpaired = await c.call("cloud_report_issue", { title: "Webhooks fail", diagnostics: false });
+      expect(unpaired.isError).toBe(true);
+      expect(unpaired.text).toContain("not paired with Skillhook Cloud");
+      writeConfigFile(paths, { cloud: { enabled: true, url: fake.url, machine_id: fake.machineId } });
+      writeEnv(paths, { SKILLHOOK_CLOUD_TOKEN: fake.token, SKILLHOOK_SECRET_HELLO: "placeholder-hello-value" });
+      const preview = await c.call("cloud_report_issue", { title: "Webhooks fail with placeholder-hello-value", diagnostics: false, dry_run: true });
+      expect(preview.data).toEqual({ dry_run: true, url: fake.url, request: { title: "Webhooks fail with [redacted]", report_id: expect.any(String) } });
+      expect(preview.text).toContain("Nothing was sent");
+      expect(fake.issues).toEqual([]);
+      const sent = await c.call("cloud_report_issue", { title: "Webhooks fail with placeholder-hello-value", body: "Since this morning.", kind: "bug", contact_email: "ada@example.com", job_id: "20260929T101500Z-a1b2c3", diagnostics: false });
+      expect(sent.isError).toBe(false);
+      expect(sent.data).toEqual({ ok: true, issue_id: "iss_41", number: 41, url: `${fake.url}/o/fake/issues/41`, acknowledged: true, cloud_url: fake.url, diagnostics: null });
+      expect(sent.text).toContain(`Reported as #41: ${fake.url}/o/fake/issues/41 (a confirmation email was sent)`);
+      expect(fake.issues).toEqual([{ title: "Webhooks fail with [redacted]", body: "Since this morning.", kind: "bug", contact_email: "ada@example.com", job_id: "20260929T101500Z-a1b2c3", report_id: expect.any(String) }]);
+      const invalid = await c.call("cloud_report_issue", { title: "Webhooks fail", kind: "complaint" });
+      expect(invalid.isError).toBe(true);
+      expect(fake.issues).toHaveLength(1);
     } finally {
       await fake.close();
     }

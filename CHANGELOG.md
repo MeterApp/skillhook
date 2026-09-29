@@ -4,6 +4,39 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.6.0 (2026-09-29)
+
+- `skillhook cloud report "<title>"`: a person on a paired machine reports a problem to the Skillhook
+  team without leaving the terminal (`--body TEXT`, `--body -` or `--body-file PATH`, `--kind`,
+  `--severity`, `--job`, `--delivery`, `--skill`, `--email`). One request, `POST /api/agent/issues`
+  with the machine token, carrying the person's text and, unless `--no-diagnostics`, what the machine
+  already knows: skillhook, Node, OS and architecture, `cloud.mode`, the link's state, whether each
+  runner is ready and the health summary with the failing and warning checks. Every `.env` value is
+  scrubbed from all of it, and payloads, logs, prompts and job output never go; `--dry-run` prints the
+  exact JSON instead of sending it. It answers `Reported as #N: <url>` and whether a confirmation email
+  went out. Each report carries a `report_id` (a UUID) on every attempt: network errors, timeouts and
+  5xx are retried (three attempts), a 429 only after a short `retry_after_ms`, another 4xx never, and
+  the cloud files a retried report once. The MCP tool `cloud_report_issue` sends the same report for
+  an agent the person asked (`dry_run: true` returns it without sending). Refused on a machine that is
+  not paired and under `SKILLHOOK_NO_CLOUD=1`.
+- The protocol gains the report, additively (`PROTOCOL_VERSION` stays 1): `IssueReportRequestSchema`
+  (with `report_id`, a client-generated idempotency key), `IssueReportResponseSchema`,
+  `IssueDiagnosticsSchema`, `ISSUE_KINDS`, `ISSUE_SEVERITIES` and `LIMITS.max_issue_report_bytes`
+  (64 KiB), documented in [docs/cloud-protocol.md](docs/cloud-protocol.md#issue-reports).
+- The organisation's fleet from the CLI with an organisation API key: `skillhook cloud login --key
+  shc_…|-` checks the key (`GET /api/v1/me`) and keeps it in `.env` as `SKILLHOOK_CLOUD_API_KEY`
+  without ever printing it (the environment variable works too, for CI), `cloud logout` forgets it,
+  and `cloud machines`, `cloud jobs [--machine M] [--skill S] [--status ST] [--outcome O] [--waiting]
+  [--limit N] [--before C]` and `cloud job <id>` print tables, or the API's JSON with `--json`. The
+  machine token is never used for them, so a paired machine cannot read the rest of its organisation.
+  A refused key says to log in again, a missing scope names it. A key only goes to a cloud URL someone
+  set (pairing, `cloud.url` or `SKILLHOOK_CLOUD_URL`), never to the built-in placeholder, and only if
+  it looks like one (`shc_…`, one line).
+- The cloud HTTP client reads the public API's RFC 9457 problem answers (`code`, `detail`,
+  `request_id`) as well as the agent API's `error` / `message`, refuses a token that is not one line
+  of printable characters before it becomes a header, and never lets a token into an error message.
+- `skillhook cloud <subcommand> --help` prints the usage instead of running the subcommand.
+
 ## 0.5.0 (2026-09-28)
 
 - The cloud link checks the runners as soon as it connects, so the dashboard shows whether `claude` and
