@@ -18,6 +18,11 @@ import { checkForUpdate, detectInstall, releaseNotesUrl, UPDATE_CHECK_INTERVAL_M
 import { VERSION } from "../version.js";
 import { bool, num, str, type Ctx } from "./shared.js";
 
+export const SERVE_USAGE = `Usage: skillhook serve [--port N] [--host H] [--log-level debug|info|warn|error] [--pretty]
+
+Runs the webhook server in the foreground until it is stopped (skillhook service install runs it at login instead).
+--port and --host override skillhook.json (default 127.0.0.1:8787); logs are JSON lines, readable with --pretty or at a terminal.`;
+
 export async function serveCommand(ctx: Ctx): Promise<number> {
   const events = new Events();
   // One live config object for everything in this process; reloads patch it in place (see ConfigRef).

@@ -2,7 +2,7 @@ import { DELIVERY_OUTCOMES, readDeliveryBody, type DeliveryOutcome } from "../de
 import { replayCommand } from "./replay.js";
 import { bool, CommandError, num, relativeTime, str, table, UsageError, type Ctx } from "./shared.js";
 
-const USAGE = `Usage:
+export const DELIVERIES_USAGE = `Usage:
   skillhook deliveries list [--skill NAME] [--outcome ${DELIVERY_OUTCOMES.join("|")}] [--since ISO] [--after ID] [--limit N]
   skillhook deliveries show <id> [--body]
   skillhook deliveries replay <id> [--force] [--skip-filters] [--runner R] [--model M] [--effort E] [--wait S]
@@ -18,9 +18,9 @@ export async function deliveriesCommand(ctx: Ctx): Promise<number> {
     case "list":
     case "ls": {
       const outcome = str(ctx.flags, "outcome") as DeliveryOutcome | undefined;
-      if (outcome && !DELIVERY_OUTCOMES.includes(outcome)) throw new UsageError(`--outcome must be one of ${DELIVERY_OUTCOMES.join(", ")}`, USAGE);
+      if (outcome && !DELIVERY_OUTCOMES.includes(outcome)) throw new UsageError(`--outcome must be one of ${DELIVERY_OUTCOMES.join(", ")}`, DELIVERIES_USAGE);
       const since = str(ctx.flags, "since");
-      if (since && Number.isNaN(Date.parse(since))) throw new UsageError("--since must be an ISO-8601 instant", USAGE);
+      if (since && Number.isNaN(Date.parse(since))) throw new UsageError("--since must be an ISO-8601 instant", DELIVERIES_USAGE);
       const page = log.list({ skill: str(ctx.flags, "skill"), outcome, since, after: str(ctx.flags, "after"), limit: num(ctx.flags, "limit") ?? 30 });
       const rows = page.deliveries.map((d) => {
         const code = d.code && d.code !== d.outcome ? d.code : "";
@@ -33,7 +33,7 @@ export async function deliveriesCommand(ctx: Ctx): Promise<number> {
     }
     case "show":
     case "get": {
-      if (!id) throw new UsageError("Missing delivery id", USAGE);
+      if (!id) throw new UsageError("Missing delivery id", DELIVERIES_USAGE);
       const delivery = log.get(id);
       if (!delivery) throw new CommandError(`Unknown delivery ${id}`);
       const wantBody = bool(ctx.flags, "body");
@@ -57,8 +57,8 @@ export async function deliveriesCommand(ctx: Ctx): Promise<number> {
     }
     case "replay":
     case "rerun":
-      return replayCommand(ctx, "delivery", id, USAGE);
+      return replayCommand(ctx, "delivery", id, DELIVERIES_USAGE);
     default:
-      throw new UsageError(`Unknown deliveries subcommand "${sub}"`, USAGE);
+      throw new UsageError(`Unknown deliveries subcommand "${sub}"`, DELIVERIES_USAGE);
   }
 }

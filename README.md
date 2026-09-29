@@ -344,7 +344,7 @@ Agents reading this repository should start with [`AGENTS.md`](AGENTS.md) (layou
 | `skillhook schedules [list]` · `schedules next <name> [--count N]` · `schedules run <name> [--wait S]` | Every skill or hook with a `schedule:`, its next and last runs; preview occurrences; fire one now. |
 | `skillhook update [--install]` | Check npm for a newer skillhook; `--install` upgrades with the package manager that installed it and restarts the background service when it is idle. |
 
-Global options: `--dir <path>` (default `$SKILLHOOK_HOME` or `~/.skillhook`), `--json` (machine-readable output for every command), `--help`, `--version`. Exit codes: 0 success, 1 failure, 2 usage error. Environment: `SKILLHOOK_HOME`, `SKILLHOOK_NO_UPDATE_CHECK=1` (or `CI`) to silence the daily update check, `SKILLHOOK_NPM_REGISTRY` for a mirror, `SKILLHOOK_DEBUG=1` for stack traces. HTTP API: [docs/api.md](docs/api.md). Service, logs, jobs, config and troubleshooting: [docs/operations.md](docs/operations.md).
+Global options: `--dir <path>` (default `$SKILLHOOK_HOME` or `~/.skillhook`), `--json` (machine-readable output for every command), `--help` (on any command or subcommand, or `skillhook help <command>`: prints its usage and runs nothing), `--version`. Exit codes: 0 success, 1 failure, 2 usage error. Environment: `SKILLHOOK_HOME`, `SKILLHOOK_NO_UPDATE_CHECK=1` (or `CI`) to silence the daily update check, `SKILLHOOK_NPM_REGISTRY` for a mirror, `SKILLHOOK_DEBUG=1` for stack traces. HTTP API: [docs/api.md](docs/api.md). Service, logs, jobs, config and troubleshooting: [docs/operations.md](docs/operations.md).
 
 ## Project layout of `~/.skillhook`
 

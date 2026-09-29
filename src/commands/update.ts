@@ -13,10 +13,6 @@ SKILLHOOK_NO_UPDATE_CHECK=1, CI=1, or "update_check": false in skillhook.json; p
 SKILLHOOK_NPM_REGISTRY.`;
 
 export async function updateCommand(ctx: Ctx): Promise<number> {
-  if (bool(ctx.flags, "help", "h")) {
-    ctx.io.stdout(`${UPDATE_USAGE}\n`);
-    return 0;
-  }
   if (bool(ctx.flags, "refresh")) {
     // Spawned in the background by other commands; only refreshes the cache.
     await checkForUpdate(ctx.paths, { env: ctx.io.env, force: true, timeoutMs: 15_000 });

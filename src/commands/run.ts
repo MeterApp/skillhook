@@ -10,7 +10,7 @@ import { formatCommand } from "../runners/types.js";
 import type { Skill } from "../skills.js";
 import { bool, CommandError, formatDuration, list, num, parseHeaderFlags, readPayloadArg, str, UsageError, type Ctx } from "./shared.js";
 
-const USAGE = `Usage: skillhook run <skill> [--payload JSON|@file|-] [--header "Name: value"]... [--runner claude|codex|shell]
+export const RUN_USAGE = `Usage: skillhook run <skill> [--payload JSON|@file|-] [--header "Name: value"]... [--runner claude|codex|shell]
                            [--model M] [--effort E] [--cwd DIR] [--wait S] [--dry-run] [--json]
        skillhook run --file SKILL.md | --stdin [same options]
 
@@ -22,11 +22,11 @@ export async function runCommand(ctx: Ctx): Promise<number> {
   const [name] = ctx.args;
   const file = str(ctx.flags, "file");
   const fromStdin = bool(ctx.flags, "stdin");
-  if (!name && !file && !fromStdin) throw new UsageError("Missing skill name (or --file SKILL.md / --stdin)", USAGE);
-  if (name && (file || fromStdin)) throw new UsageError("Give a skill name or --file/--stdin, not both", USAGE);
-  if (file && fromStdin) throw new UsageError("--file and --stdin exclude each other", USAGE);
+  if (!name && !file && !fromStdin) throw new UsageError("Missing skill name (or --file SKILL.md / --stdin)", RUN_USAGE);
+  if (name && (file || fromStdin)) throw new UsageError("Give a skill name or --file/--stdin, not both", RUN_USAGE);
+  if (file && fromStdin) throw new UsageError("--file and --stdin exclude each other", RUN_USAGE);
   const runner = str(ctx.flags, "runner");
-  if (runner && !RunnerNameSchema.safeParse(runner).success) throw new UsageError("--runner must be claude, codex or shell", USAGE);
+  if (runner && !RunnerNameSchema.safeParse(runner).success) throw new UsageError("--runner must be claude, codex or shell", RUN_USAGE);
   const ops = createOps(ctx.paths, { env: ctx.io.env, logger: ctx.json ? undefined : createLogger({ format: "pretty", level: "warn" }) });
   let skillMd: string | undefined;
   if (file) {
@@ -41,7 +41,7 @@ export async function runCommand(ctx: Ctx): Promise<number> {
   const installed = skillMd === undefined ? ops.registry.get(name as string) : undefined;
   if (skillMd === undefined && !installed) throw new CommandError(`No skill named "${name}" in ${ctx.paths.skillsDir}`);
   const payloadArg = str(ctx.flags, "payload", "p");
-  if (fromStdin && payloadArg === "-") throw new UsageError("--payload - cannot be combined with --stdin (both read standard input)", USAGE);
+  if (fromStdin && payloadArg === "-") throw new UsageError("--payload - cannot be combined with --stdin (both read standard input)", RUN_USAGE);
   const { payload } = await readPayloadArg(ctx, payloadArg);
   const headers = parseHeaderFlags(list(ctx.flags, "header", "H"));
   const overrides = { runner: runner as RunnerName | undefined, model: str(ctx.flags, "model"), effort: str(ctx.flags, "effort"), cwd: str(ctx.flags, "cwd") };

@@ -14,7 +14,7 @@ import { sleep } from "../util.js";
 import { replayCommand } from "./replay.js";
 import { bool, CommandError, formatDuration, num, relativeTime, str, table, UsageError, type Ctx } from "./shared.js";
 
-const USAGE = `Usage:
+export const JOBS_USAGE = `Usage:
   skillhook jobs list [--skill NAME] [--status ${JOB_STATUSES.join("|")}] [--outcome ${JOB_OUTCOMES.join("|")}] [--failure ${FAILURE_KINDS.join("|")}] [--trigger ${TRIGGERS.join("|")}] [--waiting] [--since ISO] [--after ID] [--limit N]
   skillhook jobs show <id> [--result] [--response] [--prompt] [--stdout] [--stderr]
   skillhook jobs logs <id> [--follow|-f] [--stderr]
@@ -32,15 +32,15 @@ export async function jobsCommand(ctx: Ctx): Promise<number> {
     case "list":
     case "ls": {
       const status = str(ctx.flags, "status") as JobStatus | undefined;
-      if (status && !JOB_STATUSES.includes(status)) throw new UsageError(`--status must be one of ${JOB_STATUSES.join(", ")}`, USAGE);
+      if (status && !JOB_STATUSES.includes(status)) throw new UsageError(`--status must be one of ${JOB_STATUSES.join(", ")}`, JOBS_USAGE);
       const trigger = str(ctx.flags, "trigger") as Trigger | undefined;
-      if (trigger && !TRIGGERS.includes(trigger)) throw new UsageError(`--trigger must be one of ${TRIGGERS.join(", ")}`, USAGE);
+      if (trigger && !TRIGGERS.includes(trigger)) throw new UsageError(`--trigger must be one of ${TRIGGERS.join(", ")}`, JOBS_USAGE);
       const outcome = str(ctx.flags, "outcome") as JobOutcome | undefined;
-      if (outcome && !JOB_OUTCOMES.includes(outcome)) throw new UsageError(`--outcome must be one of ${JOB_OUTCOMES.join(", ")}`, USAGE);
+      if (outcome && !JOB_OUTCOMES.includes(outcome)) throw new UsageError(`--outcome must be one of ${JOB_OUTCOMES.join(", ")}`, JOBS_USAGE);
       const since = str(ctx.flags, "since");
-      if (since && Number.isNaN(Date.parse(since))) throw new UsageError("--since must be an ISO-8601 instant", USAGE);
+      if (since && Number.isNaN(Date.parse(since))) throw new UsageError("--since must be an ISO-8601 instant", JOBS_USAGE);
       const failure = str(ctx.flags, "failure") as FailureKind | undefined;
-      if (failure && !FAILURE_KINDS.includes(failure)) throw new UsageError(`--failure must be one of ${FAILURE_KINDS.join(", ")}`, USAGE);
+      if (failure && !FAILURE_KINDS.includes(failure)) throw new UsageError(`--failure must be one of ${FAILURE_KINDS.join(", ")}`, JOBS_USAGE);
       const waiting = bool(ctx.flags, "waiting") || undefined;
       const page = store.listPage({ skill: str(ctx.flags, "skill"), status, trigger, outcome, failure, waiting, since, after: str(ctx.flags, "after"), limit: num(ctx.flags, "limit") ?? 30 });
       const jobs = page.jobs;
@@ -89,7 +89,7 @@ export async function jobsCommand(ctx: Ctx): Promise<number> {
       const job = store.get(requireId(id));
       if (!job) throw new CommandError(`Unknown job ${id}`);
       const text = ctx.args[2];
-      if (!text?.trim()) throw new UsageError("Missing the answer text", USAGE);
+      if (!text?.trim()) throw new UsageError("Missing the answer text", JOBS_USAGE);
       const option = str(ctx.flags, "option");
       const by = str(ctx.flags, "by") ?? ctx.io.env.USER;
       const resume: "auto" | "never" = ctx.flags.resume === false ? "never" : "auto";
@@ -186,7 +186,7 @@ export async function jobsCommand(ctx: Ctx): Promise<number> {
     }
     case "replay":
     case "rerun":
-      return replayCommand(ctx, "job", id, USAGE);
+      return replayCommand(ctx, "job", id, JOBS_USAGE);
     case "resume": {
       const job = store.get(requireId(id));
       if (!job) throw new CommandError(`Unknown job ${id}`);
@@ -211,12 +211,12 @@ export async function jobsCommand(ctx: Ctx): Promise<number> {
       return 0;
     }
     default:
-      throw new UsageError(`Unknown jobs subcommand "${sub}"`, USAGE);
+      throw new UsageError(`Unknown jobs subcommand "${sub}"`, JOBS_USAGE);
   }
 }
 
 function requireId(id: string | undefined): string {
-  if (!id) throw new UsageError("Missing job id", USAGE);
+  if (!id) throw new UsageError("Missing job id", JOBS_USAGE);
   return id;
 }
 

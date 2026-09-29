@@ -4,6 +4,14 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- `--help` and `-h` never run a command. Most commands used to ignore them and do their work, so
+  `skillhook jobs prune --help` pruned jobs and `skillhook service install --help` installed the service
+  (0.6.0 fixed only `skillhook cloud`). Now `skillhook <command> [subcommand …] --help`, or
+  `skillhook help <command>`, prints that command's usage and exits 0 without touching anything;
+  `--json` prints `{ "ok": true, "command": …, "usage": … }`. The check sits in front of every command,
+  so a new one cannot forget it. `serve`, `doctor`, `health`, `runners`, `mcp` and `url` gained a usage
+  text, and `skillhook job <subcommand> --help` prints the agent's job API or, for the rest, `jobs`.
+
 ## 0.6.0 (2026-09-29)
 
 - `skillhook cloud report "<title>"`: a person on a paired machine reports a problem to the Skillhook

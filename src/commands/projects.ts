@@ -4,7 +4,7 @@ import { skillSummary } from "../server.js";
 import { displayPath } from "../util.js";
 import { bool, CommandError, UsageError, type Ctx } from "./shared.js";
 
-const USAGE = `Usage:
+export const PROJECTS_USAGE = `Usage:
   skillhook link [dir] [--no-secret]        register a repository's ${PROJECT_FILE_NAMES[0]} (or the file itself) with this server; default: .
   skillhook unlink <dir>                    stop serving its hooks (the repository is not touched)
   skillhook projects [list]                 linked projects and their hooks
@@ -31,7 +31,7 @@ export async function projectsCommand(ctx: Ctx): Promise<number> {
     case "init":
       return init(ctx, target);
     default:
-      throw new UsageError(`Unknown projects subcommand "${sub}"`, USAGE);
+      throw new UsageError(`Unknown projects subcommand "${sub}"`, PROJECTS_USAGE);
   }
 }
 
@@ -123,7 +123,7 @@ async function link(ctx: Ctx, target: string | undefined): Promise<number> {
 }
 
 async function unlink(ctx: Ctx, target: string | undefined): Promise<number> {
-  if (!target) throw new UsageError("Missing project directory", USAGE);
+  if (!target) throw new UsageError("Missing project directory", PROJECTS_USAGE);
   const ops = createOps(ctx.paths, { env: ctx.io.env });
   const { unlinkProject } = await import("../ops.js");
   const result = unlinkProject(ops, target);

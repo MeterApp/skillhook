@@ -4,12 +4,14 @@ import { createOps, resolveBaseUrl, webhookUrl } from "../ops.js";
 import { currentExposures, disableExposure, enableExposure, findTailscale, tailscaleStatus, type ExposureMode } from "../tailscale.js";
 import { bool, CommandError, num, table, UsageError, type Ctx } from "./shared.js";
 
-const USAGE = `Usage:
+export const EXPOSE_USAGE = `Usage:
   skillhook expose tailscale [--serve] [--port N]   Funnel (public HTTPS, default) or Serve (tailnet only)
   skillhook expose status
   skillhook expose off
   skillhook expose cloudflare | ngrok               print the recipe for other tunnels
   skillhook url [skill]                             print webhook URLs`;
+
+export const URL_USAGE = "Usage: skillhook url [skill] [--public|--local]   the webhook URLs of every skill (or one): public when exposed, else local";
 
 export async function exposeCommand(ctx: Ctx): Promise<number> {
   const [sub = "status"] = ctx.args;
@@ -29,7 +31,7 @@ export async function exposeCommand(ctx: Ctx): Promise<number> {
     case "ngrok":
       return recipe(ctx, "ngrok");
     default:
-      throw new UsageError(`Unknown expose subcommand "${sub}"`, USAGE);
+      throw new UsageError(`Unknown expose subcommand "${sub}"`, EXPOSE_USAGE);
   }
 }
 
