@@ -7,7 +7,7 @@ import { generateSecret } from "../ids.js";
 import { ensureDir } from "../util.js";
 import { bool, num, str, UsageError, type Ctx } from "./shared.js";
 
-export const INIT_USAGE = "Usage: skillhook init [--dir PATH] [--runner claude|codex] [--model MODEL] [--port N] [--force]";
+export const INIT_USAGE = "Usage: skillhook init [--dir PATH] [--runner claude|codex|shell] [--model MODEL] [--port N] [--force]";
 
 export async function initCommand(ctx: Ctx): Promise<number> {
   const { paths } = ctx;

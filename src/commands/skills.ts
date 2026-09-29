@@ -7,7 +7,7 @@ import { AUTH_TYPES, describeAuth, type AuthType, type Skill } from "../skills.j
 import { displayPath } from "../util.js";
 import { bool, CommandError, list, num, str, table, UsageError, type Ctx } from "./shared.js";
 
-const USAGE = `Usage:
+export const SKILLS_USAGE = `Usage:
   skillhook skills list
   skillhook skills show <name>
   skillhook skills new <name> [--description TEXT] [--runner claude|codex|shell] [--model M] [--effort E]
@@ -41,12 +41,12 @@ export async function skillsCommand(ctx: Ctx): Promise<number> {
     case "dir":
       return skillPath(ctx, requireName(name));
     default:
-      throw new UsageError(`Unknown skills subcommand "${sub}"`, USAGE);
+      throw new UsageError(`Unknown skills subcommand "${sub}"`, SKILLS_USAGE);
   }
 }
 
 function requireName(name: string | undefined): string {
-  if (!name) throw new UsageError("Missing skill name", USAGE);
+  if (!name) throw new UsageError("Missing skill name", SKILLS_USAGE);
   return name;
 }
 
@@ -102,9 +102,9 @@ async function showSkill(ctx: Ctx, name: string): Promise<number> {
 async function newSkill(ctx: Ctx, name: string): Promise<number> {
   const ops = createOps(ctx.paths, { env: ctx.io.env });
   const runner = str(ctx.flags, "runner");
-  if (runner && !RunnerNameSchema.safeParse(runner).success) throw new UsageError("--runner must be claude, codex or shell", USAGE);
+  if (runner && !RunnerNameSchema.safeParse(runner).success) throw new UsageError("--runner must be claude, codex or shell", SKILLS_USAGE);
   const authType = str(ctx.flags, "auth") as AuthType | undefined;
-  if (authType && !AUTH_TYPES.includes(authType)) throw new UsageError(`--auth must be one of ${AUTH_TYPES.join(", ")}`, USAGE);
+  if (authType && !AUTH_TYPES.includes(authType)) throw new UsageError(`--auth must be one of ${AUTH_TYPES.join(", ")}`, SKILLS_USAGE);
   const result = createSkill(ops, {
     name,
     description: str(ctx.flags, "description", "d") ?? `${name} skill (edit the description in SKILL.md)`,

@@ -4,7 +4,7 @@ import { nextRuns } from "../schedule.js";
 import { buildSchedulePayload, listSchedules, type ScheduleStatus } from "../scheduler.js";
 import { CommandError, num, relativeTime, table, UsageError, type Ctx } from "./shared.js";
 
-const USAGE = `Usage:
+export const SCHEDULES_USAGE = `Usage:
   skillhook schedules list                 every skill or hook with a schedule: cron, zone, next and last run
   skillhook schedules next <name> [--count N]   the next N occurrences (default 5)
   skillhook schedules run <name> [--wait S]     fire a scheduled skill now, with the payload a scheduled run gets`;
@@ -21,12 +21,12 @@ export async function schedulesCommand(ctx: Ctx): Promise<number> {
     case "fire":
       return runCommand(ctx, requireName(name));
     default:
-      throw new UsageError(`Unknown schedules subcommand "${sub}"`, USAGE);
+      throw new UsageError(`Unknown schedules subcommand "${sub}"`, SCHEDULES_USAGE);
   }
 }
 
 function requireName(name: string | undefined): string {
-  if (!name) throw new UsageError("Missing skill name", USAGE);
+  if (!name) throw new UsageError("Missing skill name", SCHEDULES_USAGE);
   return name;
 }
 

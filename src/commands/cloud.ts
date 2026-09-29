@@ -10,7 +10,7 @@ import { machineKeyPair, publicKeyOf, SealError } from "../cloud/seal.js";
 import { ensureSecretFileMode, readEnvFile, removeEnvVar, upsertEnvVar } from "../env.js";
 import { bool, CommandError, formatDuration, num, relativeTime, str, table, UsageError, type Ctx } from "./shared.js";
 
-const USAGE = `Usage:
+export const CLOUD_USAGE = `Usage:
   skillhook cloud connect --code XXXX-XXXX [--url URL] [--control|--observe] [--force]   pair this machine with Skillhook Cloud (the dashboard shows the code)
   skillhook cloud connect --token TOKEN [--url URL] [--control|--observe] [--force]      pair with a machine token instead
   skillhook cloud disconnect [--keep-token]                                              stop the link, forget the pairing, revoke the token
@@ -43,20 +43,15 @@ export async function cloudCommand(ctx: Ctx): Promise<number> {
 
 async function cloudSubcommand(ctx: Ctx): Promise<number> {
   const [sub = "status"] = ctx.args;
-  // Only the usage: `cloud report … --help` must not send a report, nor `cloud logout --help` forget the key.
-  if (bool(ctx.flags, "help", "h")) {
-    ctx.print(USAGE, { usage: USAGE });
-    return 0;
-  }
   const config = ctx.config();
   const env = ctx.io.env;
   switch (sub) {
     case "connect": {
       const code = str(ctx.flags, "code");
       const token = str(ctx.flags, "token");
-      if (!code && !token) throw new UsageError("Give --code (from the dashboard's pairing page) or --token", USAGE);
-      if (code && token) throw new UsageError("Give either --code or --token, not both", USAGE);
-      if (bool(ctx.flags, "control") && bool(ctx.flags, "observe")) throw new UsageError("--control and --observe exclude each other", USAGE);
+      if (!code && !token) throw new UsageError("Give --code (from the dashboard's pairing page) or --token", CLOUD_USAGE);
+      if (code && token) throw new UsageError("Give either --code or --token, not both", CLOUD_USAGE);
+      if (bool(ctx.flags, "control") && bool(ctx.flags, "observe")) throw new UsageError("--control and --observe exclude each other", CLOUD_USAGE);
       const url = resolveCloudUrl(env, config.cloud, str(ctx.flags, "url"));
       try {
         assertSecureCloudUrl(url, env);
@@ -130,9 +125,9 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
     }
     case "login": {
       const given = str(ctx.flags, "key");
-      if (!given) throw new UsageError("Give the organisation API key: --key shc_…, or --key - to read it from stdin (Settings → API keys on the dashboard)", USAGE);
+      if (!given) throw new UsageError("Give the organisation API key: --key shc_…, or --key - to read it from stdin (Settings → API keys on the dashboard)", CLOUD_USAGE);
       const key = (given === "-" ? await readStdin(ctx) : given).trim();
-      if (!API_KEY_RE.test(key)) throw new UsageError("That is not an organisation API key: those are shc_ followed by letters, digits, - and _ (Settings → API keys on the dashboard)", USAGE);
+      if (!API_KEY_RE.test(key)) throw new UsageError("That is not an organisation API key: those are shc_ followed by letters, digits, - and _ (Settings → API keys on the dashboard)", CLOUD_USAGE);
       const client = fleetClient(env, config.cloud, key);
       const { data: me } = await client.get("/me", MeSchema);
       upsertEnvVar(ctx.paths.envFile, CLOUD_API_KEY_ENV, key);
@@ -160,11 +155,11 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
     }
     case "jobs": {
       const status = str(ctx.flags, "status");
-      if (status && !(JOB_STATUSES as readonly string[]).includes(status)) throw new UsageError(`--status must be one of ${JOB_STATUSES.join(", ")}`, USAGE);
+      if (status && !(JOB_STATUSES as readonly string[]).includes(status)) throw new UsageError(`--status must be one of ${JOB_STATUSES.join(", ")}`, CLOUD_USAGE);
       const outcome = str(ctx.flags, "outcome");
-      if (outcome && !(JOB_OUTCOMES as readonly string[]).includes(outcome)) throw new UsageError(`--outcome must be one of ${JOB_OUTCOMES.join(", ")}`, USAGE);
+      if (outcome && !(JOB_OUTCOMES as readonly string[]).includes(outcome)) throw new UsageError(`--outcome must be one of ${JOB_OUTCOMES.join(", ")}`, CLOUD_USAGE);
       const limit = num(ctx.flags, "limit");
-      if (limit !== undefined && !(Number.isInteger(limit) && limit >= 1 && limit <= 100)) throw new UsageError("--limit must be a whole number from 1 to 100", USAGE);
+      if (limit !== undefined && !(Number.isInteger(limit) && limit >= 1 && limit <= 100)) throw new UsageError("--limit must be a whole number from 1 to 100", CLOUD_USAGE);
       const waiting = bool(ctx.flags, "waiting");
       const query = new URLSearchParams();
       for (const [key, value] of Object.entries({ machine: str(ctx.flags, "machine"), skill: str(ctx.flags, "skill"), status, outcome, waiting: waiting ? "1" : undefined, limit: limit?.toString(), before: str(ctx.flags, "before") })) if (value) query.set(key, value);
@@ -182,7 +177,7 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
     }
     case "job": {
       const id = ctx.args[1];
-      if (!id) throw new UsageError("Missing the job id (the machine's own, or the cloud's)", USAGE);
+      if (!id) throw new UsageError("Missing the job id (the machine's own, or the cloud's)", CLOUD_USAGE);
       const client = fleetClient(env, config.cloud, storedApiKey(ctx.paths, env));
       const { data, raw } = await client.get(`/jobs/${encodeURIComponent(id)}`, JobDetailSchema);
       if (ctx.json) {
@@ -193,7 +188,7 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
       return 0;
     }
     default:
-      throw new UsageError(`Unknown cloud subcommand "${sub}"`, USAGE);
+      throw new UsageError(`Unknown cloud subcommand "${sub}"`, CLOUD_USAGE);
   }
 }
 
@@ -205,18 +200,18 @@ async function readStdin(ctx: Ctx): Promise<string> {
 async function reportInput(ctx: Ctx): Promise<IssueReportInput> {
   const argument = ctx.args.slice(1).join(" ").trim();
   const flagged = str(ctx.flags, "title")?.trim();
-  if (argument && flagged) throw new UsageError("Give the title once: as the argument or with --title", USAGE);
+  if (argument && flagged) throw new UsageError("Give the title once: as the argument or with --title", CLOUD_USAGE);
   const title = flagged || argument;
-  if (!title) throw new UsageError('Missing the title: skillhook cloud report "what went wrong"', USAGE);
+  if (!title) throw new UsageError('Missing the title: skillhook cloud report "what went wrong"', CLOUD_USAGE);
   const kind = str(ctx.flags, "kind");
-  if (kind && !(ISSUE_KINDS as readonly string[]).includes(kind)) throw new UsageError(`--kind must be one of ${ISSUE_KINDS.join(", ")}`, USAGE);
+  if (kind && !(ISSUE_KINDS as readonly string[]).includes(kind)) throw new UsageError(`--kind must be one of ${ISSUE_KINDS.join(", ")}`, CLOUD_USAGE);
   const severity = str(ctx.flags, "severity");
-  if (severity && !(ISSUE_SEVERITIES as readonly string[]).includes(severity)) throw new UsageError(`--severity must be one of ${ISSUE_SEVERITIES.join(", ")}`, USAGE);
-  if (ctx.flags.body === true) throw new UsageError("--body needs the text, or - to read it from stdin", USAGE);
-  if (ctx.flags["body-file"] === true) throw new UsageError("--body-file needs a path", USAGE);
+  if (severity && !(ISSUE_SEVERITIES as readonly string[]).includes(severity)) throw new UsageError(`--severity must be one of ${ISSUE_SEVERITIES.join(", ")}`, CLOUD_USAGE);
+  if (ctx.flags.body === true) throw new UsageError("--body needs the text, or - to read it from stdin", CLOUD_USAGE);
+  if (ctx.flags["body-file"] === true) throw new UsageError("--body-file needs a path", CLOUD_USAGE);
   const inline = str(ctx.flags, "body");
   const file = str(ctx.flags, "body-file");
-  if (inline !== undefined && file !== undefined) throw new UsageError("Give --body or --body-file, not both", USAGE);
+  if (inline !== undefined && file !== undefined) throw new UsageError("Give --body or --body-file, not both", CLOUD_USAGE);
   let body = inline === "-" ? await readStdin(ctx) : inline;
   if (file !== undefined) {
     try {

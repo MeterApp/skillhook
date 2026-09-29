@@ -2,28 +2,28 @@ import { ConfigError } from "../config.js";
 import { SkillError } from "../skills.js";
 import { errorMessage } from "../util.js";
 import { VERSION } from "../version.js";
-import { CommandError, createCtx, parseArgs, UsageError, type CliIO, type Ctx } from "./shared.js";
-import { initCommand } from "./init.js";
-import { serveCommand } from "./serve.js";
-import { skillsCommand } from "./skills.js";
-import { secretCommand } from "./secret.js";
-import { runCommand } from "./run.js";
-import { sendCommand } from "./send.js";
-import { healthCommand } from "./health.js";
-import { jobCommand } from "./job.js";
-import { jobsCommand } from "./jobs.js";
-import { runnersCommand } from "./runners.js";
-import { statsCommand } from "./stats.js";
-import { deliveriesCommand } from "./deliveries.js";
-import { exposeCommand, urlCommand } from "./expose.js";
-import { serviceCommand } from "./service.js";
-import { doctorCommand } from "./doctor.js";
-import { cloudCommand } from "./cloud.js";
-import { configCommand } from "./config.js";
-import { mcpCommand } from "./mcp.js";
-import { updateCommand } from "./update.js";
-import { linkCommand, projectsCommand, unlinkCommand } from "./projects.js";
-import { schedulesCommand } from "./schedules.js";
+import { bool, CommandError, createCtx, parseArgs, UsageError, type CliIO, type Ctx } from "./shared.js";
+import { initCommand, INIT_USAGE } from "./init.js";
+import { serveCommand, SERVE_USAGE } from "./serve.js";
+import { skillsCommand, SKILLS_USAGE } from "./skills.js";
+import { secretCommand, SECRET_USAGE } from "./secret.js";
+import { runCommand, RUN_USAGE } from "./run.js";
+import { sendCommand, SEND_USAGE } from "./send.js";
+import { healthCommand, HEALTH_USAGE } from "./health.js";
+import { jobCommand, jobUsage } from "./job.js";
+import { jobsCommand, JOBS_USAGE } from "./jobs.js";
+import { runnersCommand, RUNNERS_USAGE } from "./runners.js";
+import { statsCommand, STATS_USAGE } from "./stats.js";
+import { deliveriesCommand, DELIVERIES_USAGE } from "./deliveries.js";
+import { exposeCommand, EXPOSE_USAGE, urlCommand, URL_USAGE } from "./expose.js";
+import { serviceCommand, SERVICE_USAGE } from "./service.js";
+import { doctorCommand, DOCTOR_USAGE } from "./doctor.js";
+import { cloudCommand, CLOUD_USAGE } from "./cloud.js";
+import { configCommand, CONFIG_USAGE } from "./config.js";
+import { mcpCommand, MCP_USAGE } from "./mcp.js";
+import { updateCommand, UPDATE_USAGE } from "./update.js";
+import { linkCommand, projectsCommand, PROJECTS_USAGE, unlinkCommand } from "./projects.js";
+import { schedulesCommand, SCHEDULES_USAGE } from "./schedules.js";
 import { planUpdateNotice, spawnBackgroundRefresh } from "../update.js";
 import { readJsonFileOr } from "../util.js";
 
@@ -76,44 +76,54 @@ Agents
                                                            Read the organisation's machines and jobs with an organisation API key (never the machine token)
 
 Global options: --dir <path> (default $SKILLHOOK_HOME or ~/.skillhook), --json, --help, --version
-Each subcommand prints its own usage on a mistake. Docs: https://github.com/MeterApp/skillhook
+skillhook <command> --help (or skillhook help <command>) prints its usage and runs nothing; a mistake prints it too.
+Docs: https://github.com/MeterApp/skillhook
 `;
 
-type Command = (ctx: Ctx) => Promise<number | void> | number | void;
+export interface Command {
+  run: (ctx: Ctx) => Promise<number | void> | number | void;
+  /** What `skillhook <command> … --help` prints instead of running it; a function of the subcommand when that changes it. */
+  usage: string | ((args: string[]) => string);
+}
 
-const COMMANDS: Record<string, Command> = {
-  init: initCommand,
-  serve: serveCommand,
-  skills: skillsCommand,
-  skill: skillsCommand,
-  secret: secretCommand,
-  secrets: secretCommand,
-  run: runCommand,
-  send: sendCommand,
-  jobs: jobsCommand,
-  job: jobCommand,
-  deliveries: deliveriesCommand,
-  delivery: deliveriesCommand,
-  expose: exposeCommand,
-  url: urlCommand,
-  urls: urlCommand,
-  service: serviceCommand,
-  doctor: doctorCommand,
-  health: healthCommand,
-  runners: runnersCommand,
-  stats: statsCommand,
-  config: configCommand,
-  cloud: cloudCommand,
-  mcp: mcpCommand,
-  update: updateCommand,
-  upgrade: updateCommand,
-  link: linkCommand,
-  unlink: unlinkCommand,
-  projects: projectsCommand,
-  project: projectsCommand,
-  schedules: schedulesCommand,
-  schedule: schedulesCommand,
+export const COMMANDS: Record<string, Command> = {
+  init: { run: initCommand, usage: INIT_USAGE },
+  serve: { run: serveCommand, usage: SERVE_USAGE },
+  skills: { run: skillsCommand, usage: SKILLS_USAGE },
+  skill: { run: skillsCommand, usage: SKILLS_USAGE },
+  secret: { run: secretCommand, usage: SECRET_USAGE },
+  secrets: { run: secretCommand, usage: SECRET_USAGE },
+  run: { run: runCommand, usage: RUN_USAGE },
+  send: { run: sendCommand, usage: SEND_USAGE },
+  jobs: { run: jobsCommand, usage: JOBS_USAGE },
+  job: { run: jobCommand, usage: jobUsage },
+  deliveries: { run: deliveriesCommand, usage: DELIVERIES_USAGE },
+  delivery: { run: deliveriesCommand, usage: DELIVERIES_USAGE },
+  expose: { run: exposeCommand, usage: EXPOSE_USAGE },
+  url: { run: urlCommand, usage: URL_USAGE },
+  urls: { run: urlCommand, usage: URL_USAGE },
+  service: { run: serviceCommand, usage: SERVICE_USAGE },
+  doctor: { run: doctorCommand, usage: DOCTOR_USAGE },
+  health: { run: healthCommand, usage: HEALTH_USAGE },
+  runners: { run: runnersCommand, usage: RUNNERS_USAGE },
+  stats: { run: statsCommand, usage: STATS_USAGE },
+  config: { run: configCommand, usage: CONFIG_USAGE },
+  cloud: { run: cloudCommand, usage: CLOUD_USAGE },
+  mcp: { run: mcpCommand, usage: MCP_USAGE },
+  update: { run: updateCommand, usage: UPDATE_USAGE },
+  upgrade: { run: updateCommand, usage: UPDATE_USAGE },
+  link: { run: linkCommand, usage: PROJECTS_USAGE },
+  unlink: { run: unlinkCommand, usage: PROJECTS_USAGE },
+  projects: { run: projectsCommand, usage: PROJECTS_USAGE },
+  project: { run: projectsCommand, usage: PROJECTS_USAGE },
+  schedules: { run: schedulesCommand, usage: SCHEDULES_USAGE },
+  schedule: { run: schedulesCommand, usage: SCHEDULES_USAGE },
 };
+
+/** The usage `skillhook <name> [args…] --help` prints. */
+export function usageOf(command: Command, args: string[]): string {
+  return typeof command.usage === "function" ? command.usage(args) : command.usage;
+}
 
 /** Commands whose output must stay clean, or that handle update checks themselves. */
 const NO_UPDATE_NOTICE = new Set(["serve", "mcp", "update", "upgrade", "version", "help"]);
@@ -156,14 +166,16 @@ export async function main(argv: string[], io: CliIO = defaultIO()): Promise<num
     return 1;
   }
   const { flags, positionals } = parseArgs(argv);
-  const [name, ...rest] = positionals;
+  // `skillhook help jobs` is `skillhook jobs --help`.
+  const help = bool(flags, "help", "h") || positionals[0] === "help";
+  const [name, ...rest] = positionals[0] === "help" ? positionals.slice(1) : positionals;
   if (flags.version === true || flags.v === true || name === "version") {
     io.stdout(`${VERSION}\n`);
     return 0;
   }
-  if (!name || name === "help" || ((flags.help === true || flags.h === true) && !name)) {
+  if (!name || name === "help") {
     io.stdout(HELP);
-    return name || flags.help === true || flags.h === true ? 0 : 1;
+    return help ? 0 : 1;
   }
   const command = COMMANDS[name];
   if (!command) {
@@ -171,8 +183,14 @@ export async function main(argv: string[], io: CliIO = defaultIO()): Promise<num
     return 1;
   }
   const ctx = createCtx(flags, rest, io);
+  if (help) {
+    // Checked here, before any command code runs, so no command can forget it: `jobs prune --help` must not prune.
+    const usage = usageOf(command, rest);
+    ctx.print(usage, { ok: true, command: name, usage });
+    return 0;
+  }
   try {
-    const code = await command(ctx);
+    const code = await command.run(ctx);
     noticeUpdate(ctx, name);
     return typeof code === "number" ? code : 0;
   } catch (error) {

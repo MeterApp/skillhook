@@ -2,7 +2,7 @@ import { installService, readServiceLog, restartService, serviceStatus, uninstal
 import { sleep } from "../util.js";
 import { bool, num, UsageError, type Ctx } from "./shared.js";
 
-const USAGE = `Usage:
+export const SERVICE_USAGE = `Usage:
   skillhook service install     run \`skillhook serve\` at login and keep it alive (launchd on macOS, systemd --user on Linux)
   skillhook service uninstall
   skillhook service status
@@ -59,6 +59,6 @@ export async function serviceCommand(ctx: Ctx): Promise<number> {
       return 0;
     }
     default:
-      throw new UsageError(`Unknown service subcommand "${sub}"`, USAGE);
+      throw new UsageError(`Unknown service subcommand "${sub}"`, SERVICE_USAGE);
   }
 }

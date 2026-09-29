@@ -2,7 +2,7 @@ import { readEnvFile, redactValue, removeEnvVar } from "../env.js";
 import { createOps, generateSecretFor, resolveSecretName, setSecret } from "../ops.js";
 import { bool, CommandError, num, str, table, UsageError, type Ctx } from "./shared.js";
 
-const USAGE = `Usage:
+export const SECRET_USAGE = `Usage:
   skillhook secret set <NAME|skill|admin> [--value VALUE | --stdin]   store a provider's signing secret
   skillhook secret generate <NAME|skill|admin> [--force] [--bytes N]  create a random secret (printed once)
   skillhook secret list
@@ -22,7 +22,7 @@ export async function secretCommand(ctx: Ctx): Promise<number> {
       return 0;
     }
     case "set": {
-      if (!name) throw new UsageError("Missing name", USAGE);
+      if (!name) throw new UsageError("Missing name", SECRET_USAGE);
       let value = str(ctx.flags, "value");
       if (value === undefined) {
         if (bool(ctx.flags, "stdin") || !ctx.io.isTTY) value = (ctx.io.stdin ? await ctx.io.stdin() : (await import("node:fs")).readFileSync(0, "utf8")).replace(/\r?\n$/, "");
@@ -36,7 +36,7 @@ export async function secretCommand(ctx: Ctx): Promise<number> {
     case "generate":
     case "gen":
     case "rotate": {
-      if (!name) throw new UsageError("Missing name", USAGE);
+      if (!name) throw new UsageError("Missing name", SECRET_USAGE);
       const result = generateSecretFor(ops, name, { force: bool(ctx.flags, "force") || sub === "rotate", bytes: num(ctx.flags, "bytes") });
       if (!result.generated) {
         ctx.print(`${result.env} already exists; pass --force to replace it.`, { ok: true, env: result.env, existed: true });
@@ -48,14 +48,14 @@ export async function secretCommand(ctx: Ctx): Promise<number> {
     case "unset":
     case "rm":
     case "remove": {
-      if (!name) throw new UsageError("Missing name", USAGE);
+      if (!name) throw new UsageError("Missing name", SECRET_USAGE);
       const { env } = resolveSecretName(ops, name);
       const removed = removeEnvVar(ctx.paths.envFile, env);
       ctx.print(removed ? `Removed ${env}` : `${env} was not set`, { ok: true, env, removed });
       return 0;
     }
     default:
-      throw new UsageError(`Unknown secret subcommand "${sub}"`, USAGE);
+      throw new UsageError(`Unknown secret subcommand "${sub}"`, SECRET_USAGE);
   }
 }
 
