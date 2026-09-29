@@ -84,14 +84,14 @@ skillhook cloud job 20260929T101500Z-a1b2c3
 skillhook cloud logout                      # forget the key here; revoke it on the dashboard to end it
 ```
 
-These use the cloud's public API with the person's key, never the machine token: a paired machine cannot read the rest of its organisation, only someone holding a key can. `login` checks the key with `GET /api/v1/me` and keeps it in `.env` as `SKILLHOOK_CLOUD_API_KEY` (mode 600); `SKILLHOOK_CLOUD_API_KEY` in the environment (CI) takes precedence; `logout` removes it from `.env`. What they read, each with `Authorization: Bearer <key>` and nothing else sent:
+These use the cloud's public API with the person's key, never the machine token: a paired machine cannot read the rest of its organisation, only someone holding a key can. `login` checks the key with `GET /api/v1/me` and keeps it in `.env` as `SKILLHOOK_CLOUD_API_KEY` (mode 600); `SKILLHOOK_CLOUD_API_KEY` in the environment (CI) takes precedence; `logout` removes it from `.env`. What they read, each a `GET` with `Authorization: Bearer <key>`; nothing from the machine goes with it beyond the filters in the query:
 
 | Command | Request |
 |---|---|
 | `cloud login` | `GET /api/v1/me` (the organisation, the key's name and scopes) |
 | `cloud machines` | `GET /api/v1/machines`: name, status, mode, skillhook version, last seen |
-| `cloud jobs [--machine M] [--skill S] [--status ST] [--outcome O] [--waiting] [--limit N] [--before CURSOR]` | `GET /api/v1/jobs` with those filters (newest first; `--before` pages), and `GET /api/v1/machines` for the machines' names |
-| `cloud job <id>` | `GET /api/v1/jobs/{id}` (the machine's job id or the cloud's): status, outcome, the question waiting for a person, the answer, the result excerpt; and `GET /api/v1/machines` for the name |
+| `cloud jobs [--machine M] [--skill S] [--status ST] [--outcome O] [--waiting] [--limit N] [--before CURSOR]` | `GET /api/v1/jobs` with those filters (newest first; `--before` pages), and for the table `GET /api/v1/machines` for the machines' names |
+| `cloud job <id>` | `GET /api/v1/jobs/{id}` (the machine's job id or the cloud's): status, outcome, the question waiting for a person, the answer, the result excerpt; and for the text `GET /api/v1/machines` for the machine's name |
 
 The requests go to the machine's cloud URL (`cloud.url`, or `SKILLHOOK_CLOUD_URL`), HTTPS only; a machine that is not paired needs it set first (`skillhook config set cloud.url https://…`). Tables by default; `--json` prints the API's answer as it came. A refused key (`401`) says to run `skillhook cloud login` again, a missing scope (`403`) names it. They refuse under `SKILLHOOK_NO_CLOUD=1`. Answering a job, replaying and running skills stay on the dashboard, its hosted MCP server and the machine's own `skillhook jobs answer`.
 
