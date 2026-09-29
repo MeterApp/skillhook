@@ -39,6 +39,8 @@ export interface CloudResponse<T = unknown> {
  * from the agent API, `code` / `detail` / `request_id` from the public API's RFC 9457 problems.
  */
 export async function cloudRequest<T = unknown>(baseUrl: string, path: string, options: CloudRequestOptions = {}): Promise<CloudResponse<T>> {
+  // The runtime quotes a header value it refuses in its error; a token that could not be a header never gets that far.
+  if (options.token && !/^[\x21-\x7e]+$/.test(options.token)) throw new CloudHttpError(0, "invalid_credentials", "the token is not one line of printable characters");
   const fetchImpl = options.fetchImpl ?? fetch;
   const headers: Record<string, string> = { accept: "application/json", "user-agent": `skillhook/${VERSION} (cloud link)`, "x-skillhook-protocol": String(PROTOCOL_VERSION), ...(options.raw?.headers ?? {}) };
   if (options.token) headers.authorization = `Bearer ${options.token}`;
@@ -55,7 +57,8 @@ export async function cloudRequest<T = unknown>(baseUrl: string, path: string, o
   try {
     response = await fetchImpl(`${baseUrl}${path}`, { method: options.method ?? "POST", headers, body, signal: AbortSignal.timeout(options.timeoutMs ?? 30_000) });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const raw = error instanceof Error ? error.message : String(error);
+    const message = options.token ? raw.replaceAll(options.token, "[redacted]") : raw;
     const name = error instanceof Error ? error.name : "";
     throw new CloudHttpError(0, name === "TimeoutError" ? "timeout" : name === "AbortError" ? "aborted" : "network", message);
   }

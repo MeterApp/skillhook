@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { adminRequest, findRunningServer, readServerState } from "../client.js";
-import { API_KEY_PREFIX, CloudApiError, fleetClient, JobDetailSchema, JobListSchema, machineNames, MachineListSchema, MeSchema, storedApiKey, type FleetJob } from "../cloud/api.js";
+import { API_KEY_RE, CloudApiError, fleetClient, JobDetailSchema, JobListSchema, machineNames, MachineListSchema, MeSchema, storedApiKey, type FleetJob } from "../cloud/api.js";
 import { assertSecureCloudUrl, CLOUD_API_KEY_ENV, CLOUD_PRIVATE_KEY_ENV, CLOUD_TOKEN_ENV, cloudDisabledByEnv, resolveCloudUrl } from "../cloud/config.js";
 import { CloudHttpError } from "../cloud/http.js";
 import { cloudStatus, disconnectCloud, machineInfo, pairMachine, writeLinkCredentials } from "../cloud/pair.js";
@@ -43,6 +43,11 @@ export async function cloudCommand(ctx: Ctx): Promise<number> {
 
 async function cloudSubcommand(ctx: Ctx): Promise<number> {
   const [sub = "status"] = ctx.args;
+  // Only the usage: `cloud report … --help` must not send a report, nor `cloud logout --help` forget the key.
+  if (bool(ctx.flags, "help", "h")) {
+    ctx.print(USAGE, { usage: USAGE });
+    return 0;
+  }
   const config = ctx.config();
   const env = ctx.io.env;
   switch (sub) {
@@ -127,7 +132,7 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
       const given = str(ctx.flags, "key");
       if (!given) throw new UsageError("Give the organisation API key: --key shc_…, or --key - to read it from stdin (Settings → API keys on the dashboard)", USAGE);
       const key = (given === "-" ? await readStdin(ctx) : given).trim();
-      if (!key.startsWith(API_KEY_PREFIX)) throw new UsageError(`That is not an organisation API key: those start with ${API_KEY_PREFIX} (Settings → API keys on the dashboard)`, USAGE);
+      if (!API_KEY_RE.test(key)) throw new UsageError("That is not an organisation API key: those are shc_ followed by letters, digits, - and _ (Settings → API keys on the dashboard)", USAGE);
       const client = fleetClient(env, config.cloud, key);
       const { data: me } = await client.get("/me", MeSchema);
       upsertEnvVar(ctx.paths.envFile, CLOUD_API_KEY_ENV, key);
@@ -233,7 +238,7 @@ async function reportInput(ctx: Ctx): Promise<IssueReportInput> {
     ...(job ? { job_id: job } : {}),
     ...(delivery ? { delivery_id: delivery } : {}),
     ...(skill ? { skill } : {}),
-    diagnostics: ctx.flags.diagnostics !== false,
+    diagnostics: !(ctx.flags.diagnostics === false || ["false", "0", "no", "off"].includes(str(ctx.flags, "diagnostics")?.toLowerCase() ?? "")),
   };
 }
 

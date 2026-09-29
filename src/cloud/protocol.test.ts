@@ -113,7 +113,7 @@ describe("protocol messages", () => {
       ],
       health: { ok: false, summary: { ok: 9, warn: 1, fail: 1, skip: 3 }, failing: [{ id: "claude", status: "fail", message: "not logged in" }, { id: "server", status: "warn" }] },
     };
-    const report = { title: "Deliveries fail since the update", body: "Every GitHub delivery gets 401.", kind: "bug", severity: "high", contact_email: "ada@example.com", job_id: "20260929T101500Z-a1b2c3", delivery_id: "d_1", skill: "triage", diagnostics };
+    const report = { title: "Deliveries fail since the update", body: "Every GitHub delivery gets 401.", kind: "bug", severity: "high", contact_email: "ada@example.com", job_id: "20260929T101500Z-a1b2c3", delivery_id: "d_1", skill: "triage", diagnostics, report_id: "5f0c2b1e-8d4a-4c3e-9b7a-2e1d0c9b8a76" };
     expect(IssueReportRequestSchema.parse(report)).toEqual(report);
     expect(IssueReportRequestSchema.parse({ title: "Only a title" })).toEqual({ title: "Only a title" }); // kind and severity default on the cloud
     // Diagnostics keep what a newer machine adds; the request itself is strict.
@@ -130,6 +130,9 @@ describe("protocol messages", () => {
       ["long skill name", { title: "t", skill: "s".repeat(65) }],
       ["empty job id", { title: "t", job_id: "" }],
       ["unknown field", { title: "t", payload: { a: 1 } }],
+      ["short report id", { title: "t", report_id: "abc1234" }],
+      ["long report id", { title: "t", report_id: "r".repeat(101) }],
+      ["report id with other characters", { title: "t", report_id: "report id/1" }],
       ["unknown link state", { title: "t", diagnostics: { link: { state: "online" } } }],
       ["long link error", { title: "t", diagnostics: { link: { state: "degraded", last_error: "e".repeat(501) } } }],
       ["unknown runner", { title: "t", diagnostics: { runners: [{ runner: "gemini", ready: true }] } }],

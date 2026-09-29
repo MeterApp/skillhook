@@ -599,13 +599,17 @@ describe("cli", () => {
       const killed = io({ ...env, SKILLHOOK_NO_CLOUD: "1" });
       expect(await main(["cloud", "report", "Webhooks fail", ...at, "--json"], killed.cli)).toBe(1);
       expect(String(killed.json().error)).toContain("SKILLHOOK_NO_CLOUD is set");
+      // --help shows the usage and sends nothing.
+      const help = io(env);
+      expect(await main(["cloud", "report", "Webhooks fail", "--help", ...at], help.cli)).toBe(0);
+      expect(help.out()).toContain("skillhook cloud report");
       expect(fake.issues).toEqual([]);
 
       // The title's words need no quotes; --body takes its text here (it is a switch for `deliveries show`); --json is the cloud's answer.
       const plain = io(env);
       expect(await main(["cloud", "report", "Hosted", "URLs", "missing", "--body", "The dashboard shows none.", "--kind", "question", "--no-diagnostics", ...at, "--json"], plain.cli)).toBe(0);
       expect(plain.json()).toEqual({ ok: true, issue_id: "iss_41", number: 41, url: `${fake.url}/o/fake/issues/41`, acknowledged: false });
-      expect(fake.issues[0]).toEqual({ title: "Hosted URLs missing", body: "The dashboard shows none.", kind: "question" });
+      expect(fake.issues[0]).toEqual({ title: "Hosted URLs missing", body: "The dashboard shows none.", kind: "question", report_id: expect.any(String) });
 
       // The body from stdin before the title, references, a contact address, and the running server's diagnostics.
       const piped = io(env);
@@ -622,6 +626,7 @@ describe("cli", () => {
         job_id: "20260929T101500Z-a1b2c3",
         delivery_id: "d_7",
         skill: "hello",
+        report_id: expect.any(String),
         diagnostics: {
           skillhook_version: expect.any(String),
           node_version: process.versions.node,
@@ -645,6 +650,9 @@ describe("cli", () => {
       const dry = io(env);
       expect(await main(["cloud", "report", "--title", "From a file", "--body-file", notes, "--dry-run", ...at, "--json"], dry.cli)).toBe(0);
       expect(dry.json()).toMatchObject({ dry_run: true, url: fake.url, request: { title: "From a file", body: "Notes from a file\n[redacted]", diagnostics: { link: { state: "connected" } } } });
+      const off = io(env);
+      expect(await main(["cloud", "report", "From a file", "--diagnostics", "false", "--dry-run", ...at, "--json"], off.cli)).toBe(0);
+      expect((off.json().request as Record<string, unknown>).diagnostics).toBeUndefined();
       const human = io(env);
       expect(await main(["cloud", "report", "From a file", "--body-file", notes, "--dry-run", "--no-diagnostics", ...at], human.cli)).toBe(0);
       expect(human.out()).toContain(`Would send to ${fake.url}/api/agent/issues (nothing was sent):`);
@@ -679,6 +687,14 @@ describe("cli", () => {
       const machineToken = io(env);
       expect(await main(["cloud", "login", "--key", fake.token, ...at], machineToken.cli)).toBe(2);
       expect(machineToken.err()).toContain("not an organisation API key");
+      const pasted = io(env);
+      pasted.cli.stdin = async () => `${fake.apiKey}\nshc_placeholder-second-line\n`;
+      expect(await main(["cloud", "login", "--key", "-", ...at, "--json"], pasted.cli)).toBe(2);
+      expect(pasted.out() + pasted.err()).not.toContain("shc_placeholder");
+      const nowhere = io({ SKILLHOOK_NO_UPDATE_CHECK: "1" });
+      expect(await main(["cloud", "login", "--key", fake.apiKey, ...at, "--json"], nowhere.cli)).toBe(1);
+      expect(String(nowhere.json().error)).toContain("no cloud URL");
+      expect(fake.apiRequests).toEqual([]);
       const wrong = io(env);
       expect(await main(["cloud", "login", "--key", "shc_placeholder-unknown-key", ...at, "--json"], wrong.cli)).toBe(1);
       expect(String(wrong.json().error)).toMatch(/refused the API key \(invalid_key: The API key is unknown, revoked or expired\. \(request req_\d+\)\)\. Log in with a valid one: skillhook cloud login/);
@@ -753,6 +769,8 @@ describe("cli", () => {
       const insecure = io({ ...env, SKILLHOOK_CLOUD_URL: "http://cloud.example.invalid" });
       expect(await main(["cloud", "machines", ...at], insecure.cli)).toBe(1);
       expect(insecure.err()).toContain("must use https");
+      expect(await main(["cloud", "logout", "--help", ...at], io(env).cli)).toBe(0);
+      expect(readFileSync(home.envFile, "utf8")).toContain("SKILLHOOK_CLOUD_API_KEY");
       const logout = io(env);
       expect(await main(["cloud", "logout", ...at, "--json"], logout.cli)).toBe(0);
       expect(logout.json()).toEqual({ ok: true, removed: true, env_var_set: false });

@@ -52,10 +52,14 @@ export class FakeCloud {
   tooLarge = 0;
   /** Artifact uploads by `<job>/<name>`: the chunks in arrival order, their Content-Range and the announced sha256. */
   readonly artifacts = new Map<string, { chunks: Buffer[]; ranges: string[]; sha256: string | undefined }>();
-  /** Issue reports received, valid ones only (the rest land in `invalid`), and how the next ones are answered. */
+  /** Issue reports filed, once per `report_id` (invalid ones land in `invalid`), and every request, retries included. */
   readonly issues: IssueReportRequest[] = [];
-  /** `404` answers like a cloud without the route (an HTML page). */
+  issueRequests = 0;
+  /** How reports are answered; `404` like a cloud without the route (an HTML page). */
   issuesMode: "ok" | "401" | "403" | "404" | "413" | "429" | "500" | "garbage" = "ok";
+  /** One answer each for the next report requests, before `issuesMode`: a 500, a 429 asking for a short pause, a dropped connection, or a report filed whose answer never comes (for `hangMs`). */
+  readonly issuesScript: ("500" | "429" | "reset" | "filed-then-hang")[] = [];
+  private readonly issueAnswers = new Map<string, unknown>();
   /** The organisation API key `/api/v1` accepts (a placeholder: nothing here is a real credential). */
   readonly apiKey = "shc_placeholder-organisation-key-0123456789abc";
   /** Every `/api/v1` request: method, path with its query, and the bearer it carried. */
@@ -157,11 +161,21 @@ export class FakeCloud {
       return this.reply(res, 200, { ok: true });
     }
     if (req.method === "POST" && url.pathname === "/api/agent/issues") {
+      this.issueRequests++;
       if (req.headers.authorization !== `Bearer ${this.token}`) return this.reply(res, 401, { ok: false, error: "invalid_token", message: "unknown or revoked machine token" });
       const parsed = IssueReportRequestSchema.safeParse(await readJson(req));
       if (!parsed.success) {
         this.invalid.push(`issue: ${parsed.error.message}`);
         return this.reply(res, 400, { ok: false, error: "invalid_request", message: "bad issue report" });
+      }
+      const scripted = this.issuesScript.shift();
+      if (scripted === "500") return this.reply(res, 500, { ok: false, error: "server_error", message: "internal error" });
+      if (scripted === "429") return this.reply(res, 429, { ok: false, error: "rate_limited", message: "slow down", retry_after_ms: 20 });
+      if (scripted === "reset") return void req.socket.destroy();
+      if (scripted === "filed-then-hang") {
+        this.fileIssue(parsed.data);
+        await new Promise((r) => setTimeout(r, this.hangMs));
+        return void req.socket.destroy();
       }
       switch (this.issuesMode) {
         case "401":
@@ -182,10 +196,7 @@ export class FakeCloud {
         default:
           break;
       }
-      this.issues.push(parsed.data);
-      this.notify();
-      const number = 40 + this.issues.length;
-      return this.reply(res, 200, { ok: true, issue_id: `iss_${number}`, number, url: `${this.url}/o/fake/issues/${number}`, acknowledged: Boolean(parsed.data.contact_email) });
+      return this.reply(res, 200, this.fileIssue(parsed.data));
     }
     if (url.pathname.startsWith("/api/v1/")) return this.handleApi(req, res, url);
     if (req.method === "POST" && url.pathname === "/api/agent/sync") {
@@ -250,6 +261,18 @@ export class FakeCloud {
       return this.reply(res, 200, body);
     }
     this.reply(res, 404, { ok: false, error: "not_found", message: "no such route" });
+  }
+
+  /** Files a report once per `report_id`, as the cloud does: a retry gets the original answer, whether or not the first one arrived. */
+  private fileIssue(report: IssueReportRequest): unknown {
+    const known = report.report_id ? this.issueAnswers.get(report.report_id) : undefined;
+    if (known) return known;
+    this.issues.push(report);
+    this.notify();
+    const number = 40 + this.issues.length;
+    const answer = { ok: true, issue_id: `iss_${number}`, number, url: `${this.url}/o/fake/issues/${number}`, acknowledged: Boolean(report.contact_email) };
+    if (report.report_id) this.issueAnswers.set(report.report_id, answer);
+    return answer;
   }
 
   /** RFC 9457 problem details, as the public API answers errors. */

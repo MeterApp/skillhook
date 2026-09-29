@@ -6,11 +6,11 @@
 import { z } from "zod";
 import { readEnvFile } from "../env.js";
 import type { Paths } from "../paths.js";
-import { CLOUD_API_KEY_ENV, cloudDisabledByEnv, InsecureCloudUrlError, isSecureCloudUrl, resolveCloudUrl } from "./config.js";
+import { CLOUD_API_KEY_ENV, cloudDisabledByEnv, DEFAULT_CLOUD_URL, InsecureCloudUrlError, isSecureCloudUrl, resolveCloudUrl } from "./config.js";
 import { CloudHttpError, cloudRequest } from "./http.js";
 
-/** Organisation API keys start with this; machine tokens (`shm_…`) never do. */
-export const API_KEY_PREFIX = "shc_";
+/** What an organisation API key looks like; machine tokens (`shm_…`) never do. One line, so it can only ever travel as a header. */
+export const API_KEY_RE = /^shc_[A-Za-z0-9_-]+$/;
 
 export class CloudApiError extends Error {
   constructor(message: string) {
@@ -71,12 +71,14 @@ export interface FleetClient {
   get<T>(path: string, schema: z.ZodType<T>): Promise<{ data: T; raw: unknown }>;
 }
 
-/** A client for the machine's cloud with `key`; refused under `SKILLHOOK_NO_CLOUD`, without a key, or to a URL that is not https. */
+/** A client for the machine's cloud with `key`; refused under `SKILLHOOK_NO_CLOUD`, without a well-formed key, to the placeholder URL, or to a URL that is not https. */
 export function fleetClient(env: NodeJS.ProcessEnv, cloud: { url?: string }, key: string | undefined, options: { fetchImpl?: typeof fetch } = {}): FleetClient {
   if (cloudDisabledByEnv(env)) throw new CloudApiError("SKILLHOOK_NO_CLOUD is set: nothing goes to Skillhook Cloud from this environment. Unset it to read the fleet.");
   if (!key) throw new CloudApiError(`No organisation API key. Create one on the dashboard (Settings → API keys; fleet:read is enough), then: skillhook cloud login --key -   (or set ${CLOUD_API_KEY_ENV})`);
-  if (!key.startsWith(API_KEY_PREFIX)) throw new CloudApiError(`${CLOUD_API_KEY_ENV} does not hold an organisation API key (those start with ${API_KEY_PREFIX}); run: skillhook cloud login --key -`);
+  if (!API_KEY_RE.test(key)) throw new CloudApiError(`${CLOUD_API_KEY_ENV} does not hold an organisation API key (shc_ followed by letters, digits, - and _); run: skillhook cloud login --key -`);
   const url = resolveCloudUrl(env, cloud);
+  // While the built-in URL is a placeholder (src/cloud/config.ts), a key only goes to a cloud someone named.
+  if (url === DEFAULT_CLOUD_URL) throw new CloudApiError("This machine has no cloud URL, and an API key only goes to a cloud you named: skillhook config set cloud.url https://…   (pairing sets it; SKILLHOOK_CLOUD_URL works too)");
   if (!isSecureCloudUrl(url, env)) throw new CloudApiError(new InsecureCloudUrlError(url).message);
   return {
     url,

@@ -504,10 +504,13 @@ export const IssueReportRequestSchema = z
     delivery_id: id.optional(),
     skill: name.optional(),
     diagnostics: IssueDiagnosticsSchema.optional(),
+    /** A client-generated idempotency key; a retry with the same report_id returns the original report instead of filing a second one. */
+    report_id: z.string().min(8).max(100).regex(/^[A-Za-z0-9_-]+$/).optional(),
   })
   .strict();
 export type IssueReportRequest = z.infer<typeof IssueReportRequestSchema>;
 
+/** The same answer for a new report and for a retry of one (the same `report_id`). */
 export const IssueReportResponseSchema = z
   .object({
     ok: z.literal(true),

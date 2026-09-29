@@ -55,13 +55,14 @@ describe("cloud report", () => {
     });
     cleanups.push(() => server.close());
 
-    const result = await reportIssue(paths, {}, { title: `  GitHub deliveries fail with ${ENV_VALUE}  `, body: `Since the update every delivery gets 401.\nThe token ${ENV_VALUE} is right.\n`, kind: "bug", severity: "high", contact_email: "ada@example.com", job_id: "20260929T101500Z-a1b2c3", skill: "hello" });
+    const result = await reportIssue(paths, {}, { title: `  GitHub deliveries fail with ${ENV_VALUE}  `, body: `Since the update every delivery gets 401.\nThe token ${ENV_VALUE} is right.\n`, kind: "bug", severity: "high", contact_email: "ada@example.com", job_id: "20260929T101500Z-a1b2c3", delivery_id: `d-${ENV_VALUE}`, skill: "hello" });
     expect(result.issue).toEqual({ ok: true, issue_id: "iss_41", number: 41, url: `${fake.url}/o/fake/issues/41`, acknowledged: true });
     expect(fake.invalid).toEqual([]);
     const sent = fake.issues[0];
     expect(sent).toEqual(result.request);
     expect(JSON.stringify(sent)).not.toContain(ENV_VALUE);
-    expect(sent).toMatchObject({ title: "GitHub deliveries fail with [redacted]", body: "Since the update every delivery gets 401.\nThe token [redacted] is right.", kind: "bug", severity: "high", contact_email: "ada@example.com", job_id: "20260929T101500Z-a1b2c3", skill: "hello" });
+    expect(sent).toMatchObject({ title: "GitHub deliveries fail with [redacted]", body: "Since the update every delivery gets 401.\nThe token [redacted] is right.", kind: "bug", severity: "high", contact_email: "ada@example.com", job_id: "20260929T101500Z-a1b2c3", delivery_id: "d-[redacted]", skill: "hello" });
+    expect(sent?.report_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/); // one per report, for the cloud to recognise a retry
     expect(sent?.diagnostics).toEqual({
       skillhook_version: VERSION,
       node_version: process.versions.node,
@@ -105,13 +106,19 @@ describe("cloud report", () => {
     const server = await startFakeServer(older, { cloud: { state: "connected", mode: "control" } });
     cleanups.push(() => server.close());
     expect(await gatherDiagnostics(older, {}, { health: HEALTH })).toEqual({ skillhook_version: VERSION, node_version: process.versions.node, os: process.platform, arch: process.arch, mode: "observe", link: { state: "connected" } });
+
+    // Something else answering on that port (or another version): the report still goes, with the basics only.
+    const odd = tempHome("skillhook-report-");
+    const other = await startFakeServer(odd, { cloud: { state: "connected", mode: "observe" }, checks: { ok: true, checks: "none" } as never, runners: [{ runner: "claude" }] });
+    cleanups.push(() => other.close());
+    expect(await gatherDiagnostics(odd, {}, { health: HEALTH })).toEqual({ skillhook_version: VERSION, node_version: process.versions.node, os: process.platform, arch: process.arch, mode: "observe" });
   });
 
   it("sends only the person's words when diagnostics are off", async () => {
     const fake = await cloud();
     const paths = pairedHome(fake);
     const result = await reportIssue(paths, {}, { title: "Where do hosted URLs come from?", body: "  ", kind: "question", diagnostics: false });
-    expect(fake.issues).toEqual([{ title: "Where do hosted URLs come from?", kind: "question" }]);
+    expect(fake.issues).toEqual([{ title: "Where do hosted URLs come from?", kind: "question", report_id: expect.any(String) }]);
     expect(result.issue).toMatchObject({ number: 41, acknowledged: false });
   });
 
@@ -131,6 +138,10 @@ describe("cloud report", () => {
     await expect(reportIssue(paths, {}, { ...title, title: "t".repeat(201) })).rejects.toThrow(/201 characters; at most 200/);
     await expect(reportIssue(paths, {}, { ...title, body: "b".repeat(20_001) })).rejects.toThrow(/at most 20000/);
     await expect(reportIssue(paths, {}, { ...title, contact_email: "ada at example" })).rejects.toThrow(/contact_email/);
+    await expect(reportIssue(paths, {}, { ...title, report_id: "short" })).rejects.toThrow(/report_id/);
+    const listed = pairedHome(fake);
+    writeEnv(listed, { SKILLHOOK_CLOUD_TOKEN: fake.token, ALERT_EMAIL: "ops-team@example.com" });
+    await expect(reportIssue(listed, {}, { ...title, contact_email: "ops-team@example.com" })).rejects.toThrow(/contact address is a value from \.env/);
     // Within the character limits but not the byte limit: control characters travel JSON-escaped, six bytes each.
     await expect(reportIssue(paths, {}, { ...title, body: "\u0001".repeat(11_000) })).rejects.toThrow(/bytes; at most 65536/);
     await expect(reportIssue(paths, {}, title)).resolves.toMatchObject({ issue: { number: 41 } });
@@ -141,21 +152,52 @@ describe("cloud report", () => {
     const fake = await cloud();
     const paths = pairedHome(fake);
     const title = { title: "Webhooks fail", diagnostics: false };
-    const expectations: [FakeCloud["issuesMode"], RegExp][] = [
-      ["401", /refused this machine's token.*skillhook cloud connect --code XXXX-XXXX --force/],
-      ["403", /takes no reports from this machine \(machine_disabled.*disabled on the dashboard/],
-      ["404", /does not take issue reports yet \(http_404.*github\.com\/MeterApp\/skillhook\/issues/],
-      ["413", /too large.*shorten the body/],
-      ["429", /Too many reports.*try again in 90 s/],
-      ["500", /could not take the report \(server_error: internal error\)/],
-      ["garbage", /does not understand/],
+    const quick = { backoffMs: () => 5, timeoutMs: 2_000 };
+    // A 4xx (and a long 429) is said at once; a 5xx only after three attempts.
+    const expectations: [FakeCloud["issuesMode"], RegExp, number][] = [
+      ["401", /refused this machine's token.*skillhook cloud connect --code XXXX-XXXX --force/, 1],
+      ["403", /takes no reports from this machine \(machine_disabled.*disabled on the dashboard/, 1],
+      ["404", /does not take issue reports yet \(http_404.*github\.com\/MeterApp\/skillhook\/issues/, 1],
+      ["413", /too large.*shorten the body/, 1],
+      ["429", /Too many reports.*try again in 90 s/, 1],
+      ["500", /could not take the report after 3 attempts \(server_error: internal error\)/, 3],
+      ["garbage", /does not understand/, 1],
     ];
-    for (const [mode, message] of expectations) {
+    for (const [mode, message, attempts] of expectations) {
       fake.issuesMode = mode;
-      await expect(reportIssue(paths, {}, title)).rejects.toThrow(message);
+      const before = fake.issueRequests;
+      await expect(reportIssue(paths, {}, title, quick)).rejects.toThrow(message);
+      expect(fake.issueRequests - before, mode).toBe(attempts);
     }
-    await expect(reportIssue(paths, { SKILLHOOK_CLOUD_URL: "http://127.0.0.1:1" }, title)).rejects.toThrow(IssueReportError);
-    await expect(reportIssue(paths, { SKILLHOOK_CLOUD_URL: "http://127.0.0.1:1" }, title)).rejects.toThrow(/Could not reach http:\/\/127\.0\.0\.1:1/);
+    const unreachable = reportIssue(paths, { SKILLHOOK_CLOUD_URL: "http://127.0.0.1:1" }, title, quick);
+    await expect(unreachable).rejects.toThrow(IssueReportError);
+    await expect(unreachable).rejects.toThrow(/Could not reach http:\/\/127\.0\.0\.1:1 after 3 attempts/);
     expect(fake.issues).toEqual([]);
+  });
+
+  it("retries what may pass with the same report_id, so a report is filed once even when its answer was lost", async () => {
+    const fake = await cloud();
+    const paths = pairedHome(fake);
+    const title = { title: "Webhooks fail", diagnostics: false };
+    const quick = { backoffMs: () => 5, timeoutMs: 300 };
+    // A 5xx and a dropped connection, then the answer.
+    fake.issuesScript.push("500", "reset");
+    const retried = await reportIssue(paths, {}, title, quick);
+    expect(retried.issue.number).toBe(41);
+    expect(fake.issueRequests).toBe(3);
+    // Filed, but the answer never came: the retry carries the same report_id and gets the original report back.
+    fake.hangMs = 1_000;
+    fake.issuesScript.push("filed-then-hang");
+    const replayed = await reportIssue(paths, {}, title, quick);
+    expect(replayed.issue).toEqual({ ok: true, issue_id: "iss_42", number: 42, url: `${fake.url}/o/fake/issues/42`, acknowledged: false });
+    expect(fake.issueRequests).toBe(5);
+    expect(fake.issues).toHaveLength(2);
+    expect(fake.issues[1]?.report_id).toBe(replayed.request.report_id);
+    // A 429 with a short pause is waited out; a longer one is said (the test above).
+    fake.issuesScript.push("429");
+    await expect(reportIssue(paths, {}, title, quick)).resolves.toMatchObject({ issue: { number: 43 } });
+    expect(fake.issueRequests).toBe(7);
+    // Every report has its own id.
+    expect(new Set(fake.issues.map((issue) => issue.report_id)).size).toBe(3);
   });
 });
