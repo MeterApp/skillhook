@@ -4,6 +4,8 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.6.0 (2026-09-29)
+
 - `skillhook cloud report "<title>"`: a person on a paired machine reports a problem to the Skillhook
   team without leaving the terminal (`--body TEXT`, `--body -` or `--body-file PATH`, `--kind`,
   `--severity`, `--job`, `--delivery`, `--skill`, `--email`). One request, `POST /api/agent/issues`
