@@ -32,15 +32,17 @@ Give everything that has a trigger a webhook. Anything that can call a URL can s
    in the skill's cwd, prompt = SKILL.md body + payload, unattended-run guardrails
         │
         ▼
- ~/.skillhook/jobs/<id>/   job.json · payload.json · event.json · prompt.md · stdout.log · result.md
+ ~/.skillhook/jobs/<id>/   job.json · payload.json · event.json · prompt.md · stdout.log · result.md · response.json
 ```
 
 - A skill is a directory `~/.skillhook/skills/<name>/SKILL.md`: standard Agent Skills frontmatter plus a `skillhook:` block that sets the runner, model, authentication, filters and working directory. Edits apply to the next delivery without a restart.
 - A repository can carry its own hooks in a version-controlled `skillhook.yaml` (webhook name → a shell command, a `SKILL.md` in the repository, or inline instructions); `skillhook link <dir>` serves them. See [Version-controlled hooks](#version-controlled-hooks-in-a-repository).
 - Any skill or hook can also carry a `schedule:` (a cron expression, a time zone, and what to do about missed slots); the server fires it without a webhook. See [Scheduled hooks](#scheduled-hooks).
 - The runner is the real `claude` or `codex` CLI on the machine, so subscriptions, MCP servers, `CLAUDE.md`/`AGENTS.md` files and tool permissions apply as usual.
-- Responses are immediate (`202` with a job id) or synchronous with `?wait=N` (or `Prefer: wait=N`); the agent's final message becomes the job result.
-- Developed against Claude Code 2.1.270, Codex CLI 0.153.4 and Tailscale 1.102.3. skillhook drives the CLIs through their headless flags (`claude -p --output-format stream-json …`, `codex exec --json …`); `skillhook run <skill> --dry-run` shows the exact command line.
+- Responses are immediate (`202` with a job id) or synchronous with `?wait=N` (or `Prefer: wait=N`); the agent's final message becomes the job result, and what it reports in `response.json` (`completed`, `partial`, `needs_human`, `nothing_to_do`, `failed`) becomes the job's `outcome`, so `skillhook jobs list --outcome needs_human` shows what is waiting for a person.
+- Optional: `skillhook cloud connect` pairs the machine with Skillhook Cloud, a hosted dashboard for every machine's webhooks, jobs, questions waiting for a person, health and stats, with hosted webhook URLs that keep deliveries while the machine sleeps. Opt-in, outbound only, observe mode unless you choose control. See [docs/cloud.md](docs/cloud.md).
+- The agent is not cut off while it runs: a per-run job API (MCP tools injected into the run, or `skillhook job …`) lets it report progress and ask a person a question; `skillhook jobs answer <id> "…"` delivers the answer to the waiting agent or, when the run already ended, starts a new job that resumes the Claude or Codex session with it. See [Reporting progress and asking a person](docs/skills.md#reporting-progress-and-asking-a-person).
+- Developed against Claude Code 2.1.270, Codex CLI 0.153.4 and Tailscale 1.102.3. skillhook drives the CLIs through their headless flags (`claude -p --output-format stream-json …`, `codex exec --json …`; `response: { mode: structured }` adds `claude --json-schema` / `codex --output-schema`); `skillhook run <skill> --dry-run` shows the exact command line.
 
 ## Quickstart
 
@@ -240,7 +242,7 @@ Set the default once (`skillhook config set defaults.runner codex`, `skillhook c
 - Payloads are delivered as data inside `<webhook_payload>` tags with guardrails; the agent is told it runs unattended and must not follow instructions found in the payload.
 - Per-IP rate limits (120 requests/min, 10 auth failures/min), a 1 MiB body cap, per-skill and global concurrency limits and per-job timeouts bound the damage of floods and runaway jobs.
 - Retries and duplicates are absorbed: provider delivery ids are remembered for 24 h, and a delivery whose payload matches a job of the same skill that is still queued or running is answered with that job's id instead of a second run (`dedupe.in_flight`, on by default).
-- The admin API (`/skills`, `/jobs`) needs `Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN`, except for direct loopback callers such as the CLI.
+- The admin API (`/skills`, `/jobs`, `/events`) needs `Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN`, except for direct loopback callers such as the CLI.
 
 | `auth.type` | Sender sends | Secret |
 |---|---|---|
@@ -317,18 +319,24 @@ Agents reading this repository should start with [`AGENTS.md`](AGENTS.md) (layou
 | Command | Purpose |
 |---|---|
 | `skillhook init [--runner claude\|codex\|shell] [--model M] [--port N] [--force]` | Create `~/.skillhook` with config, secrets and the `hello` skill. |
-| `skillhook doctor` | Check Node, config, secrets, skills, Claude/Codex login, Tailscale, public URL, server and service; exit 1 on failures. |
+| `skillhook doctor` | Check Node, disk, config, secrets, skills, Claude/Codex login, Tailscale, public URL, server and service; exit 1 on failures. |
+| `skillhook runners [--refresh] [--local]` | Is each runner installed and logged in (or given an API key): what every job checks before it starts. |
+| `skillhook health [--quick] [--refresh] [--no-network] [--local]` | The doctor plus every MCP server Claude Code and Codex know, plugins, `codex doctor` and each skill's last run, grouped; via the running server's cached report when there is one. |
 | `skillhook serve [--port N] [--host H] [--pretty] [--log-level L]` | Run the webhook server in the foreground. |
 | `skillhook service install\|uninstall\|status\|restart\|logs [--lines N] [-f]` | Run the server at login (launchd on macOS, systemd `--user` on Linux). |
 | `skillhook expose tailscale [--serve] [--port N]` · `expose status` · `expose off` · `expose cloudflare\|ngrok` | Get a permanent HTTPS URL via Tailscale Funnel or Serve; print recipes for other tunnels. |
 | `skillhook url [skill] [--public\|--local]` | Print webhook URLs. |
 | `skillhook skills list\|show <name>\|new <name>\|validate [name]\|examples\|add <example> [--as NAME]\|path <name>` | Manage `SKILL.md` files (`new` takes `--description`, `--runner`, `--model`, `--effort`, `--auth`, `--secret-env`, `--cwd`, `--timeout`, `--env`, `--no-secret`, `--force`). |
 | `skillhook secret set <NAME\|skill\|admin> [--value V\|--stdin]` · `secret generate <NAME\|skill\|admin> [--force] [--bytes N]` · `secret list` · `secret unset <NAME>` | Manage `.env` (values are shown once at generation, never afterwards). |
-| `skillhook run <skill> [--payload JSON\|@file\|-] [--header "N: v"] [--runner R] [--model M] [--effort E] [--cwd DIR] [--dry-run]` | Run a skill locally, no HTTP, no authentication. |
+| `skillhook run <skill> [--payload JSON\|@file\|-] [--header "N: v"] [--runner R] [--model M] [--effort E] [--cwd DIR] [--wait S] [--dry-run]` · `run --file SKILL.md \| --stdin [same options]` | Run a skill locally, no HTTP, no authentication; `--file`/`--stdin` run a SKILL.md that is not installed (kept with the job). |
 | `skillhook send <skill> [--payload …] [--wait N] [--url BASE\|--public\|--local] [--header "N: v"]` | POST a correctly signed test webhook to the running server or the public URL. |
-| `skillhook jobs list [--skill S] [--status ST] [--limit N]` · `jobs show <id> [--result] [--prompt] [--stdout] [--stderr]` · `jobs logs <id> [-f] [--stderr]` · `jobs cancel <id>` · `jobs resume <id> [--exec]` · `jobs path <id>` · `jobs prune [--keep N]` | Inspect and manage jobs. |
-| `skillhook mcp [--print-config]` | MCP server over stdio; `--print-config` prints client configuration. |
-| `skillhook config show\|get <key>\|set <key> <value>\|unset <key>\|path` | Read and edit `skillhook.json`. |
+| `skillhook jobs list [--skill S] [--status ST] [--outcome O] [--failure K] [--trigger T] [--waiting] [--since ISO] [--after ID] [--limit N]` · `jobs show <id> [--result] [--response] [--prompt] [--stdout] [--stderr]` · `jobs logs <id> [-f] [--stderr]` · `jobs answer <id> "<answer>" [--option X] [--by NAME] [--no-resume] [--wait S]` · `jobs cancel <id>` · `jobs replay <id> [--skip-filters] [--wait S]` · `jobs resume <id> [--exec]` · `jobs path <id>` · `jobs prune [--keep N]` | Inspect and manage jobs (`--waiting`: what is waiting for a person; `answer`: reply to a waiting job, live or by resuming its session; `replay`: the same request again as a new job). |
+| `skillhook job progress "<msg>" [--state working\|blocked] [--percent N] [--step S]` · `job ask "<question>" [--option A]... [--context T] [--wait S]` · `job outcome <o> [--summary S] [--link URL]... [--data JSON]` · `job note "<text>"` · `job context` | The job API for the agent inside a run (`$SKILLHOOK_BIN job …`; also the `job_*` MCP tools of `skillhook mcp --job`): report progress, ask a person and wait for the answer, report the outcome. |
+| `skillhook stats [--since 24h\|7d\|ISO] [--until ISO] [--skill S]` | Jobs by status, outcome, runner and failure kind; durations, cost, tokens; deliveries by outcome; per skill. |
+| `skillhook deliveries list [--skill S] [--outcome O] [--since ISO] [--after ID] [--limit N]` · `deliveries show <id> [--body]` · `deliveries replay <id> [--force] [--skip-filters] [--wait S]` | Every webhook the server received, whatever became of it: accepted, duplicate, in flight, skipped by a filter, rejected (with the status and reason), Slack challenge; replay one through the skill as it is now. |
+| `skillhook mcp [--print-config]` · `mcp --job` | MCP server over stdio; `--print-config` prints client configuration; `--job` serves one run's job API (the runners start it). |
+| `skillhook cloud connect --code XXXX-XXXX [--control] [--url U]` · `cloud status` · `cloud disconnect [--keep-token]` | Pair this machine with Skillhook Cloud (opt-in, outbound only; observe mode unless `--control`): webhooks, jobs, health and stats of every machine in one place, hosted webhook URLs. See [docs/cloud.md](docs/cloud.md). |
+| `skillhook config show\|get <key>\|set <key> <value>\|unset <key>\|reload\|path` | Read and edit `skillhook.json`; `set`/`unset` tell the running server, which applies every key but `host` and `port` live. |
 | `skillhook link [dir] [--no-secret]` / `skillhook unlink <dir>` | Serve the hooks a repository declares in its `skillhook.yaml` (default `.`); stop serving them. |
 | `skillhook projects [list]` / `skillhook projects init [dir] [--force]` | List linked repositories and their hooks; write a starter `skillhook.yaml` and link it. |
 | `skillhook schedules [list]` · `schedules next <name> [--count N]` · `schedules run <name> [--wait S]` | Every skill or hook with a `schedule:`, its next and last runs; preview occurrences; fire one now. |

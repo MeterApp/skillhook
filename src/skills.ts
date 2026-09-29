@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { parseFrontmatter } from "./frontmatter.js";
 import { ClaudePermissionModeSchema, CodexSandboxSchema, CommandSpecSchema, RunnerNameSchema, type RunnerName } from "./config.js";
+import { FallbackSchema, RetrySchema } from "./runners/failure.js";
 import { defaultSecretEnvFor } from "./env.js";
 import { isValidTimeZone, parseCron, type CronSpec } from "./schedule.js";
 import { errorMessage, isDirectory, isValidSkillName } from "./util.js";
@@ -150,6 +151,23 @@ export const SkillhookBlockSchema = z
       .strict()
       .optional(),
     shell: z.object({ command: CommandSpecSchema }).strict().optional(),
+    /** Another runner when this one cannot run: `runners` in order of preference, `on` says when (`not_ready`: not installed or not logged in, checked before the run, the default; `auth`, `usage_limit`, `rate_limit`, `crash`: after a run failed that way before the agent produced anything, safe only for idempotent skills). Default: `defaults.fallback` in skillhook.json. */
+    fallback: FallbackSchema.optional(),
+    /** Run again on the same runner after a failure of the listed kinds (default rate_limit and crash), at most `attempts` more times, `backoff_seconds` (30) apart. Only safe for idempotent skills. */
+    retry: RetrySchema.optional(),
+    /** How the running agent reaches the job API (progress, asking a person, the outcome): `mcp` (default for claude and codex) injects a per-run MCP server with `job_*` tools, `cli` relies on `skillhook job …` (always available; the default for shell), `none` mentions neither. */
+    agent_api: z.enum(["mcp", "cli", "none"]).optional(),
+    /** How long `job_ask_human` / `skillhook job ask` waits for a live answer by default (seconds; the job's timeout is paused meanwhile). Default 300. */
+    human_wait_seconds: z.number().int().min(1).max(86_400).optional(),
+    /** How the job's task outcome is read. `text` (default): the agent may write `response.json` in the job directory; `file`: it is asked to; `structured`: the runner must answer with JSON matching `schema` (`claude --json-schema` / `codex --output-schema`). See docs/skills.md#reporting-the-outcome. */
+    response: z
+      .object({
+        mode: z.enum(["text", "file", "structured"]).optional(),
+        /** JSON Schema for the structured answer. Default: `{outcome, summary, links, data}` with `outcome` one of completed, partial, needs_human, nothing_to_do, failed. */
+        schema: z.record(z.string(), z.unknown()).optional(),
+      })
+      .strict()
+      .optional(),
     enabled: z.boolean().optional(),
     /** Also run this skill on a cron schedule, without a webhook delivery: `"5 * * * *"` (UTC) or `{ cron, timezone, catch_up, overlap, payload }`. See docs/schedules.md. */
     schedule: ScheduleSchema.optional(),
@@ -314,6 +332,11 @@ export type SkillSource =
       file: string;
       /** How the hook is implemented: a `SKILL.md` in the project, an inline `prompt`, or a shell command (`run`). */
       kind: "skill" | "prompt" | "run";
+    }
+  | {
+      /** A SKILL.md supplied with the request and kept in the job directory (`jobs/<job>/skill/<name>/`); never in the registry. */
+      type: "adhoc";
+      job: string;
     };
 
 export interface Skill {
@@ -404,6 +427,14 @@ export function loadSkill(dir: string): Skill {
   }
   const skill = parseSkillDocument(text, dir);
   skill.mtimeMs = mtimeMs;
+  return skill;
+}
+
+/** The SKILL.md an ad-hoc job keeps in its directory (`<skillDir>/<name>/SKILL.md`), loaded from there rather than from the registry. */
+export function loadAdhocSkill(skillDir: string, jobId: string, name: string): Skill {
+  if (!isValidSkillName(name)) throw new SkillError(`Invalid skill name "${name}"`, skillDir);
+  const skill = loadSkill(path.join(skillDir, name));
+  skill.source = { type: "adhoc", job: jobId };
   return skill;
 }
 

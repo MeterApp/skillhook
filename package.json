@@ -1,6 +1,6 @@
 {
   "name": "@meterapp/skillhook",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "description": "Make your Agent Skills reactive. A permanent, secure webhook endpoint on your own machine that runs SKILL.md files with Claude Code or Codex the moment something happens, plus version-controlled schedules for the work that has no trigger. Webhook in, agent out.",
   "license": "MIT",
   "author": "Meter <hello@meterapp.co> (https://meterapp.co)",
@@ -40,6 +40,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/cloud/protocol.d.ts",
+      "default": "./dist/cloud/protocol.js"
     },
     "./package.json": "./package.json"
   },

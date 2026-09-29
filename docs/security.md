@@ -25,11 +25,23 @@ What it does not defend against:
 - The server binds `host: 127.0.0.1` by default. Nothing on the LAN or the internet reaches it directly; a TLS proxy on the same machine (Tailscale Serve/Funnel, `cloudflared`, `ngrok`) forwards to it. Keep it that way. `skillhook expose` prints a note if the host is not loopback.
 - `trust_proxy: true` (default) makes skillhook use the first `X-Forwarded-For` (or `X-Real-IP` / `CF-Connecting-IP`) entry as the client IP, but only when the TCP peer is loopback. A remote client cannot spoof its address by sending the header itself.
 - `GET /health` is public but tells outsiders only `{ok, version}`; queue details are added for admin callers.
-- The public URL exposes every route, including the admin API (`/skills`, `/jobs`), which is protected by the admin token (below). For a tailnet-only deployment use `skillhook expose tailscale --serve` and add `allow_ips: ["100.64.0.0/10"]` to skills.
+- The public URL exposes every route, including the admin API (`/skills`, `/jobs`, `/config`, `/control/restart`, `/update`, …), which is protected by the admin token (below). The admin token is root-equivalent for skillhook: it can change the configuration (runner commands included), run any skill, restart the server and install updates. Treat it like a shell account on the machine. For a tailnet-only deployment use `skillhook expose tailscale --serve` and add `allow_ips: ["100.64.0.0/10"]` to skills.
 
 ### Outbound connections
 
-skillhook itself makes one request you did not ask for: the daily update check, `GET https://registry.npmjs.org/@meterapp%2Fskillhook/latest` (no identifiers beyond a `skillhook/<version>` user agent), cached for 24 hours in `<home>/update-check.json` and run only from interactive commands, `doctor` and `serve`. Disable it with `SKILLHOOK_NO_UPDATE_CHECK=1`, `CI=1` or `"update_check": false`; `SKILLHOOK_NPM_REGISTRY` redirects it to a mirror. `skillhook update --install` runs your package manager only when you ask. Everything else that leaves the machine is a request you configured: the runners talking to Anthropic/OpenAI, `skillhook send`, `expose`, and `doctor`'s probe of your own public URL.
+By default skillhook makes one request you did not ask for: the daily update check, `GET https://registry.npmjs.org/@meterapp%2Fskillhook/latest` (no identifiers beyond a `skillhook/<version>` user agent), cached for 24 hours in `<home>/update-check.json` and run only from interactive commands, `doctor` and `serve`. Disable it with `SKILLHOOK_NO_UPDATE_CHECK=1`, `CI=1` or `"update_check": false`; `SKILLHOOK_NPM_REGISTRY` redirects it to a mirror. `skillhook update --install` runs your package manager only when you ask.
+
+The only other connection skillhook opens by itself is the Skillhook Cloud link, and only after you paired the machine with `skillhook cloud connect` (below). Everything else that leaves the machine is a request you configured: the runners talking to Anthropic/OpenAI, `skillhook send`, `expose`, and `doctor`'s probe of your own public URL.
+
+### Skillhook Cloud
+
+The link ([cloud.md](cloud.md), [cloud-protocol.md](cloud-protocol.md)) is opt-in and outbound: the running server opens HTTPS requests to `cloud.url` after `skillhook cloud connect` wrote `cloud.enabled: true` and `SKILLHOOK_CLOUD_TOKEN`, and never listens for the cloud. What it sends is listed in cloud.md; before anything leaves, headers are redacted, command lines and environments are dropped, and every string is scrubbed of every value in `.env`. `SKILLHOOK_CLOUD_*` variables never reach a run's environment, even when a skill lists them.
+
+What the cloud may make the machine do is decided on the machine: `cloud.mode` (`observe` by default: read commands only), `cloud.allow_commands` and `cloud.deny_commands`. `control` mode amounts to shell access for everyone who can reach the machine on the dashboard (it can run and install skills, including shell commands); grant it like you would grant an account on the machine, and use `cloud.deny_commands` to keep `skill.put`, `skill.test` or `update.install` out of reach when you only want remote answers and runs of installed skills. The cloud cannot change those (`config.patch` refuses `cloud.*`), and its hints can only make the machine send less. Hosted-ingress deliveries go through the same signature check as a direct webhook, with the secret that stays on this machine; for `bearer` and `basic` skills the sender's credential does travel through the cloud (sealed at rest there until collected), so prefer a signature scheme for a hosted URL.
+
+Secrets the dashboard asks for are generated here and sent only sealed to the requester's key (X25519 + AES-256-GCM); a secret the dashboard sends (`secret.set`, allow-list only) is sealed to this machine's key, which pairing creates and keeps in `.env`. Neither the cloud nor its database ever holds such a value in the clear.
+
+The kill switches: `cloud.enabled: false`, `SKILLHOOK_NO_CLOUD=1` in the server's environment, `skillhook cloud disconnect` (which also revokes the token and removes the machine's key). Treat the machine token like the admin token: it identifies the machine to the cloud, and whoever holds it can read what the link uploads.
 
 ## Authentication schemes
 
@@ -260,12 +272,12 @@ Rate-limit windows are fixed one-minute buckets per client IP, kept in memory.
 
 ## Admin API
 
-`GET /skills`, `POST /skills/<name>/run`, `GET /jobs`, `GET /jobs/<id>`, `POST /jobs/<id>/cancel` (see [api.md](api.md)) accept:
+`GET /skills`, `POST /skills/<name>/run`, `GET /jobs`, `GET /jobs/<id>`, `POST /jobs/<id>/cancel`, `GET /jobs/<id>/artifacts/<name>`, `GET /jobs/<id>/events`, `GET /events`, `GET /deliveries`, `GET /deliveries/<id>` (see [api.md](api.md)) accept:
 
 - `Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN`, from anywhere the server is reachable (including the public URL); or
 - no token at all, only for direct loopback connections that carry no proxy header (`X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Real-IP`, `CF-Connecting-IP`, `Forwarded`, `Via`, `Tailscale-User-Login`, `ngrok-trace-id`), which is how the CLI and the MCP server talk to the local server. A request that arrives through a tunnel always needs the token.
 
-`skillhook init` generates `SKILLHOOK_ADMIN_TOKEN`. Rotate it with `skillhook secret generate admin --force`. If it is unset, the admin API is reachable from localhost only and the server logs a warning at start. `POST /skills/<name>/run` bypasses webhook signature checks by design, so treat the admin token like a root credential for your skills.
+`skillhook init` generates `SKILLHOOK_ADMIN_TOKEN`. Rotate it with `skillhook secret generate admin --force`. If it is unset, the admin API is reachable from localhost only and the server logs a warning at start. `POST /skills/<name>/run` bypasses webhook signature checks by design, so treat the admin token like a root credential for your skills. The same goes for replays: `POST /deliveries/<id>/replay` and `POST /jobs/<id>/replay` run a recorded request again without checking its signature (it was checked when it arrived, or it was rejected and the caller has to pass `force`), so an admin can make any skill process any body the server ever received.
 
 ## Files on disk
 
@@ -275,6 +287,8 @@ Rate-limit windows are fixed one-minute buckets per client IP, kept in memory.
 | `<home>/skillhook.json` | 600 (written by skillhook) | Configuration; no secrets. |
 | `<home>/jobs/<id>/*` | 600 | Payloads, prompts, agent stdout/stderr and results. These contain whatever the sender posted and whatever the agent printed. |
 | `<home>/jobs/.deliveries.json` | 600 | Delivery-id index. |
+| `<home>/jobs/.delivery-log/deliveries.jsonl` | 600 | One record per request to `/hooks/<skill>`: outcome, status, reason, client IP, redacted headers (no authorization, signature, token or cookie headers), sizes, job id. Newest `deliveries.max` (2000) kept. |
+| `<home>/jobs/.delivery-log/bodies/<id>.bin` | 600 | The body of a refused delivery (rejected, filtered, error), at most `deliveries.body_max_bytes` (64 KiB), including bodies that failed authentication. `deliveries.store_bodies: false` keeps none. |
 | `<home>/server.json` | 600 | pid/host/port of the running server. |
 | `<home>/logs/service.log` | created by launchd/systemd, not by skillhook | Server log: skill names, job ids, IPs, error messages; never secrets or payload bodies. |
 

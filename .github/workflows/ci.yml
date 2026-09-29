@@ -62,6 +62,15 @@ jobs:
           node dist/cli.js link . --dir "$RUNNER_TEMP/skillhook" --json
           node dist/cli.js projects --dir "$RUNNER_TEMP/skillhook" --json
           node dist/cli.js run pull-after-merge --dir "$RUNNER_TEMP/skillhook" --payload '{}' --dry-run --json > /dev/null
+          node dist/cli.js run --file examples/skills/hello/SKILL.md --dir "$RUNNER_TEMP/skillhook" --payload '{"name":"ci"}' --dry-run --json > /dev/null
+          node dist/cli.js deliveries list --dir "$RUNNER_TEMP/skillhook" --json > /dev/null
+          node dist/cli.js jobs list --waiting --dir "$RUNNER_TEMP/skillhook" --json > /dev/null
+          node dist/cli.js stats --since 7d --dir "$RUNNER_TEMP/skillhook" --json > /dev/null
+          node dist/cli.js config path --dir "$RUNNER_TEMP/skillhook" --json > /dev/null
+          node dist/cli.js cloud status --dir "$RUNNER_TEMP/skillhook" --json > /dev/null
+          node dist/cli.js runners --local --dir "$RUNNER_TEMP/skillhook" --json > /dev/null || true   # no claude/codex on the runner
+          SKILLHOOK_NO_UPDATE_CHECK=1 node dist/cli.js health --quick --local --dir "$RUNNER_TEMP/skillhook" --json > "$RUNNER_TEMP/health.json" || true
+          node -e 'const r = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if (!Array.isArray(r.checks) || !r.groups) process.exit(1);' "$RUNNER_TEMP/health.json"
 
       - name: Audit production dependencies
         run: npm audit --omit=dev
@@ -95,7 +104,7 @@ jobs:
           const fs = require("node:fs");
           const [info] = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
           const files = new Set(info.files.map((f) => f.path));
-          const required = ["package.json", "README.md", "CHANGELOG.md", "LICENSE", "dist/cli.js", "dist/index.js", "dist/index.d.ts", "dist/update.js", "schema/skillhook.schema.json", "schema/skillhook.yaml.schema.json", "examples/skills/hello/SKILL.md", "examples/skills/sentry-triage/SKILL.md"];
+          const required = ["package.json", "README.md", "CHANGELOG.md", "LICENSE", "dist/cli.js", "dist/index.js", "dist/index.d.ts", "dist/update.js", "dist/cloud/protocol.js", "dist/cloud/protocol.d.ts", "schema/skillhook.schema.json", "schema/skillhook.yaml.schema.json", "examples/skills/hello/SKILL.md", "examples/skills/sentry-triage/SKILL.md"];
           const missing = required.filter((f) => !files.has(f));
           const unwanted = [...files].filter((f) => /^(src|test|scripts|docs|skills|\.github)\//.test(f) || /\.test\.|\.env|\.tgz$|\.map$/.test(f));
           if (missing.length || unwanted.length) {
@@ -123,3 +132,7 @@ jobs:
           skillhook doctor --dir "$home" --json > "$RUNNER_TEMP/doctor.json" || true
           node -e 'const r = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if (!Array.isArray(r.checks)) process.exit(1);' "$RUNNER_TEMP/doctor.json"
           skillhook update --dir "$home" --json || true
+          skillhook stats --dir "$home" --json > /dev/null
+          skillhook deliveries list --dir "$home" --json > /dev/null
+          skillhook run --file examples/skills/hello/SKILL.md --dir "$home" --payload '{"name":"ci"}' --dry-run --json > /dev/null
+          SKILLHOOK_NO_UPDATE_CHECK=1 skillhook health --quick --local --dir "$home" --json > /dev/null || true
