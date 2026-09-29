@@ -3,7 +3,7 @@ import { loadConfig } from "../config.js";
 import { buildRunEnv } from "../runners/env.js";
 import { parseSkillDocument } from "../skills.js";
 import { tempHome, writeConfigFile } from "../test-support/helpers.js";
-import { assertSecureCloudUrl, CLOUD_TOKEN_ENV, cloudDisabledByEnv, commandAllowed, commandMatches, DEFAULT_CLOUD_URL, InsecureCloudUrlError, isSecureCloudUrl, resolveCloudUrl } from "./config.js";
+import { assertSecureCloudUrl, CLOUD_TOKEN_ENV, cloudDisabledByEnv, commandAllowed, commandMatches, DEFAULT_CLOUD_URL, InsecureCloudUrlError, isSecureCloudUrl, resolveCloudUrl, trimTrailingSlashes } from "./config.js";
 
 describe("cloud config", () => {
   it("has safe defaults and validates the cloud block", () => {
@@ -22,6 +22,10 @@ describe("cloud config", () => {
     expect(resolveCloudUrl({}, { url: "https://a.example/" })).toBe("https://a.example");
     expect(resolveCloudUrl({ SKILLHOOK_CLOUD_URL: "https://env.example" }, { url: "https://a.example" })).toBe("https://env.example");
     expect(resolveCloudUrl({ SKILLHOOK_CLOUD_URL: "https://env.example" }, { url: "https://a.example" }, "https://flag.example//")).toBe("https://flag.example");
+    expect(trimTrailingSlashes("https://a.example/x///")).toBe("https://a.example/x");
+    expect(trimTrailingSlashes("///")).toBe("");
+    // Linear in the input: a long run of slashes (CodeQL js/polynomial-redos) is trimmed at once.
+    expect(trimTrailingSlashes(`https://a.example${"/".repeat(100_000)}x`)).toHaveLength(`https://a.example${"/".repeat(100_000)}x`.length);
     expect(isSecureCloudUrl("https://cloud.example")).toBe(true);
     expect(isSecureCloudUrl("http://127.0.0.1:4000")).toBe(true);
     expect(isSecureCloudUrl("http://localhost:4000")).toBe(true);

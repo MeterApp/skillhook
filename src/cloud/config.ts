@@ -22,7 +22,14 @@ export interface CloudPolicy {
 /** Flag > `SKILLHOOK_CLOUD_URL` > `cloud.url` > the default, without a trailing slash. */
 export function resolveCloudUrl(env: NodeJS.ProcessEnv, config: { url?: string }, override?: string): string {
   const url = override?.trim() || env.SKILLHOOK_CLOUD_URL?.trim() || config.url?.trim() || DEFAULT_CLOUD_URL;
-  return url.replace(/\/+$/, "");
+  return trimTrailingSlashes(url);
+}
+
+/** Drops trailing slashes in one pass (a regex like `/\/+$/` backtracks quadratically on long runs of slashes). */
+export function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end--;
+  return value.slice(0, end);
 }
 
 /** `true` for https, and for plain http to a loopback address (a local cloud in tests) or when `SKILLHOOK_CLOUD_ALLOW_INSECURE=1`. */
