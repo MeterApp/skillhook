@@ -4,6 +4,16 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- `skillhook cloud report "<title>"`: a person on a paired machine reports a problem to the Skillhook
+  team without leaving the terminal (`--body TEXT`, `--body -` or `--body-file PATH`, `--kind`,
+  `--severity`, `--job`, `--delivery`, `--skill`, `--email`). One request, `POST /api/agent/issues`
+  with the machine token, carrying the person's text and, unless `--no-diagnostics`, what the machine
+  already knows: skillhook, Node, OS and architecture, `cloud.mode`, the link's state, whether each
+  runner is ready and the health summary with the failing and warning checks. Every `.env` value is
+  scrubbed from all of it, and payloads, logs, prompts and job output never go; `--dry-run` prints the
+  exact JSON instead of sending it. It answers `Reported as #N: <url>` and whether a confirmation email
+  went out. The MCP tool `cloud_report_issue` sends the same report for an agent the person asked.
+  Refused on a machine that is not paired and under `SKILLHOOK_NO_CLOUD=1`.
 - The protocol gains the report, additively (`PROTOCOL_VERSION` stays 1): `IssueReportRequestSchema`,
   `IssueReportResponseSchema`, `IssueDiagnosticsSchema`, `ISSUE_KINDS`, `ISSUE_SEVERITIES` and
   `LIMITS.max_issue_report_bytes` (64 KiB), documented in

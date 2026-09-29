@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { createServer } from "node:http";
 import { main, nodeVersionProblem } from "./commands/main.js";
 import type { CliIO } from "./commands/shared.js";
-import { FAKE_CLAUDE, FAKE_CODEX, tempHome, writeSkill } from "./test-support/helpers.js";
+import { FAKE_CLAUDE, FAKE_CODEX, tempHome, writeConfigFile, writeEnv, writeSkill } from "./test-support/helpers.js";
 
 function io(env: NodeJS.ProcessEnv = {}) {
   const out: string[] = [];
@@ -560,6 +560,105 @@ describe("cli", () => {
       await main(["doctor", ...dir, "--json"], after.cli);
       expect((after.json().checks as { name: string; status: string }[]).find((c) => c.name === "cloud link")).toMatchObject({ status: "skip" });
     } finally {
+      await fake.close();
+    }
+  });
+
+  it("reports a problem to the Skillhook team from a paired machine, scrubbed of every .env value", async () => {
+    const { FakeCloud } = await import("./test-support/fake-cloud.js");
+    const { startFakeServer } = await import("./test-support/fake-server.js");
+    const fake = await FakeCloud.start();
+    const home = tempHome("skillhook-cli-report-");
+    const at = ["--dir", home.home];
+    const envValue = "placeholder-report-env-value"; // a value in .env, not a real credential
+    const server = await startFakeServer(home, {
+      cloud: { state: "connected", mode: "observe", last_error: null },
+      checks: { ok: false, summary: { ok: 8, warn: 1, fail: 0, skip: 3 }, checks: [{ name: "admin token", status: "warn", detail: "SKILLHOOK_ADMIN_TOKEN not set", group: "skillhook" }] },
+      runners: [{ runner: "claude", ready: true }, { runner: "codex", ready: false }, { runner: "shell", ready: true }],
+    });
+    try {
+      const env = { SKILLHOOK_CLOUD_URL: fake.url, SKILLHOOK_NO_UPDATE_CHECK: "1" };
+      const unpaired = io(env);
+      expect(await main(["cloud", "report", "Webhooks fail", ...at, "--json"], unpaired.cli)).toBe(1);
+      expect(String(unpaired.json().error)).toContain("skillhook cloud connect --code");
+      writeConfigFile(home, { runners: { claude: { command: FAKE_CLAUDE }, codex: { command: FAKE_CODEX } }, cloud: { enabled: true, url: fake.url, machine_id: fake.machineId } });
+      writeEnv(home, { SKILLHOOK_CLOUD_TOKEN: fake.token, SKILLHOOK_SECRET_HELLO: envValue });
+
+      for (const [args, message] of [
+        [[], "Missing the title"],
+        [["x", "--kind", "complaint"], "--kind must be one of bug, question, feature, other"],
+        [["x", "--severity", "critical"], "--severity must be one of low, normal, high, urgent"],
+        [["x", "--body", "a", "--body-file", "notes.txt"], "not both"],
+        [["x", "--title", "y"], "Give the title once"],
+        [["x", "--body"], "--body needs the text"],
+      ] as const) {
+        const usage = io(env);
+        expect(await main(["cloud", "report", ...args, ...at], usage.cli)).toBe(2);
+        expect(usage.err()).toContain(message);
+      }
+      const killed = io({ ...env, SKILLHOOK_NO_CLOUD: "1" });
+      expect(await main(["cloud", "report", "Webhooks fail", ...at, "--json"], killed.cli)).toBe(1);
+      expect(String(killed.json().error)).toContain("SKILLHOOK_NO_CLOUD is set");
+      expect(fake.issues).toEqual([]);
+
+      // The title's words need no quotes; --body takes its text here (it is a switch for `deliveries show`); --json is the cloud's answer.
+      const plain = io(env);
+      expect(await main(["cloud", "report", "Hosted", "URLs", "missing", "--body", "The dashboard shows none.", "--kind", "question", "--no-diagnostics", ...at, "--json"], plain.cli)).toBe(0);
+      expect(plain.json()).toEqual({ ok: true, issue_id: "iss_41", number: 41, url: `${fake.url}/o/fake/issues/41`, acknowledged: false });
+      expect(fake.issues[0]).toEqual({ title: "Hosted URLs missing", body: "The dashboard shows none.", kind: "question" });
+
+      // The body from stdin before the title, references, a contact address, and the running server's diagnostics.
+      const piped = io(env);
+      piped.cli.stdin = async () => `It broke with ${envValue}\n`;
+      expect(await main(["cloud", "report", "--body", "-", `Replays fail with ${envValue}`, "--job", "20260929T101500Z-a1b2c3", "--delivery", "d_7", "--skill", "hello", "--severity", "urgent", "--email", "ada@example.com", ...at], piped.cli)).toBe(0);
+      expect(piped.out()).toContain(`Reported as #42: ${fake.url}/o/fake/issues/42`);
+      expect(piped.out()).toContain("A confirmation email was sent to ada@example.com.");
+      expect(piped.out()).toContain("Diagnostics went with it");
+      expect(fake.issues[1]).toEqual({
+        title: "Replays fail with [redacted]",
+        body: "It broke with [redacted]",
+        severity: "urgent",
+        contact_email: "ada@example.com",
+        job_id: "20260929T101500Z-a1b2c3",
+        delivery_id: "d_7",
+        skill: "hello",
+        diagnostics: {
+          skillhook_version: expect.any(String),
+          node_version: process.versions.node,
+          os: process.platform,
+          arch: process.arch,
+          mode: "observe",
+          link: { state: "connected" },
+          runners: [
+            { runner: "claude", ready: true },
+            { runner: "codex", ready: false },
+            { runner: "shell", ready: true },
+          ],
+          health: { ok: false, summary: { ok: 8, warn: 1, fail: 0, skip: 3 }, failing: [{ id: "admin token", status: "warn", message: "SKILLHOOK_ADMIN_TOKEN not set" }] },
+        },
+      });
+      expect(JSON.stringify(fake.issues)).not.toContain(envValue);
+
+      // --body-file with --title, and --dry-run: exactly what would go, nothing sent.
+      const notes = path.join(home.home, "notes.txt");
+      writeFileSync(notes, `Notes from a file\n${envValue}\n`);
+      const dry = io(env);
+      expect(await main(["cloud", "report", "--title", "From a file", "--body-file", notes, "--dry-run", ...at, "--json"], dry.cli)).toBe(0);
+      expect(dry.json()).toMatchObject({ dry_run: true, url: fake.url, request: { title: "From a file", body: "Notes from a file\n[redacted]", diagnostics: { link: { state: "connected" } } } });
+      const human = io(env);
+      expect(await main(["cloud", "report", "From a file", "--body-file", notes, "--dry-run", "--no-diagnostics", ...at], human.cli)).toBe(0);
+      expect(human.out()).toContain(`Would send to ${fake.url}/api/agent/issues (nothing was sent):`);
+      expect(fake.issues).toHaveLength(2);
+      const missing = io(env);
+      expect(await main(["cloud", "report", "x", "--body-file", path.join(home.home, "nope.txt"), ...at, "--json"], missing.cli)).toBe(1);
+
+      // What the cloud refuses is the command's failure, as JSON with --json.
+      fake.issuesMode = "401";
+      const refused = io(env);
+      expect(await main(["cloud", "report", "Webhooks fail", "--no-diagnostics", ...at, "--json"], refused.cli)).toBe(1);
+      expect(String(refused.json().error)).toContain("pair it again");
+    } finally {
+      await server.close();
       await fake.close();
     }
   });

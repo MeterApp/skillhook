@@ -31,7 +31,7 @@ What it does not defend against:
 
 By default skillhook makes one request you did not ask for: the daily update check, `GET https://registry.npmjs.org/@meterapp%2Fskillhook/latest` (no identifiers beyond a `skillhook/<version>` user agent), cached for 24 hours in `<home>/update-check.json` and run only from interactive commands, `doctor` and `serve`. Disable it with `SKILLHOOK_NO_UPDATE_CHECK=1`, `CI=1` or `"update_check": false`; `SKILLHOOK_NPM_REGISTRY` redirects it to a mirror. `skillhook update --install` runs your package manager only when you ask.
 
-The only other connection skillhook opens by itself is the Skillhook Cloud link, and only after you paired the machine with `skillhook cloud connect` (below). Everything else that leaves the machine is a request you configured: the runners talking to Anthropic/OpenAI, `skillhook send`, `expose`, and `doctor`'s probe of your own public URL.
+The only other connection skillhook opens by itself is the Skillhook Cloud link, and only after you paired the machine with `skillhook cloud connect` (below). Everything else that leaves the machine is a request you configured or asked for: the runners talking to Anthropic/OpenAI, `skillhook send`, `expose`, `doctor`'s probe of your own public URL, and the cloud commands you run: `cloud connect` / `disconnect` and `cloud report` (your text and the diagnostics [cloud.md](cloud.md#reporting-a-problem) lists, scrubbed of every `.env` value), each one request to `cloud.url` over HTTPS.
 
 ### Skillhook Cloud
 

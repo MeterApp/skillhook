@@ -70,6 +70,8 @@ Agents
                                                            Inside a run: report progress, ask a person (waits for the answer), report the outcome
   config show | get <key> | set <key> <value> | unset <key> | reload | path   set/unset tell the running server; most keys apply live, host/port at the next start
   cloud connect --code XXXX-XXXX [--control] | disconnect | status   Pair this machine with Skillhook Cloud (opt-in; docs/cloud.md)
+  cloud report "<title>" [--body T|--body-file F|--body -] [--kind K] [--severity S] [--job ID] [--email E] [--no-diagnostics] [--dry-run]
+                                                           Report a problem to the Skillhook team from a paired machine, with its diagnostics (scrubbed)
 
 Global options: --dir <path> (default $SKILLHOOK_HOME or ~/.skillhook), --json, --help, --version
 Each subcommand prints its own usage on a mistake. Docs: https://github.com/MeterApp/skillhook

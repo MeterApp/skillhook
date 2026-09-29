@@ -6,10 +6,10 @@ Skillhook Cloud is the hosted control plane for machines running skillhook: ever
 
 ## Principles
 
-- **Opt-in, outbound only.** A machine talks to the cloud only after `skillhook cloud connect` pairs it (a code from the dashboard) and only by opening HTTPS requests to `cloud.url` (plain `http` only to a loopback address or with `SKILLHOOK_CLOUD_ALLOW_INSECURE=1`); the cloud never connects to the machine and never holds the admin token. It works behind NAT without Tailscale.
+- **Opt-in, outbound only.** A machine talks to the cloud only after `skillhook cloud connect` pairs it (a code from the dashboard) and only by opening HTTPS requests to `cloud.url` (plain `http` only to a loopback address or with `SKILLHOOK_CLOUD_ALLOW_INSECURE=1`); the cloud never connects to the machine and never holds the admin token. It works behind NAT without Tailscale. Besides the link, [`cloud report`](#reporting-a-problem) sends one request, to the same URL, only when a person runs it.
 - **Observe by default.** A freshly paired machine is in `mode: observe`: the cloud can read, not act. `--control` at pairing (what the dashboard's pairing page prints) or `cloud.mode: control` later lets it run skills, answer jobs, change the configuration and restart the server. `cloud.allow_commands` / `cloud.deny_commands` refine either mode per command type; the cloud cannot raise a machine's exposure, only the machine's own config can.
 - **Payloads are data, secrets stay home.** Headers are redacted on the machine before anything is uploaded; every uploaded string is scrubbed against every value in `.env`; webhook bodies travel only when both `cloud.upload_payloads` and the organisation's policy allow, and never beyond 256 KiB. `SKILLHOOK_CLOUD_*` variables never reach a run, even when a skill lists them in `env:`. A secret the cloud asks skillhook to generate is sealed to the requester's key; the cloud never stores it in the clear.
-- **Kill switches.** `cloud.enabled: false`, `SKILLHOOK_NO_CLOUD=1` in the server's environment, or `skillhook cloud disconnect` stop all traffic; the link never starts from `init`, from a job, or on its own.
+- **Kill switches.** `cloud.enabled: false`, `SKILLHOOK_NO_CLOUD=1` in the server's environment, or `skillhook cloud disconnect` stop all traffic; the link never starts from `init`, from a job, or on its own. With `SKILLHOOK_NO_CLOUD=1` in its environment, `cloud report` refuses to send anything too.
 
 ## Settings
 
@@ -48,6 +48,28 @@ skillhook cloud disconnect    # cloud.enabled: false, token removed from .env an
 ```
 
 `disconnect --keep-token` leaves the token in `.env`. `skillhook doctor` and `skillhook health` report a `cloud link` check: skipped when not connected, failing when `cloud.enabled` has no token, an `http` URL, or a revoked token or disabled machine, warning when no server runs, the link is degraded or events were dropped.
+
+## Reporting a problem
+
+A person on a paired machine can tell the Skillhook team about a problem without leaving the terminal:
+
+```bash
+skillhook cloud report "GitHub deliveries fail since the update" --body-file notes.txt --job 20260929T101500Z-a1b2c3 --email ada@example.com
+skillhook cloud report "Where do hosted URLs come from?" --kind question --no-diagnostics
+skillhook cloud report "Replays hang" --body - --dry-run < notes.txt     # print exactly what would be sent, send nothing
+```
+
+It sends one request, `POST {cloud.url}/api/agent/issues` with the machine token ([cloud-protocol.md](cloud-protocol.md#issue-reports)), carrying exactly:
+
+- `title`: the argument (or `--title`), at most 200 characters;
+- `body`: `--body TEXT`, `--body -` (stdin) or `--body-file PATH`, at most 20,000 characters;
+- `kind` (`--kind bug|question|feature|other`; the cloud files a report without one as `bug`), `severity` (`--severity low|normal|high|urgent`; `normal`) and `contact_email` (`--email`), when given;
+- `job_id` (the machine's own job id), `delivery_id` and `skill` (`--job`, `--delivery`, `--skill`), when given: references only, the job or delivery itself stays on the machine;
+- unless `--no-diagnostics`, `diagnostics`: `skillhook_version`, `node_version`, `os`, `arch`, the machine's `cloud.mode`, the link's `state`, `reason` and `last_error` (from the running server), whether each runner is ready (`{runner, ready}` only), and the health summary (how many checks are ok, warn, fail, skip) with the checks that fail or warn (`id`: the check's name, `status`, `message`: its detail line; at most 50). With a running server these are its cached answers; without one, a quick local check (the doctor's checks, no network probes) and the runners' readiness.
+
+Every value in `.env` is replaced with `[redacted]` in the title, the body and the diagnostics before anything leaves, as for everything the link sends. Nothing else goes: never payloads, logs, prompts, job output, command lines, environments or `.env` itself. `--dry-run` prints the JSON that would be sent. The answer is `Reported as #N: <url>` and whether a confirmation email went out; `--json` prints the cloud's answer (`{ok, issue_id, number, url, acknowledged}`).
+
+It needs a paired machine (`cloud.enabled` and `SKILLHOOK_CLOUD_TOKEN`); on one that is not, pair it first or report the problem on the dashboard or through its hosted MCP server. It refuses under `SKILLHOOK_NO_CLOUD=1` and to a `cloud.url` that is not https. The MCP tool `cloud_report_issue` sends the same report for an agent the person asked to file one ([mcp.md](mcp.md)).
 
 ## What the link does
 

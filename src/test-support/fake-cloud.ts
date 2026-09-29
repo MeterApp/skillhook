@@ -1,8 +1,8 @@
 // A stand-in for Skillhook Cloud's agent API on a local port: pairs machines with a known code, answers syncs from a
-// script (commands and ingress items to hand out, an error mode), validates every body with the protocol schemas and
-// keeps what it received for assertions.
+// script (commands and ingress items to hand out, an error mode), takes issue reports, validates every body with the
+// protocol schemas and keeps what it received for assertions.
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { CommandResultSchema, PairRequestSchema, SyncRequestSchema, type Command, type CommandResult, type Hints, type IngressAck, type IngressItem, type PairRequest, type SyncRequest } from "../cloud/protocol.js";
+import { CommandResultSchema, IssueReportRequestSchema, PairRequestSchema, SyncRequestSchema, type Command, type CommandResult, type Hints, type IngressAck, type IngressItem, type IssueReportRequest, type PairRequest, type SyncRequest } from "../cloud/protocol.js";
 
 export type FakeCloudMode = "ok" | "500" | "401" | "403" | "413" | "426" | "429" | "hang" | "garbage";
 
@@ -35,6 +35,10 @@ export class FakeCloud {
   tooLarge = 0;
   /** Artifact uploads by `<job>/<name>`: the chunks in arrival order, their Content-Range and the announced sha256. */
   readonly artifacts = new Map<string, { chunks: Buffer[]; ranges: string[]; sha256: string | undefined }>();
+  /** Issue reports received, valid ones only (the rest land in `invalid`), and how the next ones are answered. */
+  readonly issues: IssueReportRequest[] = [];
+  /** `404` answers like a cloud without the route (an HTML page). */
+  issuesMode: "ok" | "401" | "403" | "404" | "413" | "429" | "500" | "garbage" = "ok";
   private readonly commands: Command[] = [];
   private readonly ingress: IngressItem[] = [];
   private readonly waiters: { predicate: () => boolean; resolve: () => void }[] = [];
@@ -125,6 +129,37 @@ export class FakeCloud {
       this.disconnects++;
       this.notify();
       return this.reply(res, 200, { ok: true });
+    }
+    if (req.method === "POST" && url.pathname === "/api/agent/issues") {
+      if (req.headers.authorization !== `Bearer ${this.token}`) return this.reply(res, 401, { ok: false, error: "invalid_token", message: "unknown or revoked machine token" });
+      const parsed = IssueReportRequestSchema.safeParse(await readJson(req));
+      if (!parsed.success) {
+        this.invalid.push(`issue: ${parsed.error.message}`);
+        return this.reply(res, 400, { ok: false, error: "invalid_request", message: "bad issue report" });
+      }
+      switch (this.issuesMode) {
+        case "401":
+          return this.reply(res, 401, { ok: false, error: "invalid_token", message: "this machine was disconnected; pair it again" });
+        case "403":
+          return this.reply(res, 403, { ok: false, error: "machine_disabled", message: "disabled in the dashboard" });
+        case "404":
+          res.writeHead(404, { "content-type": "text/html" });
+          return void res.end("<!DOCTYPE html><title>404: This page could not be found.</title>");
+        case "413":
+          return this.reply(res, 413, { ok: false, error: "payload_too_large", message: "at most 65536 bytes" });
+        case "429":
+          return this.reply(res, 429, { ok: false, error: "rate_limited", message: "at most 10 reports an hour", retry_after_ms: 90_000 }, { "retry-after": "90" });
+        case "500":
+          return this.reply(res, 500, { ok: false, error: "server_error", message: "internal error" });
+        case "garbage":
+          return this.reply(res, 200, { ok: true, nonsense: true });
+        default:
+          break;
+      }
+      this.issues.push(parsed.data);
+      this.notify();
+      const number = 40 + this.issues.length;
+      return this.reply(res, 200, { ok: true, issue_id: `iss_${number}`, number, url: `${this.url}/o/fake/issues/${number}`, acknowledged: Boolean(parsed.data.contact_email) });
     }
     if (req.method === "POST" && url.pathname === "/api/agent/sync") {
       this.authHeaders.push(req.headers.authorization);
