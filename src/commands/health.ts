@@ -2,6 +2,15 @@ import { adminRequest, findRunningServer } from "../client.js";
 import { formatHealth, runHealth, type HealthReport } from "../health.js";
 import { bool, CommandError, type Ctx } from "./shared.js";
 
+export const HEALTH_USAGE = `Usage: skillhook health [--quick] [--refresh] [--no-network] [--local]
+
+The doctor's checks plus the MCP servers Claude Code and Codex know, plugins, codex doctor, disk and each skill's last
+run, grouped. Exits 1 when a check fails.
+  --quick        skip the deep probes (MCP servers, plugins, codex doctor)
+  --refresh      probe again instead of the running server's cached report
+  --no-network   skip the npm update check and the public URL probe
+  --local        check in this process even when a server is running`;
+
 /**
  * `skillhook health`: doctor plus the deep probes (MCP servers, plugins, `codex doctor`, disk, last runs), grouped.
  * Through the running server when there is one (its cached report, `--refresh` for a fresh one), otherwise in-process.

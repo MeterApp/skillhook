@@ -1,7 +1,7 @@
 import { createOps, resolveBaseUrl, sendSignedWebhook } from "../ops.js";
 import { bool, CommandError, list, num, parseHeaderFlags, readPayloadArg, str, UsageError, type Ctx } from "./shared.js";
 
-const USAGE = `Usage: skillhook send <skill> [--payload JSON|@file|-] [--wait SECONDS] [--url BASE_URL | --public | --local]
+export const SEND_USAGE = `Usage: skillhook send <skill> [--payload JSON|@file|-] [--wait SECONDS] [--url BASE_URL | --public | --local]
                             [--header "Name: value"]... [--json]
 
 Signs the payload the way the skill's auth expects (bearer, HMAC, Standard Webhooks, …) and POSTs it to
@@ -9,7 +9,7 @@ Signs the payload the way the skill's auth expects (bearer, HMAC, Standard Webho
 
 export async function sendCommand(ctx: Ctx): Promise<number> {
   const [name] = ctx.args;
-  if (!name) throw new UsageError("Missing skill name", USAGE);
+  if (!name) throw new UsageError("Missing skill name", SEND_USAGE);
   const ops = createOps(ctx.paths, { env: ctx.io.env });
   const skill = ops.registry.get(name);
   if (!skill) throw new CommandError(`No skill named "${name}"`);

@@ -6,6 +6,13 @@ import { which } from "../tailscale.js";
 import { PACKAGE } from "../version.js";
 import { bool, CommandError, str, type Ctx } from "./shared.js";
 
+export const MCP_USAGE = `Usage: skillhook mcp [--print-config]
+       skillhook mcp --job [ID]
+
+Serves skillhook's tools over stdio to Claude Code, Codex, Cursor and other MCP clients; --print-config prints the
+commands and the JSON that register it. --job serves one run's job API instead (progress, questions, the outcome):
+the runners start it with $SKILLHOOK_JOB_ID and $SKILLHOOK_JOB_DIR set.`;
+
 export async function mcpCommand(ctx: Ctx): Promise<number> {
   if (ctx.flags.job !== undefined) {
     // The runners start this for every run (`--mcp-config` / `mcp_servers.skillhook_job`) with the job in the environment.

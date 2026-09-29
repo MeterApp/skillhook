@@ -4,6 +4,12 @@ import { checkReadiness, RUNNER_NAMES, type RunnerReadiness } from "../readiness
 import { baseRunEnv } from "../runners/env.js";
 import { bool, CommandError, table, type Ctx } from "./shared.js";
 
+export const RUNNERS_USAGE = `Usage: skillhook runners [--refresh] [--local]
+
+Whether claude, codex and shell are installed and logged in: what every job checks before it starts. Asks the running
+server when there is one (--refresh probes again, --local checks in this process). Exits 1 when the default runner is
+not ready.`;
+
 /** `skillhook runners`: is each runner installed and logged in, as a job checks before it starts. */
 export async function runnersCommand(ctx: Ctx): Promise<number> {
   const refresh = bool(ctx.flags, "refresh");

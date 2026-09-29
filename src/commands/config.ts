@@ -3,7 +3,7 @@ import { coerceConfigValue, HOT_CONFIG_KEYS, readRawConfig, RESTART_CONFIG_KEYS,
 import { getPath } from "../util.js";
 import { CommandError, UsageError, type Ctx } from "./shared.js";
 
-const USAGE = `Usage:
+export const CONFIG_USAGE = `Usage:
   skillhook config show            effective config (defaults applied)
   skillhook config get <key>       e.g. defaults.model
   skillhook config set <key> <value>
@@ -52,13 +52,13 @@ export async function configCommand(ctx: Ctx): Promise<number> {
       return 0;
     }
     case "get": {
-      if (!key) throw new UsageError("Missing key", USAGE);
+      if (!key) throw new UsageError("Missing key", CONFIG_USAGE);
       const value = getPath(ctx.config(), key);
       ctx.print(typeof value === "string" ? value : JSON.stringify(value, null, 2), { key, value });
       return 0;
     }
     case "set": {
-      if (!key || rest.length === 0) throw new UsageError("Usage: skillhook config set <key> <value>", USAGE);
+      if (!key || rest.length === 0) throw new UsageError("Usage: skillhook config set <key> <value>", CONFIG_USAGE);
       const value = coerceConfigValue(rest.join(" "));
       const raw = setConfigValue(ctx.paths, key, value);
       const server = await notifyServer(ctx);
@@ -66,7 +66,7 @@ export async function configCommand(ctx: Ctx): Promise<number> {
       return 0;
     }
     case "unset": {
-      if (!key) throw new UsageError("Missing key", USAGE);
+      if (!key) throw new UsageError("Missing key", CONFIG_USAGE);
       const raw = setConfigValue(ctx.paths, key, undefined);
       const server = await notifyServer(ctx);
       ctx.print(`Removed ${key} from ${ctx.paths.configFile}${describeReload(server)}`, { ok: true, key, config: raw, server: server ?? null });
@@ -83,6 +83,6 @@ export async function configCommand(ctx: Ctx): Promise<number> {
       ctx.print(ctx.paths.configFile, { file: ctx.paths.configFile, home: ctx.paths.home, raw: readRawConfig(ctx.paths), hot_keys: HOT_CONFIG_KEYS, restart_keys: RESTART_CONFIG_KEYS });
       return 0;
     default:
-      throw new UsageError(`Unknown config subcommand "${sub}"`, USAGE);
+      throw new UsageError(`Unknown config subcommand "${sub}"`, CONFIG_USAGE);
   }
 }

@@ -1,16 +1,54 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createServer } from "node:http";
-import { main, nodeVersionProblem } from "./commands/main.js";
+import { COMMANDS, main, nodeVersionProblem, usageOf } from "./commands/main.js";
 import type { CliIO } from "./commands/shared.js";
+import { installService, restartService, uninstallService } from "./service.js";
+import { disableExposure, enableExposure } from "./tailscale.js";
 import { FAKE_CLAUDE, FAKE_CODEX, tempHome, writeConfigFile, writeEnv, writeSkill } from "./test-support/helpers.js";
+
+// No test installs, removes or restarts this machine's service or changes its Tailscale Funnel/Serve, not even when a
+// regression lets `service install --help` or `expose off --help` run: here those only record the call.
+vi.mock("./service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./service.js")>()),
+  installService: vi.fn(async () => ({ ok: false, file: "", output: "not from a test" })),
+  uninstallService: vi.fn(async () => ({ ok: false, output: "not from a test" })),
+  restartService: vi.fn(async () => ({ ok: false, output: "not from a test" })),
+}));
+vi.mock("./tailscale.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./tailscale.js")>()),
+  enableExposure: vi.fn(async () => ({ ok: false, output: "not from a test" })),
+  disableExposure: vi.fn(async () => ({ ok: false, output: "not from a test" })),
+}));
 
 function io(env: NodeJS.ProcessEnv = {}) {
   const out: string[] = [];
   const err: string[] = [];
   const cli: CliIO = { stdout: (t) => out.push(t), stderr: (t) => err.push(t), env, isTTY: false };
   return { cli, out: () => out.join(""), err: () => err.join(""), json: () => JSON.parse(out.join("")) as Record<string, unknown> };
+}
+
+/** Every entry under `dir` with its mtime and each file's content: an equal snapshot means nothing was written, created or removed. */
+function snapshot(dir: string): Record<string, string> {
+  const entries: Record<string, string> = {};
+  for (const name of readdirSync(dir, { recursive: true, encoding: "utf8" }).sort()) {
+    const file = path.join(dir, name);
+    const stat = lstatSync(file);
+    entries[name] = `${stat.mtimeMs} ${stat.isFile() ? readFileSync(file, "utf8") : stat.isDirectory() ? "(directory)" : "(other)"}`;
+  }
+  return entries;
+}
+
+/** What main() returned, or "still running" after `ms` (a line that started a server, say). */
+async function settle(running: Promise<number>, ms = 5_000): Promise<number | "still running"> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<"still running">((resolve) => (timer = setTimeout(() => resolve("still running"), ms)));
+  try {
+    return await Promise.race([running, late]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 describe("cli", () => {
@@ -840,5 +878,108 @@ describe("cli", () => {
     const emptyHome = ["--dir", path.join(paths.home, "empty-home")];
     expect(await main(["update", ...emptyHome, "--json"], fresh.cli)).toBe(1);
     expect(fresh.json().ok).toBe(false);
+  });
+
+  it("prints the usage for --help, -h and help <command> and runs nothing, for every command and subcommand", async () => {
+    const home = tempHome("skillhook-cli-help-");
+    const at = ["--dir", home.home];
+    // A home where every line below has something to act on: a job to prune or answer, a delivery to replay, secrets and
+    // config to change, a linked project to unlink, a schedule to fire, an API key to forget.
+    expect(await main(["init", ...at, "--json"], io().cli)).toBe(0);
+    writeConfigFile(home, { runners: { claude: { command: FAKE_CLAUDE }, codex: { command: FAKE_CODEX } } });
+    const run = io();
+    expect(await main(["run", "hello", ...at, "--payload", '{"name":"help"}', "--json"], run.cli)).toBe(0);
+    const job = (run.json().job as { id: string }).id;
+    const { DeliveryLog } = await import("./delivery-log.js");
+    const delivery = new DeliveryLog(home.jobsDir, () => ({ max: 100, store_bodies: true, body_max_bytes: 1000 })).record({ skill: "hello", received_at: "2026-09-29T12:00:00.000Z", outcome: "rejected", http_status: 401, code: "missing_token", reason: "no bearer token", ip: "203.0.113.9", method: "POST", path: "/hooks/hello", query: {}, headers: {}, content_type: "application/json", bytes: 2, duration_ms: 1, rawBody: Buffer.from("{}") }).id;
+    const linked = path.join(home.home, "linked");
+    expect(await main(["projects", "init", linked, ...at, "--json"], io().cli)).toBe(0);
+    const unlinked = path.join(home.home, "unlinked");
+    mkdirSync(unlinked);
+    writeFileSync(path.join(unlinked, "skillhook.yaml"), "hooks:\n  where:\n    run: pwd\n");
+    writeSkill(home, "tick", 'description: Ticks.\nskillhook:\n  runner: shell\n  shell:\n    command: ["sh", "-c", "echo tick"]\n  webhook: false\n  schedule: "*/5 * * * *"');
+    appendFileSync(home.envFile, "SKILLHOOK_CLOUD_API_KEY=shc_placeholder-help-key\n");
+    // Should a line run after all, nothing leaves the machine: no registry, no cloud, fake runners (and the stubs above).
+    const env = { SKILLHOOK_NO_UPDATE_CHECK: "1", SKILLHOOK_NPM_REGISTRY: "http://127.0.0.1:1", SKILLHOOK_CLOUD_URL: "http://127.0.0.1:1", SKILLHOOK_NO_CLOUD: "1", SKILLHOOK_JOB_ID: job, SKILLHOOK_JOB_DIR: path.join(home.jobsDir, job) };
+
+    // Each command with each subcommand, and arguments that would change the home if it ran; an alias gets its command's.
+    const lines: Record<string, string[][]> = {
+      init: [[], ["--force", "--runner", "codex"]],
+      serve: [[], ["--port", "0"]],
+      skills: [[], ["list"], ["show", "hello"], ["new", "fresh"], ["add", "hello", "--as", "copy"], ["examples"], ["validate"], ["path", "hello"]],
+      secret: [[], ["list"], ["set", "hello", "--value", "changed"], ["set", "hello", "--stdin"], ["generate", "admin", "--force"], ["rotate", "hello"], ["unset", "hello"]],
+      run: [["hello", "--payload", "{}"], ["hello", "--dry-run"], ["--file", path.join(home.skillsDir, "hello", "SKILL.md")], ["--stdin"]],
+      send: [["hello", "--wait", "5"]],
+      jobs: [[], ["list"], ["show", job], ["logs", job, "--follow"], ["answer", job, "yes", "--no-resume"], ["cancel", job], ["replay", job], ["resume", job], ["path", job], ["prune", "--keep", "0"]],
+      job: [[], ["progress", "halfway", "--percent", "50"], ["ask", "Go?", "--wait", "0"], ["outcome", "completed", "--summary", "done"], ["note", "noted"], ["context"], ["prune", "--keep", "0"]],
+      deliveries: [[], ["list"], ["show", delivery, "--body"], ["replay", delivery, "--force"]],
+      expose: [[], ["tailscale"], ["serve"], ["status"], ["off"], ["cloudflare"], ["ngrok"]],
+      url: [[], ["hello", "--local"]],
+      service: [[], ["install"], ["uninstall"], ["status"], ["restart"], ["logs", "--lines", "5"]],
+      doctor: [[]],
+      health: [[], ["--quick", "--local"]],
+      runners: [[], ["--refresh", "--local"]],
+      stats: [[], ["--since", "7d"]],
+      config: [[], ["show"], ["get", "port"], ["set", "port", "9999"], ["unset", "runners"], ["reload"], ["path"]],
+      cloud: [[], ["connect", "--code", "ABCD-EFGH", "--control"], ["disconnect"], ["status"], ["report", "Broken", "--body", "details"], ["login", "--key", "shc_placeholder-other-key"], ["logout"], ["machines"], ["jobs", "--waiting"], ["job", job]],
+      mcp: [[], ["--print-config"], ["--job", job]],
+      update: [[], ["--install"], ["--refresh"]],
+      link: [[], [unlinked]],
+      unlink: [[linked]],
+      projects: [[], ["list"], ["init", path.join(home.home, "fresh")], ["add", unlinked], ["remove", linked]],
+      schedules: [[], ["list"], ["next", "tick"], ["run", "tick"]],
+    };
+    for (const name of Object.keys(lines)) expect(COMMANDS, name).toHaveProperty(name);
+
+    const before = snapshot(home.home);
+    const prune = io(env);
+    expect(await main(["jobs", "prune", "--keep", "0", "--help", ...at], prune.cli)).toBe(0);
+    expect(prune.out()).toContain("skillhook jobs prune [--keep N]");
+    const agent = io(env);
+    expect(await main(["job", "progress", "halfway", "-h", ...at], agent.cli)).toBe(0);
+    expect(agent.out()).toContain('skillhook job progress "<what you are doing>"');
+    const operator = io(env);
+    expect(await main(["help", "job", "prune", ...at, "--json"], operator.cli)).toBe(0);
+    expect(operator.json()).toMatchObject({ ok: true, command: "job", usage: expect.stringContaining("skillhook jobs prune [--keep N]") });
+
+    const documented: string[] = [];
+    let stdinReads = 0;
+    for (const [name, command] of Object.entries(COMMANDS)) {
+      const own = lines[name] ?? Object.entries(lines).find(([other]) => COMMANDS[other]?.run === command.run)?.[1];
+      expect(own, `no --help lines for skillhook ${name}`).toBeDefined();
+      expect(usageOf(command, []), name).toMatch(/^Usage/);
+      // Every subcommand the usage documents (`skillhook jobs prune …`, `skillhook projects add|remove …`) has a line.
+      const words = usageOf(command, []).split(/\s+/);
+      for (const sub of words.flatMap((word, i) => (words[i - 2] === "skillhook" && words[i - 1] === name && /^[a-z]/.test(word) ? word.split("|") : []))) {
+        documented.push(`${name} ${sub}`);
+        expect(own?.map((args) => args[0]), `skillhook ${name} ${sub} --help`).toContain(sub);
+      }
+
+      for (const args of own ?? []) {
+        const usage = usageOf(command, args);
+        for (const argv of [[name, ...args, "--help", ...at], [name, "-h", ...args, ...at, "--json"], ["help", name, ...args, ...at]]) {
+          const line = `skillhook ${argv.join(" ")}`;
+          const h = io(env);
+          h.cli.stdin = async () => {
+            stdinReads++;
+            return "";
+          };
+          expect(await settle(main(argv, h.cli)), line).toBe(0);
+          if (argv.includes("--json")) expect(h.json(), line).toEqual({ ok: true, command: name, usage });
+          else expect(h.out(), line).toBe(`${usage}\n`);
+          expect(h.err(), line).toBe("");
+          expect(snapshot(home.home), line).toEqual(before);
+        }
+      }
+    }
+    expect(documented).toEqual(expect.arrayContaining(["jobs prune", "job progress", "service install", "config set", "cloud report", "projects remove"]));
+    expect(stdinReads).toBe(0);
+    for (const stub of [installService, uninstallService, restartService, enableExposure, disableExposure]) expect(stub).not.toHaveBeenCalled();
+
+    // The same line without --help does what it says, and the snapshot sees it.
+    const pruned = io(env);
+    expect(await main(["jobs", "prune", "--keep", "0", ...at, "--json"], pruned.cli)).toBe(0);
+    expect(pruned.json().removed).toBeGreaterThan(0);
+    expect(snapshot(home.home)).not.toEqual(before);
   });
 });
