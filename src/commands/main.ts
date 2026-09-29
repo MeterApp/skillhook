@@ -72,6 +72,8 @@ Agents
   cloud connect --code XXXX-XXXX [--control] | disconnect | status   Pair this machine with Skillhook Cloud (opt-in; docs/cloud.md)
   cloud report "<title>" [--body T|--body-file F|--body -] [--kind K] [--severity S] [--job ID] [--email E] [--no-diagnostics] [--dry-run]
                                                            Report a problem to the Skillhook team from a paired machine, with its diagnostics (scrubbed)
+  cloud login --key shc_…|- | logout | machines | jobs [--machine M] [--status ST] [--waiting] [--limit N] | job <id>
+                                                           Read the organisation's machines and jobs with an organisation API key (never the machine token)
 
 Global options: --dir <path> (default $SKILLHOOK_HOME or ~/.skillhook), --json, --help, --version
 Each subcommand prints its own usage on a mistake. Docs: https://github.com/MeterApp/skillhook

@@ -18,6 +18,15 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
   `IssueReportResponseSchema`, `IssueDiagnosticsSchema`, `ISSUE_KINDS`, `ISSUE_SEVERITIES` and
   `LIMITS.max_issue_report_bytes` (64 KiB), documented in
   [docs/cloud-protocol.md](docs/cloud-protocol.md#issue-reports).
+- The organisation's fleet from the CLI with an organisation API key: `skillhook cloud login --key
+  shc_…|-` checks the key (`GET /api/v1/me`) and keeps it in `.env` as `SKILLHOOK_CLOUD_API_KEY`
+  without ever printing it (the environment variable works too, for CI), `cloud logout` forgets it,
+  and `cloud machines`, `cloud jobs [--machine M] [--skill S] [--status ST] [--outcome O] [--waiting]
+  [--limit N] [--before C]` and `cloud job <id>` print tables, or the API's JSON with `--json`. The
+  machine token is never used for them, so a paired machine cannot read the rest of its organisation.
+  A refused key says to log in again, a missing scope names it.
+- The cloud HTTP client reads the public API's RFC 9457 problem answers (`code`, `detail`,
+  `request_id`) as well as the agent API's `error` / `message`.
 
 ## 0.5.0 (2026-09-28)
 

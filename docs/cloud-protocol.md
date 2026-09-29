@@ -1,6 +1,6 @@
 # Skillhook Cloud protocol
 
-The messages between a machine and Skillhook Cloud, as zod schemas in `src/cloud/protocol.ts`, exported as `@meterapp/skillhook/protocol` (no Node built-ins, so the cloud can import it in any runtime). `PROTOCOL_VERSION` is 1; the cloud answers `426 upgrade_required` with `min_protocol_version` to a machine that is too old, and keeps accepting older versions within its supported range.
+The messages between a machine and Skillhook Cloud, as zod schemas in `src/cloud/protocol.ts`, exported as `@meterapp/skillhook/protocol` (no Node built-ins, so the cloud can import it in any runtime). `PROTOCOL_VERSION` is 1; the cloud answers `426 upgrade_required` with `min_protocol_version` to a machine that is too old, and keeps accepting older versions within its supported range. The cloud's public API (`/api/v1`, organisation API keys), which `skillhook cloud login|machines|jobs|job` read, is the cloud's own and not part of this protocol; skillhook parses its answers loosely ([cloud.md](cloud.md#reading-the-fleet-with-an-api-key)).
 
 ## Transport
 

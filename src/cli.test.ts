@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createServer } from "node:http";
@@ -659,6 +659,109 @@ describe("cli", () => {
       expect(String(refused.json().error)).toContain("pair it again");
     } finally {
       await server.close();
+      await fake.close();
+    }
+  });
+
+  it("reads the organisation's fleet with an API key, never with the machine token, and never prints the key", async () => {
+    const { FakeCloud } = await import("./test-support/fake-cloud.js");
+    const fake = await FakeCloud.start();
+    const home = tempHome("skillhook-cli-fleet-");
+    const at = ["--dir", home.home];
+    try {
+      const env = { SKILLHOOK_CLOUD_URL: fake.url, SKILLHOOK_NO_UPDATE_CHECK: "1" };
+      writeEnv(home, { SKILLHOOK_CLOUD_TOKEN: fake.token }); // a paired machine: its token must not read the organisation
+      const none = io(env);
+      expect(await main(["cloud", "machines", ...at, "--json"], none.cli)).toBe(1);
+      expect(String(none.json().error)).toContain("skillhook cloud login");
+      const usage = io(env);
+      expect(await main(["cloud", "login", ...at], usage.cli)).toBe(2);
+      const machineToken = io(env);
+      expect(await main(["cloud", "login", "--key", fake.token, ...at], machineToken.cli)).toBe(2);
+      expect(machineToken.err()).toContain("not an organisation API key");
+      const wrong = io(env);
+      expect(await main(["cloud", "login", "--key", "shc_placeholder-unknown-key", ...at, "--json"], wrong.cli)).toBe(1);
+      expect(String(wrong.json().error)).toMatch(/refused the API key \(invalid_key: The API key is unknown, revoked or expired\. \(request req_\d+\)\)\. Log in with a valid one: skillhook cloud login/);
+      expect(readFileSync(home.envFile, "utf8")).not.toContain("SKILLHOOK_CLOUD_API_KEY");
+
+      // Checked with /me, kept in .env (mode 600), never printed; from the flag or from stdin.
+      const login = io(env);
+      expect(await main(["cloud", "login", "--key", fake.apiKey, ...at], login.cli)).toBe(0);
+      expect(login.out()).toContain(`Logged in to ${fake.url} as Fake Org: key "laptop" (fleet:read), kept in ${home.envFile} as SKILLHOOK_CLOUD_API_KEY.`);
+      const piped = io(env);
+      piped.cli.stdin = async () => `${fake.apiKey}\n`;
+      expect(await main(["cloud", "login", "--key", "-", ...at, "--json"], piped.cli)).toBe(0);
+      expect(piped.json()).toMatchObject({ ok: true, url: fake.url, organisation: { name: "Fake Org" }, key: { name: "laptop", scopes: ["fleet:read"] }, role: "viewer" });
+      for (const output of [login.out(), login.err(), piped.out(), piped.err()]) expect(output).not.toContain(fake.apiKey);
+      expect(readFileSync(home.envFile, "utf8")).toContain(`SKILLHOOK_CLOUD_API_KEY=${fake.apiKey}`);
+      expect(statSync(home.envFile).mode & 0o777).toBe(0o600);
+
+      const machines = io(env);
+      expect(await main(["cloud", "machines", ...at], machines.cli)).toBe(0);
+      expect(machines.out()).toMatch(/machine\s+status\s+mode\s+version\s+last seen/);
+      expect(machines.out()).toMatch(/mac-mini\s+online\s+control\s+0\.6\.0\s+\d+s ago/);
+      expect(machines.out()).toMatch(/build-box\s+offline\s+observe\s+0\.5\.0\s+3d ago/);
+      const machinesJson = io(env);
+      expect(await main(["cloud", "machines", ...at, "--json"], machinesJson.cli)).toBe(0);
+      expect(machinesJson.json()).toEqual({ machines: fake.machines });
+
+      // Filters become the query; machine names instead of ids; a waiting job shows its question.
+      const waiting = io(env);
+      expect(await main(["cloud", "jobs", "--waiting", "--machine", "mac-mini", "--limit", "5", ...at], waiting.cli)).toBe(0);
+      expect(fake.apiRequests.map((r) => r.path)).toContain("/api/v1/jobs?machine=mac-mini&waiting=1&limit=5");
+      expect(waiting.out()).toMatch(/20260929T101500Z-a1b2c3\s+mac-mini\s+triage\s+running\s+waiting\s+\d+m ago\s+\? Deploy the fix to production\?/);
+      const done = io(env);
+      expect(await main(["cloud", "jobs", "--status", "succeeded", "--outcome", "completed", ...at, "--json"], done.cli)).toBe(0);
+      expect(done.json()).toEqual({ jobs: [fake.jobs[1]], next_before: expect.any(String) });
+      for (const args of [["--status", "done"], ["--outcome", "great"], ["--limit", "500"]]) expect(await main(["cloud", "jobs", ...args, ...at], io(env).cli)).toBe(2);
+
+      const job = io(env);
+      expect(await main(["cloud", "job", "20260929T090000Z-d4e5f6", ...at], job.cli)).toBe(0);
+      expect(job.out()).toContain("20260929T090000Z-d4e5f6  nightly-report  succeeded  (completed)");
+      expect(job.out()).toContain("  machine:   build-box");
+      expect(job.out()).toContain("  outcome:   completed: Report sent to #ops");
+      expect(job.out()).toContain("result:\nReport sent to #ops\nThree incidents, all resolved.");
+      const asking = io(env);
+      expect(await main(["cloud", "job", "c1f4e0aa-0b1c-4d2e-8f3a-9b8c7d6e5f01", ...at], asking.cli)).toBe(0);
+      expect(asking.out()).toContain("WAITING FOR A PERSON");
+      expect(asking.out()).toContain("  question:  Deploy the fix to production? [yes | no]  (answer it on the dashboard)");
+      const jobJson = io(env);
+      expect(await main(["cloud", "job", "20260929T090000Z-d4e5f6", ...at, "--json"], jobJson.cli)).toBe(0);
+      expect(jobJson.json()).toEqual({ job: { ...fake.jobs[1], timeline: [] } });
+      const unknown = io(env);
+      expect(await main(["cloud", "job", "nope", ...at, "--json"], unknown.cli)).toBe(1);
+      expect(String(unknown.json().error)).toContain('unknown_job: No job "nope" in Fake Org.');
+      expect(await main(["cloud", "job", ...at], io(env).cli)).toBe(2);
+
+      // A key without the scope: the error names it.
+      fake.apiMode = "forbidden";
+      const forbidden = io(env);
+      expect(await main(["cloud", "machines", ...at, "--json"], forbidden.cli)).toBe(1);
+      expect(String(forbidden.json().error)).toContain("it needs the fleet:read scope");
+      fake.apiMode = "ok";
+      expect(fake.apiRequests.length).toBeGreaterThan(5);
+      expect(fake.apiRequests.every((r) => r.method === "GET" && r.authorization !== `Bearer ${fake.token}`)).toBe(true);
+      expect(fake.requests).toEqual([]); // no sync, no pairing: only the reads a person asked for
+
+      // The environment wins (CI); logout forgets the file's copy and leaves the pairing alone.
+      const ci = io({ ...env, SKILLHOOK_CLOUD_API_KEY: "shc_placeholder-revoked-key" });
+      expect(await main(["cloud", "machines", ...at], ci.cli)).toBe(1);
+      expect(ci.err()).toContain("refused the API key");
+      const killed = io({ ...env, SKILLHOOK_NO_CLOUD: "1" });
+      expect(await main(["cloud", "jobs", ...at], killed.cli)).toBe(1);
+      expect(killed.err()).toContain("SKILLHOOK_NO_CLOUD is set");
+      const insecure = io({ ...env, SKILLHOOK_CLOUD_URL: "http://cloud.example.invalid" });
+      expect(await main(["cloud", "machines", ...at], insecure.cli)).toBe(1);
+      expect(insecure.err()).toContain("must use https");
+      const logout = io(env);
+      expect(await main(["cloud", "logout", ...at, "--json"], logout.cli)).toBe(0);
+      expect(logout.json()).toEqual({ ok: true, removed: true, env_var_set: false });
+      expect(readFileSync(home.envFile, "utf8")).not.toContain("SKILLHOOK_CLOUD_API_KEY");
+      expect(readFileSync(home.envFile, "utf8")).toContain(`SKILLHOOK_CLOUD_TOKEN=${fake.token}`);
+      const again = io(env);
+      expect(await main(["cloud", "logout", ...at], again.cli)).toBe(0);
+      expect(again.out()).toContain("No API key was kept");
+    } finally {
       await fake.close();
     }
   });

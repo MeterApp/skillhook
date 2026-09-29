@@ -1,10 +1,27 @@
-// A stand-in for Skillhook Cloud's agent API on a local port: pairs machines with a known code, answers syncs from a
+// A stand-in for Skillhook Cloud on a local port. The agent API: pairs machines with a known code, answers syncs from a
 // script (commands and ingress items to hand out, an error mode), takes issue reports, validates every body with the
-// protocol schemas and keeps what it received for assertions.
+// protocol schemas and keeps what it received for assertions. The public API (`/api/v1`): answers the reads of the
+// API-key commands for one organisation API key, with RFC 9457 problems like the real one.
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { CommandResultSchema, IssueReportRequestSchema, PairRequestSchema, SyncRequestSchema, type Command, type CommandResult, type Hints, type IngressAck, type IngressItem, type IssueReportRequest, type PairRequest, type SyncRequest } from "../cloud/protocol.js";
 
 export type FakeCloudMode = "ok" | "500" | "401" | "403" | "413" | "426" | "429" | "hang" | "garbage";
+
+const MINUTE = 60_000;
+
+/** Two machines and two jobs as `/api/v1` returns them (one job waits for a person). */
+function fleet(url: string) {
+  const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+  const machines = [
+    { id: "7d0c7a52-1c7e-4a39-9f1e-0d6a4b0c1a01", name: "mac-mini", hostname: "mac-mini.local", os: "darwin", arch: "arm64", skillhook_version: "0.6.0", status: "online", mode: "control", link_state: "connected", last_seen_at: ago(5_000), dashboard_url: `${url}/o/fake/machines/7d0c7a52-1c7e-4a39-9f1e-0d6a4b0c1a01` },
+    { id: "3b9e2f11-8a4d-4c2e-b6f0-5e7d9c8b2a02", name: "build-box", hostname: "build-box", os: "linux", arch: "x64", skillhook_version: "0.5.0", status: "offline", mode: "observe", link_state: "disconnected", last_seen_at: ago(3 * 24 * 60 * MINUTE), dashboard_url: `${url}/o/fake/machines/3b9e2f11-8a4d-4c2e-b6f0-5e7d9c8b2a02` },
+  ];
+  const jobs = [
+    { id: "c1f4e0aa-0b1c-4d2e-8f3a-9b8c7d6e5f01", local_id: "20260929T101500Z-a1b2c3", machine_id: machines[0]?.id, skill: "triage", status: "running", outcome: null, trigger: "webhook", runner: "claude", model: "sonnet", created_at: ago(2 * MINUTE), duration_ms: null, cost_usd: null, waiting_for_human: true, waiting_since: ago(MINUTE), question: { id: "q1", text: "Deploy the fix to production?", options: ["yes", "no"], asked_at: ago(MINUTE) }, answer: null, progress: { state: "waiting_human", message: "Asked whether to deploy" }, response: null, failure: null, result: null, dashboard_url: `${url}/o/fake/jobs/c1f4e0aa-0b1c-4d2e-8f3a-9b8c7d6e5f01` },
+    { id: "d2a5f1bb-1c2d-4e3f-9a4b-0c9d8e7f6a02", local_id: "20260929T090000Z-d4e5f6", machine_id: machines[1]?.id, skill: "nightly-report", status: "succeeded", outcome: "completed", trigger: "schedule", runner: "codex", model: null, created_at: ago(90 * MINUTE), duration_ms: 42_000, cost_usd: 0.0123, waiting_for_human: false, waiting_since: null, question: null, answer: null, progress: null, response: { outcome: "completed", summary: "Report sent to #ops" }, failure: null, result: "Report sent to #ops\nThree incidents, all resolved.", dashboard_url: `${url}/o/fake/jobs/d2a5f1bb-1c2d-4e3f-9a4b-0c9d8e7f6a02` },
+  ];
+  return { machines, jobs };
+}
 
 async function readJson(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
@@ -39,6 +56,14 @@ export class FakeCloud {
   readonly issues: IssueReportRequest[] = [];
   /** `404` answers like a cloud without the route (an HTML page). */
   issuesMode: "ok" | "401" | "403" | "404" | "413" | "429" | "500" | "garbage" = "ok";
+  /** The organisation API key `/api/v1` accepts (a placeholder: nothing here is a real credential). */
+  readonly apiKey = "shc_placeholder-organisation-key-0123456789abc";
+  /** Every `/api/v1` request: method, path with its query, and the bearer it carried. */
+  readonly apiRequests: { method: string; path: string; authorization: string | undefined }[] = [];
+  /** `forbidden` answers every `/api/v1` read with 403, as for a key without the scope. */
+  apiMode: "ok" | "forbidden" = "ok";
+  machines: Record<string, unknown>[] = [];
+  jobs: Record<string, unknown>[] = [];
   private readonly commands: Command[] = [];
   private readonly ingress: IngressItem[] = [];
   private readonly waiters: { predicate: () => boolean; resolve: () => void }[] = [];
@@ -51,6 +76,7 @@ export class FakeCloud {
     await new Promise<void>((resolve) => cloud.server.listen(0, "127.0.0.1", () => resolve()));
     const address = cloud.server.address();
     cloud.url = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+    ({ machines: cloud.machines, jobs: cloud.jobs } = fleet(cloud.url));
     return cloud;
   }
 
@@ -161,6 +187,7 @@ export class FakeCloud {
       const number = 40 + this.issues.length;
       return this.reply(res, 200, { ok: true, issue_id: `iss_${number}`, number, url: `${this.url}/o/fake/issues/${number}`, acknowledged: Boolean(parsed.data.contact_email) });
     }
+    if (url.pathname.startsWith("/api/v1/")) return this.handleApi(req, res, url);
     if (req.method === "POST" && url.pathname === "/api/agent/sync") {
       this.authHeaders.push(req.headers.authorization);
       if (req.headers.authorization !== `Bearer ${this.token}`) return this.reply(res, 401, { ok: false, error: "invalid_token", message: "bad token" });
@@ -223,5 +250,37 @@ export class FakeCloud {
       return this.reply(res, 200, body);
     }
     this.reply(res, 404, { ok: false, error: "not_found", message: "no such route" });
+  }
+
+  /** RFC 9457 problem details, as the public API answers errors. */
+  private problem(res: import("node:http").ServerResponse, status: number, code: string, detail: string, headers: Record<string, string> = {}): void {
+    this.reply(res, status, { type: `${this.url}/docs/api#${code}`, title: code.replaceAll("_", " "), status, code, detail, request_id: `req_${this.apiRequests.length}` }, { "content-type": "application/problem+json", ...headers });
+  }
+
+  private handleApi(req: IncomingMessage, res: import("node:http").ServerResponse, url: URL): void {
+    this.apiRequests.push({ method: req.method ?? "GET", path: `${url.pathname}${url.search}`, authorization: req.headers.authorization });
+    this.notify();
+    if (!req.headers.authorization) return this.problem(res, 401, "unauthorized", "Send an organisation API key as Authorization: Bearer shc_…", { "www-authenticate": `Bearer realm="Skillhook Cloud"` });
+    if (req.headers.authorization !== `Bearer ${this.apiKey}`) return this.problem(res, 401, "invalid_key", "The API key is unknown, revoked or expired.");
+    if (this.apiMode === "forbidden") return this.problem(res, 403, "forbidden", "This key may not read the fleet.");
+    if (req.method !== "GET") return this.problem(res, 405, "method_not_allowed", "The fake cloud only answers reads.");
+    const path = url.pathname.slice("/api/v1".length);
+    if (path === "/me") return this.reply(res, 200, { organisation: { id: "org_fake", slug: "fake", name: "Fake Org" }, key: { id: "key_1", name: "laptop", scopes: ["fleet:read"] }, role: "viewer" });
+    if (path === "/machines") return this.reply(res, 200, { machines: this.machines });
+    if (path === "/jobs") {
+      const q = url.searchParams;
+      const machine = this.machines.find((m) => m.id === q.get("machine") || m.name === q.get("machine"));
+      if (q.get("machine") && !machine) return this.problem(res, 404, "unknown_machine", `No machine "${q.get("machine")}" in Fake Org.`);
+      const jobs = this.jobs.filter((j) => (!machine || j.machine_id === machine.id) && (!q.get("skill") || j.skill === q.get("skill")) && (!q.get("status") || j.status === q.get("status")) && (!q.get("outcome") || j.outcome === q.get("outcome")) && (q.get("waiting") !== "1" || j.waiting_for_human === true));
+      const limited = jobs.slice(0, Number(q.get("limit") ?? 20));
+      return this.reply(res, 200, { jobs: limited, next_before: limited.length ? `cursor-after-${String(limited[limited.length - 1]?.id)}` : null });
+    }
+    if (path.startsWith("/jobs/")) {
+      const ref = decodeURIComponent(path.slice("/jobs/".length));
+      const job = this.jobs.find((j) => j.id === ref || j.local_id === ref);
+      if (!job) return this.problem(res, 404, "unknown_job", `No job "${ref}" in Fake Org.`);
+      return this.reply(res, 200, { job: { ...job, timeline: [] } });
+    }
+    this.problem(res, 404, "not_found", "No such API route.");
   }
 }
