@@ -74,8 +74,8 @@ export function storedApiKey(paths: Paths, env: NodeJS.ProcessEnv): string | und
 export interface FleetClient {
   /** The cloud the requests go to. */
   url: string;
-  /** `GET /api/v1<path>`: the parsed answer and the answer as the cloud sent it (what `--json` prints). */
-  get<T>(path: string, schema: z.ZodType<T>): Promise<{ data: T; raw: unknown }>;
+  /** `GET /api/v1<path>`: the parsed answer and the answer as the cloud sent it (what `--json` prints); `timeoutMs` defaults to 20 s. */
+  get<T>(path: string, schema: z.ZodType<T>, options?: { timeoutMs?: number }): Promise<{ data: T; raw: unknown }>;
   /** `POST /api/v1<path>` with a JSON body; `timeoutMs` for calls that wait for a machine (default 20 s). */
   post<T>(path: string, body: unknown, schema: z.ZodType<T>, options?: { timeoutMs?: number }): Promise<{ data: T; raw: unknown; status: number }>;
 }
@@ -106,7 +106,7 @@ export function fleetClient(env: NodeJS.ProcessEnv, cloud: { url?: string }, key
   };
   return {
     url,
-    get: (path, schema) => send("GET", path, schema, undefined, 20_000),
+    get: (path, schema, getOptions = {}) => send("GET", path, schema, undefined, getOptions.timeoutMs ?? 20_000),
     post: (path, body, schema, postOptions = {}) => send("POST", path, schema, body ?? {}, postOptions.timeoutMs ?? 20_000),
   };
 }

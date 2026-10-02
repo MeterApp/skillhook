@@ -38,9 +38,9 @@ export type Catalog = z.infer<typeof CatalogSchema>;
 const ResultSchema = z.record(z.string(), z.unknown());
 
 /** The catalogue as this key sees it; a cloud from before the catalogue says so. */
-export async function fetchCatalog(client: FleetClient): Promise<Catalog> {
+export async function fetchCatalog(client: FleetClient, options: { timeoutMs?: number } = {}): Promise<Catalog> {
   try {
-    return (await client.get("/tools", CatalogSchema)).data;
+    return (await client.get("/tools", CatalogSchema, options)).data;
   } catch (error) {
     if (error instanceof CloudApiError && error.status === 404) throw new CloudApiError(`${client.url} has no tool catalogue (GET /api/v1/tools): it runs an older Skillhook Cloud. skillhook cloud machines, jobs and job still work.`, 404, error.code);
     throw error;

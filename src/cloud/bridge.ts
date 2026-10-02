@@ -38,11 +38,14 @@ const LOGIN_HINT = "The person logs in once, in a terminal: `skillhook cloud log
 
 export type CloudConnection = { client: FleetClient; catalog: Catalog } | { problem: string };
 
+/** How long the server waits for the catalogue when it starts: an MCP client waits for the server meanwhile. */
+const CATALOG_TIMEOUT_MS = 8_000;
+
 /** The key and URL this home keeps, and the catalogue the cloud offers that key; or why there is none. */
 export async function connectCloud(paths: Paths, env: NodeJS.ProcessEnv): Promise<CloudConnection> {
   try {
     const client = fleetClient(env, loadConfig(paths).cloud, storedApiKey(paths, env));
-    return { client, catalog: await fetchCatalog(client) };
+    return { client, catalog: await fetchCatalog(client, { timeoutMs: CATALOG_TIMEOUT_MS }) };
   } catch (error) {
     return { problem: errorMessage(error) };
   }
