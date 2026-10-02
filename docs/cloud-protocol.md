@@ -1,6 +1,6 @@
 # Skillhook Cloud protocol
 
-The messages between a machine and Skillhook Cloud, as zod schemas in `src/cloud/protocol.ts`, exported as `@meterapp/skillhook/protocol` (no Node built-ins, so the cloud can import it in any runtime). `PROTOCOL_VERSION` is 1; the cloud answers `426 upgrade_required` with `min_protocol_version` to a machine that is too old, and keeps accepting older versions within its supported range. The cloud's public API (`/api/v1`, organisation API keys), which `skillhook cloud login|machines|jobs|job` read, is the cloud's own and not part of this protocol; skillhook parses its answers loosely ([cloud.md](cloud.md#reading-the-fleet-with-an-api-key)).
+The messages between a machine and Skillhook Cloud, as zod schemas in `src/cloud/protocol.ts`, exported as `@meterapp/skillhook/protocol` (no Node built-ins, so the cloud can import it in any runtime). `PROTOCOL_VERSION` is 1; the cloud answers `426 upgrade_required` with `min_protocol_version` to a machine that is too old, and keeps accepting older versions within its supported range. The cloud's public API (`/api/v1`, organisation API keys), which `skillhook cloud login|overview|machines|jobs|job|tools|<tool>|secret` and `skillhook mcp --cloud` use, is the cloud's own and not part of this protocol; skillhook parses its answers loosely and takes its tools from the cloud's catalogue (`GET /api/v1/tools`) at run time ([cloud.md](cloud.md#the-whole-organisation-with-an-api-key)).
 
 ## Transport
 
@@ -52,8 +52,8 @@ Errors are `SyncError` `{ok: false, error, message?, retry_after_ms?, min_protoc
 - `skill.run`, `skill.test`, `delivery.replay`, `job.replay`, `schedule.run`: `{accepted: true, job_id, …}` (a replay whose filters do not match: `{accepted: false, skipped: true, reason}`); the job itself is followed through its events.
 - `job.answer`: `{job_id, delivered: live|resumed|recorded, answer, resume_job_id}`.
 - `config.patch`: `{applied, restart_required_keys, pending_restart}`.
-- `secret.generate`: `{secret_env, existed, generated}` with the value in the result's `sealed` field only, `sensitive: true`.
-- `job.artifact`: `{job_id, name, bytes, text, truncated}` inline, or `{job_id, name, uploaded: true, bytes, sha256, chunks}`.
+- `secret.generate`: `{secret_env, existed, generated}` with the value in the result's `sealed` field only, `sensitive: true`. It and `secret.set` answer `denied_by_policy` for the machine's own credentials (`SKILLHOOK_CLOUD_*`, `SKILLHOOK_ADMIN_TOKEN`) by any name.
+- `job.artifact`: `{job_id, name, bytes, text, truncated}` inline, or `{job_id, name, uploaded: true, bytes, sha256, chunks}`. While webhook bodies may not leave the machine (`cloud.upload_payloads: false`, or the hint `upload_payloads: false`), `payload`, `event` and `prompt` answer `denied_by_policy`, and `job.get` leaves them out of `artifacts` and names them in `artifacts_withheld`.
 - `service.restart`: `{restarting: true, when, wait_seconds, running}`; the restart begins once a sync response acknowledges this result (or 15 seconds later).
 
 ## Ordering and idempotency

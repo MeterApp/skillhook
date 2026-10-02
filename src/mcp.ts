@@ -13,7 +13,7 @@ import { listExamples } from "./examples.js";
 import { JOB_ARTIFACTS, JOB_STATUSES, type JobArtifact, type JobStatus } from "./jobs.js";
 import { TRIGGERS, type Trigger } from "./payload.js";
 import { JOB_OUTCOMES, type JobOutcome } from "./response.js";
-import { addExampleSkill, AnswerError, answerJob, createOps, createSkill, generateSecretFor, initProject, linkProject, listProjects, planReplay, postToServer, publicJob, resolveBaseUrl, runAdhocLocally, runJobLocally, runSkillLocally, sendSignedWebhook, setSecret, triggerViaServer, unlinkProject, webhookUrl, type LinkResult, type Ops } from "./ops.js";
+import { addExampleSkill, AnswerError, answerJob, createOps, createSkill, generateSecretFor, initProject, linkProject, listProjects, planReplay, postToServer, publicJob, resolveBaseUrl, resolveSecretName, runAdhocLocally, runJobLocally, runSkillLocally, sendSignedWebhook, setSecret, triggerViaServer, unlinkProject, webhookUrl, type LinkResult, type Ops } from "./ops.js";
 import { readProgress } from "./progress.js";
 import { resolveRunSettings } from "./run.js";
 import type { Paths } from "./paths.js";
@@ -28,6 +28,7 @@ import { applyUpdate, updateStatusFromCache } from "./update.js";
 import { errorMessage } from "./util.js";
 import { VERSION } from "./version.js";
 import { ISSUE_KINDS, ISSUE_SEVERITIES } from "./cloud/protocol.js";
+import { CLOUD_ENV_PREFIX } from "./cloud/config.js";
 
 export const MCP_INSTRUCTIONS = `skillhook turns this machine into a webhook endpoint that runs Agent Skills (SKILL.md files) with Claude Code or Codex.
 Typical flow: skillhook_status → create_skill (or add_example) → set_secret/generate_secret → run_skill to test locally → get_webhook_urls to hand the URL to the sender (Granola, Sentry, GitHub, Zapier…).
@@ -37,7 +38,8 @@ A \`schedule:\` key (cron expression, optional timezone/catch_up/overlap) on any
 Jobs are directories under <home>/jobs/<id> with payload.json, prompt.md, stdout.log, result.md and, when the agent reported one, response.json. A job's \`status\` says how the process ended; its \`outcome\` (completed, partial, needs_human, nothing_to_do, failed, unknown) says whether the task was done, as reported by the agent through response.json or a structured answer (\`response: { mode: structured }\` in the skill).
 Every webhook the server received, including rejected, filtered and duplicate ones, is in the delivery log: list_deliveries and get_delivery show what arrived and why it did not run; replay_delivery (or replay_job) runs it again through the skill as it is now.
 While it runs, an agent reports progress and can ask a person a question through the job API (the job_* tools of \`skillhook mcp --job\`, or \`skillhook job …\`); such jobs show \`progress\`, \`question\` and \`answer\`. list_jobs with waiting: true lists what waits for a person (an open question, or a finished job with outcome needs_human); answer_job delivers the answer to the waiting agent, or starts a new job (trigger \`resume\`) that continues the agent's session with it.
-get_health, get_runners and get_stats answer whether the CLIs, their MCP servers and the skills are healthy and how the jobs went; get_config / update_config / restart_server change the running server. cloud_status tells whether the machine is paired with Skillhook Cloud; pairing itself is only done by the person in a terminal (\`skillhook cloud connect --code …\`), never by an agent. cloud_report_issue sends a problem report to the Skillhook team from a paired machine, when the person asks for one.`;
+get_health, get_runners and get_stats answer whether the CLIs, their MCP servers and the skills are healthy and how the jobs went; get_config / update_config / restart_server change the running server. cloud_status tells whether the machine is paired with Skillhook Cloud and whether an organisation API key is kept here; pairing itself is only done by the person in a terminal (\`skillhook cloud connect --code …\`), never by an agent. cloud_report_issue sends a problem report to the Skillhook team from a paired machine, when the person asks for one.
+These tools are this machine's own skillhook. The whole organisation (every machine's jobs, deliveries, alerts, health and stats, answering agents, running skills, hosted URLs: what the Skillhook Cloud dashboard shows and does) is the separate skillhook-cloud MCP server (\`skillhook mcp --cloud\`, part of the skillhook plugin), once the person ran \`skillhook cloud login\`.`;
 
 type ToolResult = { content: { type: "text"; text: string }[]; structuredContent?: Record<string, unknown>; isError?: boolean };
 
@@ -48,6 +50,17 @@ function ok(data: Record<string, unknown>, summary?: string): ToolResult {
 
 function fail(error: unknown): ToolResult {
   return { content: [{ type: "text", text: `Error: ${errorMessage(error)}` }], isError: true };
+}
+
+/** Where the cloud link and the organisation API key go is the person's to set, in a terminal: an agent could send them elsewhere. */
+function refuseCloudSettings(keys: string[]): void {
+  const cloud = keys.filter((key) => key === "cloud" || key.startsWith("cloud."));
+  if (cloud.length) throw new Error(`${cloud.join(", ")}: Skillhook Cloud settings are changed by the person in a terminal (skillhook cloud connect, login, disconnect, skillhook config set), never by an agent`);
+}
+
+/** The Skillhook Cloud credentials (`SKILLHOOK_CLOUD_*`) are written by `cloud connect` and `cloud login` only. */
+function refuseCloudSecret(env: string): void {
+  if (env.startsWith(CLOUD_ENV_PREFIX)) throw new Error(`${env}: Skillhook Cloud credentials are written by skillhook cloud connect and login in a terminal, never by an agent`);
 }
 
 function wrap<T>(fn: (input: T) => Promise<ToolResult> | ToolResult) {
@@ -375,14 +388,20 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
   server.registerTool(
     "set_secret",
     { title: "Set secret", description: "Stores a secret in <home>/.env (mode 600). `name` is an ENV_VAR_NAME, a skill name (its secret_env) or \"admin\". Use it for provider signing secrets (Granola whsec_…, Sentry client secret, GitHub webhook secret) and for API keys a skill needs via `env:`.", inputSchema: z.object({ name: z.string(), value: z.string() }) },
-    wrap(async ({ name, value }) => ok({ ok: true, ...setSecret(ops(), name, value) })),
+    wrap(async ({ name, value }) => {
+      const o = ops();
+      refuseCloudSecret(resolveSecretName(o, name).env);
+      return ok({ ok: true, ...setSecret(o, name, value) });
+    }),
   );
 
   server.registerTool(
     "generate_secret",
     { title: "Generate secret", description: "Generates a random secret for a skill (or \"admin\") and returns it once. Existing secrets are kept unless force=true.", inputSchema: z.object({ name: z.string(), force: z.boolean().optional() }) },
     wrap(async ({ name, force }) => {
-      const result = generateSecretFor(ops(), name, { force });
+      const o = ops();
+      refuseCloudSecret(resolveSecretName(o, name).env);
+      const result = generateSecretFor(o, name, { force });
       return ok({ ok: true, env: result.env, secret: result.generated ?? null, existed: result.existed }, result.generated ? `Generated ${result.env} (shown once).` : `${result.env} already exists; pass force=true to rotate.`);
     }),
   );
@@ -444,7 +463,7 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
 
   server.registerTool(
     "cloud_status",
-    { title: "Skillhook Cloud status", description: "Whether this machine is paired with Skillhook Cloud (the opt-in dashboard for every machine's webhooks, jobs and health), its URL, machine id and mode (observe: the cloud can look; control: it can also run skills and change the configuration), whether the token is present (never the token itself) and the running server's link state (connected, degraded, disconnected with the reason, last sync, events waiting). Pairing is not a tool on purpose: the person runs `skillhook cloud connect --code <code from their dashboard>` in a terminal, so a code from an untrusted source can never hand this machine to someone else's account.", inputSchema: z.object({}) },
+    { title: "Skillhook Cloud status", description: "Whether this machine is paired with Skillhook Cloud (the opt-in dashboard for every machine's webhooks, jobs and health), its URL, machine id and mode (observe: the cloud can look; control: it can also run skills and change the configuration), whether the token is present (never the token itself), the running server's link state (connected, degraded, disconnected with the reason, last sync, events waiting) and whether an organisation API key is kept here for the fleet (api_key; the skillhook-cloud MCP server and `skillhook cloud overview` use it). Pairing is not a tool on purpose: the person runs `skillhook cloud connect --code <code from their dashboard>` in a terminal, so a code from an untrusted source can never hand this machine to someone else's account.", inputSchema: z.object({}) },
     wrap(async () => {
       const { cloudStatus } = await import("./cloud/pair.js");
       const status = await cloudStatus(paths, env);
@@ -544,6 +563,7 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
     { title: "Update config", description: "Change skillhook.json: `set` maps dotted keys to values ({\"concurrency\": 3, \"defaults.model\": \"sonnet\"}), `unset` lists dotted keys to remove. One validated write; an invalid result changes nothing. The running server re-reads the file at once and says which keys it applied live and which (host, port) wait for a restart (`restart_server`).", inputSchema: z.object({ set: z.record(z.string(), z.unknown()).optional(), unset: z.array(z.string()).optional() }) },
     wrap(async ({ set, unset }) => {
       if (!Object.keys(set ?? {}).length && !unset?.length) throw new Error("nothing to change: give set and/or unset");
+      refuseCloudSettings([...Object.keys(set ?? {}), ...(unset ?? [])]);
       const running = await findRunningServer(paths);
       if (running) {
         const response = await adminRequest<Record<string, unknown>>(running.baseUrl, loadSecrets(paths, env), "/config", { method: "PATCH", body: { set, unset } });

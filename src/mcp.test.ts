@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { JobStore } from "./jobs.js";
 import { buildMcpServer } from "./mcp.js";
@@ -29,6 +30,32 @@ describe("skillhook mcp", () => {
     for (const name of ["answer_job", "get_health", "get_runners", "get_stats", "get_config", "update_config", "restart_server", "check_update", "cloud_status", "cloud_disconnect", "cloud_report_issue", "test_skill", "replay_job", "list_deliveries"]) expect(tools).toContain(name);
     expect(tools).not.toContain("cloud_connect");
     expect((c.init.result as { instructions: string }).instructions).toContain("never by an agent");
+  });
+
+  it("never lets an agent change where the cloud link or the API key go, nor write their credentials", async () => {
+    const paths = tempHome("skillhook-mcp-");
+    const c = await client(paths);
+    for (const set of [{ "cloud.url": "https://attacker.example.invalid" }, { cloud: { url: "https://attacker.example.invalid" } }, { "cloud.enabled": true }]) {
+      const refused = await c.call("update_config", { set });
+      expect(refused).toMatchObject({ isError: true });
+      expect(refused.text).toContain("Skillhook Cloud settings are changed by the person in a terminal");
+    }
+    expect((await c.call("update_config", { unset: ["cloud.url"] })).isError).toBe(true);
+    for (const name of ["SKILLHOOK_CLOUD_API_URL", "SKILLHOOK_CLOUD_API_KEY", "SKILLHOOK_CLOUD_TOKEN"]) {
+      const set = await c.call("set_secret", { name, value: "https://attacker.example.invalid" });
+      expect(set).toMatchObject({ isError: true });
+      expect(set.text).toContain(`${name}: Skillhook Cloud credentials are written by skillhook cloud connect and login`);
+      expect((await c.call("generate_secret", { name, force: true })).isError).toBe(true);
+    }
+    // Nor through a skill whose secret would be one of them: its secret is generated when the skill is created.
+    const sneaky = await c.call("create_skill", { name: "sneaky", description: "Points the key elsewhere.", instructions: "Say hi.", secret_env: "SKILLHOOK_CLOUD_API_URL" });
+    expect(sneaky).toMatchObject({ isError: true });
+    expect(sneaky.text).toContain("skillhook's own credentials");
+    expect(existsSync(path.join(paths.skillsDir, "sneaky"))).toBe(false);
+    expect(existsSync(paths.envFile) ? readFileSync(paths.envFile, "utf8") : "").not.toContain("SKILLHOOK_CLOUD_");
+    // Everything else still works.
+    expect((await c.call("update_config", { set: { concurrency: 3 } })).isError).toBe(false);
+    expect((await c.call("set_secret", { name: "GRANOLA_SECRET", value: "placeholder-value" })).isError).toBe(false);
   });
 
   it("reports and ends the Skillhook Cloud pairing, never showing the token", async () => {

@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../config.js";
 import { loadSecrets, readEnvFile } from "../env.js";
@@ -12,7 +13,7 @@ import type { Command } from "./protocol.js";
 
 const VALUE = "placeholder-env-value-1234";
 
-function deps(policy: CloudPolicy, control: CommandDeps["control"] = {}) {
+function deps(policy: CloudPolicy, control: CommandDeps["control"] = {}, uploads: { payloads?: boolean; artifacts?: boolean } = {}) {
   const paths = tempHome("skillhook-commands-");
   writeEnv(paths, { SOME_VALUE: VALUE });
   const config = loadConfig(paths);
@@ -28,11 +29,11 @@ function deps(policy: CloudPolicy, control: CommandDeps["control"] = {}) {
     policy: () => policy,
     ledger,
     snapshot: () => ({ skills: [], skill_errors: [], projects: [], schedules: [], config: {} }),
-    uploadPayloads: () => true,
-    uploadArtifacts: () => false,
+    uploadPayloads: () => uploads.payloads ?? true,
+    uploadArtifacts: () => uploads.artifacts ?? false,
     control,
   };
-  return { d, ledger, dispatcher: createCommandDispatcher(d) };
+  return { d, ledger, dispatcher: createCommandDispatcher(d), store: d.store };
 }
 
 function command(partial: Partial<Command> & Pick<Command, "id" | "type">): Command {
@@ -81,5 +82,21 @@ describe("command dispatcher", () => {
     expect(await dispatcher.run({ id: "e", type: "rm.rf" as Command["type"], issued_at: new Date().toISOString() })).toMatchObject({ ok: false, error: { code: "denied_by_policy" } });
     const artifacts = await dispatcher.run(command({ id: "f", type: "job.artifact", args: { id: "j1", name: "stdout" } }));
     expect(artifacts).toMatchObject({ ok: false, error: { code: "denied_by_policy", message: expect.stringContaining("upload_artifacts") } });
+  });
+
+  it("keeps the artifacts that hold the webhook body on the machine when payloads may not leave it", async () => {
+    const { dispatcher, store } = deps({ mode: "observe", allow_commands: [], deny_commands: [] }, {}, { payloads: false, artifacts: true });
+    const event = { id: "e1", skill: "hello", trigger: "webhook" as const, received_at: new Date().toISOString(), method: "POST", path: "/hooks/hello", query: {}, headers: {}, source_ip: "1", content_type: "application/json", content_length: 22, body_kind: "json" as const, payload: { card: "4242-private" } };
+    const job = store.create({ skill: "hello", trigger: "webhook", runner: "claude", source: { ip: "1", method: "POST", path: "/hooks/hello", content_type: "application/json" }, event });
+    writeFileSync(store.pathsFor(job.id).prompt, 'Payload:\n{"card":"4242-private"}\n');
+    writeFileSync(store.pathsFor(job.id).stdout, "done\n");
+    for (const name of ["payload", "event", "prompt"]) {
+      const refused = await dispatcher.run(command({ id: `a-${name}`, type: "job.artifact", args: { id: job.id, name } }));
+      expect(refused).toMatchObject({ ok: false, error: { code: "denied_by_policy", message: `${name} holds the webhook body, and webhook bodies stay on this machine (cloud.upload_payloads is false here, or the organisation keeps none)` } });
+    }
+    expect(await dispatcher.run(command({ id: "a-stdout", type: "job.artifact", args: { id: job.id, name: "stdout" } }))).toMatchObject({ ok: true, result: { text: "done\n" } });
+    const got = await dispatcher.run(command({ id: "g", type: "job.get", args: { id: job.id, include: ["stdout", "prompt", "payload"] } }));
+    expect(got).toMatchObject({ ok: true, result: { artifacts: { stdout: "done\n" }, artifacts_withheld: "prompt, payload: webhook bodies stay on this machine (cloud.upload_payloads is false here, or the organisation keeps none)" } });
+    expect(JSON.stringify(got)).not.toContain("4242-private");
   });
 });

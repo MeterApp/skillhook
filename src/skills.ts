@@ -4,7 +4,7 @@ import { z } from "zod";
 import { parseFrontmatter } from "./frontmatter.js";
 import { ClaudePermissionModeSchema, CodexSandboxSchema, CommandSpecSchema, RunnerNameSchema, type RunnerName } from "./config.js";
 import { FallbackSchema, RetrySchema } from "./runners/failure.js";
-import { defaultSecretEnvFor } from "./env.js";
+import { defaultSecretEnvFor, isSkillhookCredential } from "./env.js";
 import { isValidTimeZone, parseCron, type CronSpec } from "./schedule.js";
 import { errorMessage, isDirectory, isValidSkillName } from "./util.js";
 
@@ -34,7 +34,11 @@ export const ConditionSchema = z
   });
 export type Condition = z.infer<typeof ConditionSchema>;
 
-const secretEnv = z.string().regex(/^[A-Z_][A-Z0-9_]*$/, "secret_env must be an ENV_VAR_NAME").optional();
+const secretEnv = z
+  .string()
+  .regex(/^[A-Z_][A-Z0-9_]*$/, "secret_env must be an ENV_VAR_NAME")
+  .refine((name) => !isSkillhookCredential(name), "secret_env cannot be one of skillhook's own credentials (SKILLHOOK_ADMIN_TOKEN, SKILLHOOK_CLOUD_*): generating or setting the skill's secret would overwrite it")
+  .optional();
 const allowIps = z.array(z.string()).optional();
 const tolerance = z.number().int().positive().optional();
 
