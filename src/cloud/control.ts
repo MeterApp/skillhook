@@ -7,12 +7,12 @@ import path from "node:path";
 import { AnswerError, answerJob } from "../answer.js";
 import { ConfigError, updateConfig, type Config, type ConfigRef } from "../config.js";
 import type { DeliveryLog } from "../delivery-log.js";
-import type { Secrets } from "../env.js";
+import { isSkillhookCredential, type Secrets } from "../env.js";
 import type { Events } from "../events.js";
 import type { JobStore } from "../jobs.js";
 import type { Logger } from "../logger.js";
 import { createAdhocJob, createManualJob } from "../manual.js";
-import { generateSecretFor, setSecret, type Ops } from "../ops.js";
+import { generateSecretFor, resolveSecretName, setSecret, type Ops } from "../ops.js";
 import type { Paths } from "../paths.js";
 import type { JobQueue } from "../queue.js";
 import type { SkillRegistry } from "../registry.js";
@@ -24,7 +24,7 @@ import { parseSkillDocument, SkillError } from "../skills.js";
 import { applyUpdate, type ApplyUpdateResult } from "../update.js";
 import { isValidSkillName } from "../util.js";
 import { CommandError, type CommandHandler } from "./commands.js";
-import { CLOUD_ENV_PREFIX, CLOUD_PRIVATE_KEY_ENV } from "./config.js";
+import { CLOUD_PRIVATE_KEY_ENV } from "./config.js";
 import type { Command, CommandType } from "./protocol.js";
 import { openSealed, SealError, sealForRecipient } from "./seal.js";
 
@@ -56,6 +56,12 @@ type Overrides = { runner?: RunOverrides["runner"]; model?: string; effort?: str
 function requester(command: Command): string {
   const by = command.requested_by;
   return (by?.name ?? by?.id ?? by?.kind ?? "cloud").slice(0, 200);
+}
+
+/** The machine's own credentials (the admin token, the cloud link's) are never generated or set from the cloud, by whatever name: a skill's or the variable's. */
+function refuseOwnCredential(ops: Ops, name: string, verb: "generated" | "set"): void {
+  const { env } = resolveSecretName(ops, name);
+  if (isSkillhookCredential(env)) throw new CommandError("denied_by_policy", `${env} is this machine's own credential: it is not ${verb} from the cloud`);
 }
 
 function overridesOf(args: Overrides): RunOverrides {
@@ -169,7 +175,7 @@ export function createControlHandlers(deps: ControlDeps): Partial<Record<Command
 
     "secret.generate": (args: Args<{ name: string; force?: boolean; recipient_key?: string }>) => {
       if (!args.recipient_key) throw new CommandError("invalid_args", "recipient_key is required: a generated secret travels only sealed to whoever asked for it");
-      if (args.name.toUpperCase().startsWith(CLOUD_ENV_PREFIX)) throw new CommandError("denied_by_policy", "the cloud link's own credentials are not generated from the cloud");
+      refuseOwnCredential(ops, args.name, "generated");
       const generated = generateSecretFor(ops, args.name, { force: args.force });
       if (!generated.generated) return { result: { secret_env: generated.env, existed: true, generated: false, note: "already set; pass force to rotate it" } };
       let sealed;
@@ -183,7 +189,7 @@ export function createControlHandlers(deps: ControlDeps): Partial<Record<Command
     },
 
     "secret.set": (args: Args<{ name: string; sealed: { ciphertext: string; nonce: string; ephemeral_public_key: string } }>) => {
-      if (args.name.toUpperCase().startsWith(CLOUD_ENV_PREFIX)) throw new CommandError("denied_by_policy", "the cloud link's own credentials are not set from the cloud");
+      refuseOwnCredential(ops, args.name, "set");
       const privateKey = deps.fileSecrets()[CLOUD_PRIVATE_KEY_ENV];
       if (!privateKey) throw new CommandError("unavailable", `this machine has no ${CLOUD_PRIVATE_KEY_ENV} (pair it again to create one)`);
       let value: string;

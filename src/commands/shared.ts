@@ -4,6 +4,7 @@ import { loadSecrets, type Secrets } from "../env.js";
 import { JobStore } from "../jobs.js";
 import { resolvePaths, type Paths } from "../paths.js";
 import { configProjects, SkillRegistry } from "../registry.js";
+import { jsonForTerminal } from "../util.js";
 
 export type FlagValue = string | boolean | string[];
 export type Flags = Record<string, FlagValue>;
@@ -37,13 +38,15 @@ export class CommandError extends Error {
 }
 
 /** Flags that never take a value. Everything else takes the next token unless it starts with `-`. */
-const BOOLEAN_FLAGS = new Set(["json", "help", "h", "dry-run", "follow", "f", "yes", "y", "force", "pretty", "stdin", "public", "serve", "funnel", "result", "prompt", "stdout", "stderr", "exec", "all", "print-config", "quiet", "q", "version", "v", "overwrite", "no-secret", "print", "watch", "verbose", "local", "install", "check", "refresh", "body", "response", "skip-filters", "waiting", "quick", "control", "observe", "keep-token"]);
+const BOOLEAN_FLAGS = new Set(["json", "help", "h", "dry-run", "follow", "f", "yes", "y", "force", "pretty", "stdin", "public", "serve", "funnel", "result", "prompt", "stdout", "stderr", "exec", "all", "print-config", "quiet", "q", "version", "v", "overwrite", "no-secret", "print", "watch", "verbose", "local", "install", "check", "refresh", "body", "response", "skip-filters", "waiting", "quick", "control", "observe", "keep-token", "cloud"]);
 /** Switches elsewhere that take a value in one subcommand: `cloud report --body TEXT` (`deliveries show <id> --body` is a switch). */
 const VALUE_FLAGS = new Map([["cloud report", ["body"]]]);
 
-export function parseArgs(argv: string[]): { flags: Flags; positionals: string[] } {
+/** `positionalIndexes`: where each positional sat in `argv` (a command that reads its own arguments starts after one). */
+export function parseArgs(argv: string[]): { flags: Flags; positionals: string[]; positionalIndexes: number[] } {
   const flags: Flags = {};
   const positionals: string[] = [];
+  const positionalIndexes: number[] = [];
   const setFlag = (name: string, value: FlagValue) => {
     const existing = flags[name];
     if (existing === undefined || typeof value === "boolean") flags[name] = value;
@@ -54,6 +57,7 @@ export function parseArgs(argv: string[]): { flags: Flags; positionals: string[]
     const token = argv[i] as string;
     if (token === "--") {
       positionals.push(...argv.slice(i + 1));
+      positionalIndexes.push(...argv.slice(i + 1).map((_, j) => i + 1 + j));
       break;
     }
     if (token.startsWith("--")) {
@@ -86,8 +90,9 @@ export function parseArgs(argv: string[]): { flags: Flags; positionals: string[]
       continue;
     }
     positionals.push(token);
+    positionalIndexes.push(i);
   }
-  return { flags, positionals };
+  return { flags, positionals, positionalIndexes };
 }
 
 export function str(flags: Flags, ...names: string[]): string | undefined {
@@ -125,6 +130,8 @@ export interface Ctx {
   paths: Paths;
   flags: Flags;
   args: string[];
+  /** The command line without the command's name, as given: for a command that reads its words with its own rules. */
+  rawArgs: string[];
   json: boolean;
   io: CliIO;
   /** Prints the human text, or the JSON value when --json is set. */
@@ -137,7 +144,7 @@ export interface Ctx {
   deliveryLog(): DeliveryLog;
 }
 
-export function createCtx(flags: Flags, args: string[], io: CliIO): Ctx {
+export function createCtx(flags: Flags, args: string[], io: CliIO, rawArgs: string[] = []): Ctx {
   const paths = resolvePaths(str(flags, "dir", "home") ?? io.env.SKILLHOOK_HOME);
   const json = bool(flags, "json");
   let config: Config | undefined;
@@ -148,10 +155,11 @@ export function createCtx(flags: Flags, args: string[], io: CliIO): Ctx {
     paths,
     flags,
     args,
+    rawArgs,
     json,
     io,
     print(human, data) {
-      if (json) io.stdout(`${JSON.stringify(data ?? { message: human }, null, 2)}\n`);
+      if (json) io.stdout(`${jsonForTerminal(data ?? { message: human })}\n`);
       else if (human) io.stdout(human.endsWith("\n") ? human : `${human}\n`);
     },
     warn(text) {
@@ -237,4 +245,19 @@ export function parseHeaderFlags(values: string[]): Record<string, string> {
     out[value.slice(0, idx).trim().toLowerCase()] = value.slice(idx + 1).trim();
   }
   return out;
+}
+
+/** Asks at the terminal without echoing the answer (a secret never shows on screen or in scrollback). */
+export async function promptHidden(question: string): Promise<string> {
+  const readline = await import("node:readline");
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stderr, terminal: true });
+    process.stderr.write(question);
+    (rl as unknown as { _writeToOutput: (text: string) => void })._writeToOutput = () => {};
+    rl.question("", (answer) => {
+      rl.close();
+      process.stderr.write("\n");
+      resolve(answer.trim());
+    });
+  });
 }

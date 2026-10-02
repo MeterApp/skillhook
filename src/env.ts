@@ -1,5 +1,6 @@
 import { chmodSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { CLOUD_ENV_PREFIX } from "./cloud/config.js";
 import { ensureDir, exists, trimTrailing } from "./util.js";
 import type { Paths } from "./paths.js";
 
@@ -111,6 +112,14 @@ export function defaultSecretEnvFor(skillName: string): string {
 }
 
 export const ADMIN_TOKEN_ENV = "SKILLHOOK_ADMIN_TOKEN";
+
+/**
+ * skillhook's own credentials: the admin token and the Skillhook Cloud family (the link's token and key pair, the API key
+ * and its cloud). Never a skill's secret (writing the skill's would overwrite them), never written from the cloud.
+ */
+export function isSkillhookCredential(name: string): boolean {
+  return name === ADMIN_TOKEN_ENV || name.startsWith(CLOUD_ENV_PREFIX);
+}
 
 /** Never print these; used by `secret list` and redaction. */
 export function redactValue(value: string): string {

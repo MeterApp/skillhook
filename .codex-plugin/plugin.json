@@ -1,7 +1,7 @@
 {
   "name": "skillhook",
-  "version": "0.6.0",
-  "description": "Turn this machine into a permanent, secure webhook endpoint that runs Agent Skills with Claude Code or Codex. Two skills teach the agent to install and expose skillhook and to write good webhook skills; the bundled MCP server manages skills, secrets, jobs and exposure.",
+  "version": "0.7.0",
+  "description": "Turn this machine into a permanent, secure webhook endpoint that runs Agent Skills with Claude Code or Codex, and run your whole Skillhook Cloud organisation from the agent. Three skills teach the agent to install and expose skillhook, to write good webhook skills and to operate the fleet; two MCP servers manage this machine (skills, secrets, jobs, exposure) and, with an organisation API key, every machine as the Skillhook Cloud dashboard does (what needs a person, failures, stats, answers, replays, runs, hosted URLs).",
   "author": {
     "name": "Meter",
     "email": "hello@meterapp.co",
@@ -27,7 +27,7 @@
   "interface": {
     "displayName": "skillhook",
     "shortDescription": "Webhook in, agent out — on your own machine",
-    "longDescription": "skillhook turns a Mac or Linux machine into a permanent, secure webhook endpoint that runs Agent Skills with Claude Code or Codex, using the login you already have. Granola, Sentry, GitHub, Stripe, Slack or a plain curl call POST to https://<your-node>.ts.net/hooks/<skill>; skillhook verifies the signature, queues a job and runs the skill's SKILL.md unattended. This plugin adds two skills — installing and exposing skillhook, and writing good webhook skills — plus the skillhook MCP server for status, skills, secrets, jobs, Tailscale exposure and signed test webhooks.",
+    "longDescription": "skillhook turns a Mac or Linux machine into a permanent, secure webhook endpoint that runs Agent Skills with Claude Code or Codex, using the login you already have. Granola, Sentry, GitHub, Stripe, Slack or a plain curl call POST to https://<your-node>.ts.net/hooks/<skill>; skillhook verifies the signature, queues a job and runs the skill's SKILL.md unattended. This plugin adds three skills — installing and exposing skillhook, writing good webhook skills, and operating Skillhook Cloud — plus the skillhook MCP server for status, skills, secrets, jobs, Tailscale exposure and signed test webhooks, and the skillhook-cloud MCP server: every machine of your organisation, as the Skillhook Cloud dashboard shows and runs it, once you ran skillhook cloud login.",
     "developerName": "Meter",
     "category": "Productivity",
     "capabilities": [
@@ -38,7 +38,8 @@
     "defaultPrompt": [
       "Set up skillhook on this machine and give me a public webhook URL for the hello skill.",
       "Write a skillhook skill that opens a pull request when Sentry reports a new issue in ~/dev/api.",
-      "My Granola webhook gets a 503 from skillhook — what is wrong?"
+      "My Granola webhook gets a 503 from skillhook — what is wrong?",
+      "What needs my attention in Skillhook Cloud, and why did the last jobs fail?"
     ],
     "supportURL": "https://github.com/MeterApp/skillhook/issues"
   }

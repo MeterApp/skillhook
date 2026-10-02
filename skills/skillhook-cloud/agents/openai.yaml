@@ -1,0 +1,6 @@
+interface:
+  display_name: "Skillhook Cloud"
+  short_description: "See and operate every skillhook machine of your organisation"
+  default_prompt: "Use $skillhook-cloud to show what needs attention in my Skillhook Cloud organisation and why the latest failures happened."
+policy:
+  allow_implicit_invocation: true

@@ -6,8 +6,10 @@ import { COMMAND_CLASS, type CommandType, type MachineMode } from "./protocol.js
 export const CLOUD_TOKEN_ENV = "SKILLHOOK_CLOUD_TOKEN";
 /** The machine's X25519 private key (base64url), in `.env`; for values the cloud seals to this machine. */
 export const CLOUD_PRIVATE_KEY_ENV = "SKILLHOOK_CLOUD_PRIVATE_KEY";
-/** A person's organisation API key (`shc_…`) for reading the fleet (`skillhook cloud login`), in `.env` or the environment; never the machine token. */
+/** A person's organisation API key (`shc_…`) for the fleet (`skillhook cloud login`), in `.env` or the environment; never the machine token. */
 export const CLOUD_API_KEY_ENV = "SKILLHOOK_CLOUD_API_KEY";
+/** The cloud that key was checked against at login: its requests go there and nowhere else, whatever `cloud.url` says later. */
+export const CLOUD_API_URL_ENV = "SKILLHOOK_CLOUD_API_URL";
 /** Placeholder until the product domain is decided; `cloud.url` and `SKILLHOOK_CLOUD_URL` override it. */
 export const DEFAULT_CLOUD_URL = "https://cloud.skillhook.dev";
 /** Every variable of this family stays on the machine: never in a run's environment, even when a skill lists it. */

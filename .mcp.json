@@ -3,6 +3,10 @@
     "skillhook": {
       "command": "npx",
       "args": ["-y", "@meterapp/skillhook", "mcp"]
+    },
+    "skillhook-cloud": {
+      "command": "npx",
+      "args": ["-y", "@meterapp/skillhook", "mcp", "--cloud"]
     }
   }
 }

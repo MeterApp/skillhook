@@ -11,7 +11,7 @@
     {
       "name": "skillhook",
       "source": "./",
-      "description": "Webhook in, agent out. Skills for installing and exposing skillhook and for authoring webhook skills, plus the skillhook MCP server: status, skills, secrets, jobs, Tailscale exposure and signed test webhooks.",
+      "description": "Webhook in, agent out. Skills for installing and exposing skillhook, authoring webhook skills and operating Skillhook Cloud, plus two MCP servers: skillhook (status, skills, secrets, jobs, Tailscale exposure, signed test webhooks) and skillhook-cloud (every machine of the organisation, as the dashboard shows and runs it).",
       "category": "productivity"
     }
   ]

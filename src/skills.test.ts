@@ -50,6 +50,14 @@ Do it.
     expect(() => parseSkillDocument(`---\nname: demo\ndescription: x\nskillhook:\n  runner: gemini\n---\nbody`, "/tmp/x/demo")).toThrow(/runner/);
   });
 
+  it("never takes skillhook's own credentials as a skill's secret: writing the skill's would overwrite them", () => {
+    for (const name of ["SKILLHOOK_ADMIN_TOKEN", "SKILLHOOK_CLOUD_TOKEN", "SKILLHOOK_CLOUD_API_KEY", "SKILLHOOK_CLOUD_API_URL", "SKILLHOOK_CLOUD_PRIVATE_KEY"]) {
+      expect(() => parseSkillDocument(`---\nname: demo\ndescription: x\nskillhook:\n  auth: { type: bearer, secret_env: ${name} }\n---\nbody`, "/tmp/x/demo")).toThrow(/skillhook's own credentials/);
+    }
+    const skill = parseSkillDocument(`---\nname: demo\ndescription: x\nskillhook:\n  auth: { type: github, secret_env: SKILLHOOK_CLOUDY_SECRET }\n---\nbody`, "/tmp/x/demo");
+    expect(skill.auth).toMatchObject({ secret_env: "SKILLHOOK_CLOUDY_SECRET" });
+  });
+
   it("requires frontmatter", () => {
     expect(() => parseSkillDocument("# no frontmatter", "/tmp/x/demo")).toThrow(/no frontmatter/);
   });
