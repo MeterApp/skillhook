@@ -4,6 +4,35 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.7.0 (2026-10-02)
+
+- Everything Skillhook Cloud's dashboard shows and does, from the terminal and for an agent, with an
+  organisation API key. The cloud publishes its tools (`GET /api/v1/tools`: each with its JSON Schema
+  and the scope it needs) and skillhook builds its commands and MCP tools from that list when it runs,
+  so a tool the cloud adds works without a new skillhook.
+  - `skillhook cloud overview`: what needs a person across the organisation (agents waiting for an
+    answer, open alerts, failing health checks, failed jobs and rejected webhooks of the last 24 hours,
+    the day's numbers, the next steps).
+  - `skillhook cloud tools [tool]` lists the tools the key has (and which a wider key would add) or
+    describes one; `skillhook cloud <tool> [args] [--param value]…` runs any of them by name:
+    `answer_job`, `replay_job`, `run_skill`, `test_skill`, `save_skill`, `get_job_artifact`,
+    `get_stats`, `list_alerts`, `enable_hosted_url`, `send_command`, … Required parameters may be
+    given as arguments in order; flags are typed from the schema (switches, checked numbers, JSON as a
+    literal, `@file` or `-`, `--param-file PATH` for long text, `--input` for the whole input). The
+    answer prints as indented text, or as it came with `--json`.
+  - `skillhook cloud secret <machine> <skill|NAME> [--force]`: the machine generates a skill's secret
+    sealed to a key pair made for this one request; only this terminal can open it, the cloud never
+    sees it.
+  - `skillhook mcp --cloud`, registered by the plugin as the `skillhook-cloud` MCP server: the same
+    tools for the agent, the cloud's instructions, and `generate_secret`. Without a key it offers only
+    `skillhook_cloud_setup`, which says what is missing and loads the tools once the person logged in;
+    the agent never handles the key.
+  - `skillhook cloud login --url URL` names the cloud (kept as `cloud.url`; refused on a machine paired
+    with another one) and, at a terminal, asks for the key without echoing it. `cloud status` and the MCP
+    tool `cloud_status` say whether a key is kept here.
+  - A new plugin skill, `skillhook-cloud`, teaches the agent to triage the organisation (failure kinds,
+    rejected deliveries, failing checks), act on it safely and set up machines, skills, secrets and hosted
+    URLs.
 - `--help` and `-h` never run a command. Most commands used to ignore them and do their work, so
   `skillhook jobs prune --help` pruned jobs and `skillhook service install --help` installed the service
   (0.6.0 fixed only `skillhook cloud`). Now `skillhook <command> [subcommand …] --help`, or

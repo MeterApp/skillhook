@@ -6,7 +6,7 @@ Skillhook Cloud is the hosted control plane for machines running skillhook: ever
 
 ## Principles
 
-- **Opt-in, outbound only.** A machine talks to the cloud only after `skillhook cloud connect` pairs it (a code from the dashboard) and only by opening HTTPS requests to `cloud.url` (plain `http` only to a loopback address or with `SKILLHOOK_CLOUD_ALLOW_INSECURE=1`); the cloud never connects to the machine and never holds the admin token. It works behind NAT without Tailscale. Besides the link, [`cloud report`](#reporting-a-problem) and the [API-key commands](#reading-the-fleet-with-an-api-key) send one request each, to the same URL, only when a person runs them.
+- **Opt-in, outbound only.** A machine talks to the cloud only after `skillhook cloud connect` pairs it (a code from the dashboard) and only by opening HTTPS requests to `cloud.url` (plain `http` only to a loopback address or with `SKILLHOOK_CLOUD_ALLOW_INSECURE=1`); the cloud never connects to the machine and never holds the admin token. It works behind NAT without Tailscale. Besides the link, [`cloud report`](#reporting-a-problem) and the [API-key commands and tools](#the-whole-organisation-with-an-api-key) send requests to the same URL only when a person runs one, or their agent calls one.
 - **Observe by default.** A freshly paired machine is in `mode: observe`: the cloud can read, not act. `--control` at pairing (what the dashboard's pairing page prints) or `cloud.mode: control` later lets it run skills, answer jobs, change the configuration and restart the server. `cloud.allow_commands` / `cloud.deny_commands` refine either mode per command type; the cloud cannot raise a machine's exposure, only the machine's own config can.
 - **Payloads are data, secrets stay home.** Headers are redacted on the machine before anything is uploaded; every uploaded string is scrubbed against every value in `.env`; webhook bodies travel only when both `cloud.upload_payloads` and the organisation's policy allow, and never beyond 256 KiB. `SKILLHOOK_CLOUD_*` variables never reach a run, even when a skill lists them in `env:`. A secret the cloud asks skillhook to generate is sealed to the requester's key; the cloud never stores it in the clear.
 - **Kill switches.** `cloud.enabled: false`, `SKILLHOOK_NO_CLOUD=1` in the server's environment, or `skillhook cloud disconnect` stop all traffic; the link never starts from `init`, from a job, or on its own. With `SKILLHOOK_NO_CLOUD=1` in its environment, `cloud report` and the API-key commands refuse to send anything too.
@@ -72,29 +72,74 @@ Every value in `.env` is replaced with `[redacted]` in the title, the body, the 
 
 It needs a paired machine (`cloud.enabled` and `SKILLHOOK_CLOUD_TOKEN`); on one that is not, pair it first or report the problem on the dashboard or through its hosted MCP server. It refuses under `SKILLHOOK_NO_CLOUD=1` and to a `cloud.url` that is not https. The MCP tool `cloud_report_issue` sends the same report for an agent the person asked to file one ([mcp.md](mcp.md)).
 
-## Reading the fleet with an API key
+## The whole organisation with an API key
 
-The organisation's machines and jobs can be read from any terminal with an organisation API key (`shc_…`; an admin creates one on the dashboard under Settings → API keys, and `fleet:read` is enough):
+Everything the dashboard shows and does for an organisation (every machine's jobs, deliveries, alerts, health and
+stats; answering agents, replaying, running and testing skills; skills, secrets, hosted URLs and machines) is a tool of
+the cloud, and skillhook offers each one in a terminal and to an agent. They use an organisation API key (`shc_…`; an
+admin creates one on the dashboard under Settings → API keys), never the machine token: a paired machine cannot read the
+rest of its organisation, only someone holding a key can. Its scope decides what it can do: `fleet:read` looks,
+`fleet:run` also answers agents, runs, tests, replays and cancels, `fleet:admin` also changes skills, configuration,
+hosted URLs, machines and settings and generates secrets.
 
 ```bash
-pbpaste | skillhook cloud login --key -     # or --key shc_…; checked, then kept in .env, never printed
+skillhook cloud login --url https://cloud.example.com   # asks for the key at a terminal (or --key shc_…, --key - for stdin)
+skillhook cloud overview                                # what needs a person: waiting agents, alerts, failing checks, failures, the day's numbers
+skillhook cloud tools                                   # every tool this key has (and which a wider key would add)
+skillhook cloud tools answer_job                        # one tool's parameters
+skillhook cloud answer_job 20260929T101500Z-a1b2c3 "yes" --option yes
+skillhook cloud get_stats --days 30 --json
+skillhook cloud run_skill mac-mini triage --payload @event.json --wait-seconds 120
+skillhook cloud save_skill mac-mini triage --content-file skills/triage/SKILL.md
+skillhook cloud secret mac-mini triage                  # the skill's secret, generated there, opened only here
 skillhook cloud machines
 skillhook cloud jobs --waiting
-skillhook cloud jobs --machine mac-mini --status failed --limit 50
 skillhook cloud job 20260929T101500Z-a1b2c3
-skillhook cloud logout                      # forget the key here; revoke it on the dashboard to end it
+skillhook cloud logout                                  # forget the key here; revoke it on the dashboard to end it
 ```
 
-These use the cloud's public API with the person's key, never the machine token: a paired machine cannot read the rest of its organisation, only someone holding a key can. `login` checks the key with `GET /api/v1/me` and keeps it in `.env` as `SKILLHOOK_CLOUD_API_KEY` (mode 600); `SKILLHOOK_CLOUD_API_KEY` in the environment (CI) takes precedence; `logout` removes it from `.env`. What they read, each a `GET` with `Authorization: Bearer <key>`; nothing from the machine goes with it beyond the filters in the query:
+`login` checks the key with `GET /api/v1/me` and keeps it in `.env` as `SKILLHOOK_CLOUD_API_KEY` (mode 600, never
+printed); `SKILLHOOK_CLOUD_API_KEY` in the environment (CI) takes precedence; `logout` removes it from `.env`. `--url`
+names the cloud and keeps it as `cloud.url` (refused on a machine paired with another cloud); pairing sets it too, and
+until one is set the commands refuse, so a key never goes to the built-in placeholder URL. A key must look like one
+(`shc_` and then letters, digits, `-` and `_`), so a pasted second line or the machine token is refused before anything
+is sent. HTTPS only; they refuse under `SKILLHOOK_NO_CLOUD=1`.
+
+**Tools.** The cloud publishes its tools (`GET /api/v1/tools`: name, description, JSON Schema, the scope each needs), and
+`skillhook cloud <tool>` runs one (`POST /api/v1/tools/<tool>`; `list-jobs` and `list_jobs` are the same), so a tool the
+cloud adds works without a new skillhook. Required parameters may be given as arguments in order, the others as
+`--param value` (`--wait-seconds` or `--wait_seconds`); booleans are switches (`--waiting`, `--no-waiting`), numbers are
+checked, JSON parameters (payloads, arguments) take a literal, `@file` or `-` for stdin, a long text takes
+`--param-file PATH`, and `--input JSON|@file|-` gives the whole input. The answer prints as indented text, or as the
+cloud sent it with `--json`. A tool beyond the key's scope is refused before anything is sent.
+
+**The MCP server.** `skillhook mcp --cloud` serves the same tools to an agent (the skillhook plugin registers it as
+`skillhook-cloud`, next to this machine's own `skillhook` server): the catalogue is read when it starts, each call is
+forwarded with the key, and the cloud validates, authorises and audits it as that key. Without a key it offers one tool,
+`skillhook_cloud_setup`, which says what is missing and loads the tools once the person logged in; an agent never
+handles the key. See [mcp.md](mcp.md#skillhook-cloud-skillhook-mcp---cloud).
+
+**Secrets.** `skillhook cloud secret <machine> <skill|NAME> [--force]` (and the tool `generate_secret`) has the machine
+generate a skill's secret and seal it to a key pair made for this one request: `POST /api/v1/machines/<m>/secrets` with
+the public half, then `POST /api/v1/commands/<id>/claim` until the sealed value is there (the cloud keeps it two
+minutes and hands it to this key once). Only this process can open it, so the value never travels or rests in the
+clear, not even in the cloud. An existing secret is kept unless `--force` (which replaces it: the sender then needs
+the new value). It needs a `fleet:admin` key and a machine that accepts `secret.generate` (control mode).
+
+The fixed views:
 
 | Command | Request |
 |---|---|
 | `cloud login` | `GET /api/v1/me` (the organisation, the key's name and scopes) |
+| `cloud overview` | `POST /api/v1/tools/describe_cloud` |
+| `cloud tools [tool]` | `GET /api/v1/tools` |
 | `cloud machines` | `GET /api/v1/machines`: name, status, mode, skillhook version, last seen |
 | `cloud jobs [--machine M] [--skill S] [--status ST] [--outcome O] [--waiting] [--limit N] [--before CURSOR]` | `GET /api/v1/jobs` with those filters (newest first; `--before` pages), and for the table `GET /api/v1/machines` for the machines' names |
 | `cloud job <id>` | `GET /api/v1/jobs/{id}` (the machine's job id or the cloud's): status, outcome, the question waiting for a person, the answer, the result excerpt; and for the text `GET /api/v1/machines` for the machine's name |
 
-The requests go to the machine's cloud URL (`cloud.url`, or `SKILLHOOK_CLOUD_URL`), HTTPS only. Pairing sets it; until one is set (`skillhook config set cloud.url https://…`) the commands refuse, so a key never goes to the built-in placeholder URL. A key must look like one (`shc_` and then letters, digits, `-` and `_`), so a pasted second line or the machine token is refused before anything is sent. Tables by default; `--json` prints the API's answer as it came. A refused key (`401`) says to run `skillhook cloud login` again, a missing scope (`403`) names it. They refuse under `SKILLHOOK_NO_CLOUD=1`. Answering a job, replaying and running skills stay on the dashboard, its hosted MCP server and the machine's own `skillhook jobs answer`.
+Nothing from the machine goes with these requests beyond what the command or tool was given. A refused key (`401`) says
+to run `skillhook cloud login` again, a missing scope (`403`) names it, a cloud from before the catalogue says so (the
+fixed views still work there).
 
 ## What the link does
 

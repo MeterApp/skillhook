@@ -402,6 +402,8 @@ describe("CloudLink", () => {
     expect(fourth.put).toMatchObject({ ok: true, result: { name: "cloudy", created: true, secret_env: "SKILLHOOK_SECRET_CLOUDY", secret_configured: false } });
     expect(readFileSync(path.join(paths.skillsDir, "cloudy", "SKILL.md"), "utf8")).toBe(skillMd);
     expect(registry.get("cloudy")?.description).toBe("From the cloud.");
+    // The cloud learns of it right away, not at the next scheduled snapshot: the sync after the command carries one.
+    await fake.waitFor(() => fake.requests.some((r) => r.snapshot?.skills.some((s) => s.name === "cloudy")));
     expect(fourth["put-open"]).toMatchObject({ ok: false, error: { code: "invalid_args", message: expect.stringContaining("allow_unauthenticated") } });
     expect(fourth["put-mismatch"]).toMatchObject({ ok: false, error: { code: "invalid_args" } });
     const fifth = await runCommands(fake, [cmd("delete", "skill.delete", { name: "cloudy" }), cmd("delete-missing", "skill.delete", { name: "cloudy-nope" })]);

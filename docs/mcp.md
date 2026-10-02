@@ -39,7 +39,7 @@ Cursor, Windsurf and other `mcp.json` clients:
 
 Non-default home: add `"--dir", "/path/to/home"` to `args` (or set `SKILLHOOK_HOME` in the client's environment). The MCP process must see the same home as your shell.
 
-The repository is also a plugin (skills plus this MCP server):
+The repository is also a plugin: its skills, this MCP server, and `skillhook-cloud`, the organisation's fleet through Skillhook Cloud (below):
 
 ```text
 /plugin marketplace add MeterApp/skillhook
@@ -118,11 +118,41 @@ Every tool returns a text block (a one-line summary followed by JSON) and the sa
 | `update_config` | `set` (dotted keys to values) and/or `unset` (dotted keys) | Change `skillhook.json` in one validated write; the running server re-reads it at once and reports what applied live and what (host, port) needs `restart_server`. Never writes an invalid file. |
 | `restart_server` | optional `force`, `wait_seconds` (default 30) | Ask the service-run server to stop (letting jobs finish) and let launchd / systemd start it again; `409` for a server run in a terminal. |
 | `check_update` | optional `install` | Ask npm for a newer skillhook; `install: true` upgrades with the package manager that installed it and restarts an idle service. |
-| `cloud_status` | none | Whether the machine is paired with Skillhook Cloud: URL, machine id, mode, whether the token is present (never the token), and the running server's link state. |
+| `cloud_status` | none | Whether the machine is paired with Skillhook Cloud: URL, machine id, mode, whether the token is present (never the token), the running server's link state, and whether an organisation API key is kept here (`api_key`; [`skillhook mcp --cloud`](#skillhook-cloud-skillhook-mcp---cloud) uses it). |
 | `cloud_disconnect` | optional `keep_token` | Stop the Skillhook Cloud link: `cloud.enabled: false`, token and machine key revoked and removed, spool deleted. There is no `cloud_connect` tool on purpose: pairing hands the machine to an account, so the person runs `skillhook cloud connect --code …` themselves ([cloud.md](cloud.md#connecting)). |
 | `cloud_report_issue` | `title`; optional `body`, `kind` (bug, question, feature, other), `severity` (low, normal, high, urgent), `contact_email`, `job_id`, `delivery_id`, `skill`, `diagnostics` (default true), `dry_run` | Send a problem report to the Skillhook team from a paired machine, when the person asks for one (what `skillhook cloud report` does; `dry_run: true` returns the exact report without sending it). With diagnostics: versions, OS, cloud mode, the link's state, whether each runner is ready and the failing or warning checks, all scrubbed of every `.env` value; never payloads, logs, prompts or job output ([cloud.md](cloud.md#reporting-a-problem)). Returns the issue number and URL, whether a confirmation email went out, and the diagnostics that were sent. |
 | `get_runners` | optional `refresh` | Is each runner (claude, codex, shell) installed and logged in or given an API key: what every job checks before it starts. Through the running server's cached answer when there is one. |
 | `get_health` | optional `deep` (default true), `refresh`, `network` | The grouped health report of `skillhook health`: the doctor's checks plus every MCP server Claude Code and Codex know (connected, needs authentication, failed), installed plugins, `codex doctor`, disk and each skill's last run. Through the running server's cached report when there is one (`refresh: true` probes again), otherwise probed now. Use it to answer "why does the agent's MCP tool not work" before touching a skill. |
+
+## Skillhook Cloud: `skillhook mcp --cloud`
+
+A separate server for the whole organisation, as the Skillhook Cloud dashboard shows and runs it: every machine's jobs,
+deliveries, alerts, health and stats, answering agents, replaying, running and testing skills, skills, secrets, hosted
+URLs and machines. The skillhook plugin registers it as `skillhook-cloud`; elsewhere:
+
+```bash
+claude mcp add skillhook-cloud -- skillhook mcp --cloud
+codex mcp add skillhook-cloud -- skillhook mcp --cloud
+```
+
+It needs an organisation API key, which the person keeps here once with `skillhook cloud login --url https://<cloud>`
+([cloud.md](cloud.md#the-whole-organisation-with-an-api-key)). When it starts it reads the cloud's catalogue of tools
+(`GET /api/v1/tools`) and offers each one the key's scope allows, with the cloud's own name, description and input
+schema; a call goes to `POST /api/v1/tools/<name>` with the key, and the cloud validates, authorises and audits it. So
+the tools are always the cloud's current ones: `describe_cloud` (start here: what needs a person now, with
+`next_steps`), `get_stats`, `list_alerts`, `list_machines`, `get_machine`, `list_skills`, `get_skill`, `list_jobs`,
+`get_job`, `get_job_artifact`, `answer_job`, `replay_job`, `run_skill`, `test_skill`, `save_skill`,
+`list_deliveries`, `get_delivery`, `replay_delivery`, `list_hosted_urls`, `enable_hosted_url`, `send_command` and the
+rest ([the cloud's list](https://github.com/MeterApp/skillhook-cloud/blob/main/docs/api.md#mcp)). The instructions it
+announces are the cloud's, with the organisation and the key's scopes.
+
+One tool is local: `generate_secret {machine, skill, force?}` (admin keys) has the machine generate a skill's secret
+sealed to a key pair made for that call, and returns the value once; the cloud never sees it.
+
+Without a key (or while the cloud cannot be reached, or under `SKILLHOOK_NO_CLOUD=1`) the server offers only
+`skillhook_cloud_setup`: it says what is missing, and once the person logged in a call loads the cloud's tools (a
+`tools/list_changed` notification; reconnect the server if the client ignores it). Logging in stays with the person in
+a terminal, so a key never passes through a conversation.
 
 ## The job API: `skillhook mcp --job`
 

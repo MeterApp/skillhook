@@ -65,6 +65,7 @@ Running
 
 Agents
   mcp [--print-config]                                     MCP server over stdio (tools for Claude Code, Codex, Cursor, …)
+  mcp --cloud                                              Skillhook Cloud's tools over stdio: the whole organisation, with the key of cloud login
   mcp --job                                                The per-run job API as an MCP server (the runners start it; needs $SKILLHOOK_JOB_ID/$SKILLHOOK_JOB_DIR)
   job progress "<msg>" [--state working|blocked] [--percent N] | ask "<question>" [--option A]... [--wait S] | outcome <o> [--summary S] | note "<text>" | context
                                                            Inside a run: report progress, ask a person (waits for the answer), report the outcome
@@ -72,8 +73,10 @@ Agents
   cloud connect --code XXXX-XXXX [--control] | disconnect | status   Pair this machine with Skillhook Cloud (opt-in; docs/cloud.md)
   cloud report "<title>" [--body T|--body-file F|--body -] [--kind K] [--severity S] [--job ID] [--email E] [--no-diagnostics] [--dry-run]
                                                            Report a problem to the Skillhook team from a paired machine, with its diagnostics (scrubbed)
-  cloud login --key shc_…|- | logout | machines | jobs [--machine M] [--status ST] [--waiting] [--limit N] | job <id>
-                                                           Read the organisation's machines and jobs with an organisation API key (never the machine token)
+  cloud login [--url U] [--key shc_…|-] | logout          Keep an organisation API key (asked for at a terminal; never the machine token)
+  cloud overview | machines | jobs [--waiting] … | job <id>   What needs a person across the organisation; its machines and jobs
+  cloud tools [tool] | <tool> [args] [--param value]…      Everything the dashboard shows and does, by name (answer_job, run_skill, get_stats, …)
+  cloud secret <machine> <skill|NAME> [--force]            A skill's secret generated on a machine, opened only here
 
 Global options: --dir <path> (default $SKILLHOOK_HOME or ~/.skillhook), --json, --help, --version
 skillhook <command> --help (or skillhook help <command>) prints its usage and runs nothing; a mistake prints it too.

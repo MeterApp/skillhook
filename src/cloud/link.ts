@@ -105,6 +105,9 @@ export interface LinkStatusView extends LinkStatus {
 }
 
 /** Event types that travel; `server.*` stays local. */
+/** Commands after which the snapshot differs (skills, whether their secrets are set, the configuration): one goes at once. */
+const RESNAPSHOT: ReadonlySet<string> = new Set(["skill.put", "skill.delete", "config.patch", "secret.generate", "secret.set"]);
+
 const UPLOADED: Set<string> = new Set(["delivery.received", "job.queued", "job.started", "job.updated", "job.finished", "job.cancelled", "job.progress", "job.waiting_human", "job.answered", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed", "config.changed", "health.changed", "runners.changed"]);
 
 export class CloudLink {
@@ -678,6 +681,8 @@ export class CloudLink {
     for (const command of response.commands) {
       if (!this.running) break;
       await this.dispatcher.run(command);
+      // The skills, their secrets and the configuration the dashboard shows change now: the next sync carries a snapshot.
+      if (RESNAPSHOT.has(command.type)) this.lastSnapshotAt = 0;
     }
     for (const item of response.ingress) {
       if (!this.running) break;

@@ -8,7 +8,7 @@ import type { Paths } from "../paths.js";
 import type { ServerState } from "../server.js";
 import { nowIso } from "../util.js";
 import { VERSION } from "../version.js";
-import { CLOUD_PRIVATE_KEY_ENV, CLOUD_TOKEN_ENV } from "./config.js";
+import { CLOUD_API_KEY_ENV, CLOUD_PRIVATE_KEY_ENV, CLOUD_TOKEN_ENV } from "./config.js";
 import { cloudRequest } from "./http.js";
 import { cloudStateDir } from "./outbox.js";
 import { PairResponseSchema, PROTOCOL_VERSION, type MachineInfo, type MachineMode, type PairRequest, type PairResponse } from "./protocol.js";
@@ -85,6 +85,8 @@ export interface CloudStatusView {
   server_running: boolean;
   /** The running server's link state, when a server runs. */
   link: import("./link.js").LinkStatusView | null;
+  /** Whether an organisation API key (`skillhook cloud login`) is kept here for the fleet commands and `skillhook mcp --cloud`; never the key. */
+  api_key: { present: boolean; source: "environment" | "env_file" | null };
 }
 
 /** What `skillhook cloud status` and the MCP tool `cloud_status` report; never the token itself. */
@@ -95,7 +97,9 @@ export async function cloudStatus(paths: Paths, env: NodeJS.ProcessEnv): Promise
   const { cloudDisabledByEnv, resolveCloudUrl } = await import("./config.js");
   const config = loadConfig(paths);
   const running = await findRunningServer(paths);
-  return { enabled: config.cloud.enabled, env_disabled: cloudDisabledByEnv(env), url: resolveCloudUrl(env, config.cloud), machine_id: config.cloud.machine_id ?? null, mode: config.cloud.mode, token_present: Boolean(readEnvFile(paths.envFile)[CLOUD_TOKEN_ENV]), server_running: Boolean(running), link: running?.health.cloud ?? null };
+  const file = readEnvFile(paths.envFile);
+  const apiKeySource = env[CLOUD_API_KEY_ENV]?.trim() ? "environment" : file[CLOUD_API_KEY_ENV] ? "env_file" : null;
+  return { enabled: config.cloud.enabled, env_disabled: cloudDisabledByEnv(env), url: resolveCloudUrl(env, config.cloud), machine_id: config.cloud.machine_id ?? null, mode: config.cloud.mode, token_present: Boolean(file[CLOUD_TOKEN_ENV]), server_running: Boolean(running), link: running?.health.cloud ?? null, api_key: { present: apiKeySource !== null, source: apiKeySource } };
 }
 
 /** `skillhook cloud disconnect` / MCP `cloud_disconnect`: revoke (best effort), clear the local pairing, tell a running server. */

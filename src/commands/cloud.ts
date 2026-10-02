@@ -1,14 +1,17 @@
 import { readFileSync } from "node:fs";
 import { adminRequest, findRunningServer, readServerState } from "../client.js";
-import { API_KEY_RE, CloudApiError, fleetClient, JobDetailSchema, JobListSchema, machineNames, MachineListSchema, MeSchema, storedApiKey, type FleetJob } from "../cloud/api.js";
-import { assertSecureCloudUrl, CLOUD_API_KEY_ENV, CLOUD_PRIVATE_KEY_ENV, CLOUD_TOKEN_ENV, cloudDisabledByEnv, resolveCloudUrl } from "../cloud/config.js";
+import { updateConfig } from "../config.js";
+import { API_KEY_RE, CloudApiError, fleetClient, JobDetailSchema, JobListSchema, machineNames, MachineListSchema, MeSchema, storedApiKey, type FleetClient, type FleetJob } from "../cloud/api.js";
+import { assertSecureCloudUrl, CLOUD_API_KEY_ENV, CLOUD_PRIVATE_KEY_ENV, CLOUD_TOKEN_ENV, cloudDisabledByEnv, resolveCloudUrl, trimTrailingSlashes } from "../cloud/config.js";
 import { CloudHttpError } from "../cloud/http.js";
 import { cloudStatus, disconnectCloud, machineInfo, pairMachine, writeLinkCredentials } from "../cloud/pair.js";
 import { ISSUE_KINDS, ISSUE_SEVERITIES, JOB_OUTCOMES, JOB_STATUSES, type IssueKind, type IssueSeverity } from "../cloud/protocol.js";
+import { generateRemoteSecret, secretNameFor } from "../cloud/remote-secret.js";
 import { buildIssueReport, IssueReportError, reportIssue, type IssueReportInput } from "../cloud/report.js";
 import { machineKeyPair, publicKeyOf, SealError } from "../cloud/seal.js";
+import { callTool, fetchCatalog, renderResult, toolInput, ToolInputError, toolName, toolUsage, type Catalog } from "../cloud/tools.js";
 import { ensureSecretFileMode, readEnvFile, removeEnvVar, upsertEnvVar } from "../env.js";
-import { bool, CommandError, formatDuration, num, relativeTime, str, table, UsageError, type Ctx } from "./shared.js";
+import { bool, CommandError, formatDuration, num, promptHidden, relativeTime, str, table, UsageError, type Ctx } from "./shared.js";
 
 export const CLOUD_USAGE = `Usage:
   skillhook cloud connect --code XXXX-XXXX [--url URL] [--control|--observe] [--force]   pair this machine with Skillhook Cloud (the dashboard shows the code)
@@ -16,11 +19,17 @@ export const CLOUD_USAGE = `Usage:
   skillhook cloud disconnect [--keep-token]                                              stop the link, forget the pairing, revoke the token
   skillhook cloud status
   skillhook cloud report "<title>" [--body TEXT|--body-file PATH|--body -] [--kind ${ISSUE_KINDS.join("|")}] [--severity ${ISSUE_SEVERITIES.join("|")}] [--job ID] [--delivery ID] [--skill NAME] [--email ADDRESS] [--no-diagnostics] [--dry-run]   report a problem to the Skillhook team from this paired machine
-  skillhook cloud login --key shc_…|-                                                    check an organisation API key (Settings → API keys) and keep it in .env
+  skillhook cloud login [--url URL] [--key shc_…|-]                                      check an organisation API key (Settings → API keys) and keep it in .env; asks for it at a terminal
   skillhook cloud logout                                                                 forget that key
-  skillhook cloud machines                                                               the organisation's machines (with the API key, like the two below)
+
+With the API key, the whole organisation (every command below reads or acts through Skillhook Cloud):
+  skillhook cloud overview                                                               what needs a person now: waiting agents, alerts, failing checks, failures, the day's numbers
+  skillhook cloud machines                                                               the organisation's machines
   skillhook cloud jobs [--machine M] [--skill S] [--status ${JOB_STATUSES.join("|")}] [--outcome ${JOB_OUTCOMES.join("|")}] [--waiting] [--limit N] [--before CURSOR]
-  skillhook cloud job <id>                                                               one job: status, outcome, the question waiting for a person, the result`;
+  skillhook cloud job <id>                                                               one job: status, outcome, the question waiting for a person, the result
+  skillhook cloud tools [tool]                                                           every tool the cloud offers this key (the dashboard's views and actions); one tool's parameters
+  skillhook cloud <tool> [arguments] [--param value]…                                    run one, e.g. answer_job <job> "yes", get_stats --days 30, run_skill <machine> <skill> --payload @event.json
+  skillhook cloud secret <machine> <skill|NAME> [--force]                                generate a skill's secret on a machine: shown here once, sealed so the cloud never sees it`;
 
 /** The running server re-reads skillhook.json now (it would notice within a few seconds anyway). */
 async function notifyReload(ctx: Ctx, baseUrl: string): Promise<void> {
@@ -103,6 +112,7 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
         `${data.enabled ? "enabled" : "not connected"} · ${data.url}${data.machine_id ? ` · machine ${data.machine_id}` : ""} · mode ${data.mode} · token ${data.token_present ? "present" : "missing"}${data.env_disabled ? " · SKILLHOOK_NO_CLOUD set" : ""}`,
         ...(link ? [`link: ${link.state}${link.reason ? ` (${link.reason})` : ""}${link.last_sync_at ? `, last sync ${link.last_sync_at}` : ""}${link.outbox_depth ? `, ${link.outbox_depth} event(s) waiting` : ""}${link.last_error ? `, last error: ${link.last_error}` : ""}`] : data.server_running ? ["link: the running server reports no link state"] : ["link: no running server"]),
         ...(Object.keys(link?.ingress_urls ?? {}).length ? [`hosted URLs: ${Object.entries(link?.ingress_urls ?? {}).map(([skill, u]) => `${skill} ${u}`).join(", ")}`] : []),
+        data.api_key.present ? `API key: present (${data.api_key.source === "environment" ? CLOUD_API_KEY_ENV : ctx.paths.envFile}): skillhook cloud overview, skillhook cloud tools` : "API key: none (skillhook cloud login reads the whole organisation)",
       ];
       ctx.print(lines.join("\n"), data);
       return 0;
@@ -124,20 +134,30 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
       return 0;
     }
     case "login": {
-      const given = str(ctx.flags, "key");
-      if (!given) throw new UsageError("Give the organisation API key: --key shc_…, or --key - to read it from stdin (Settings → API keys on the dashboard)", CLOUD_USAGE);
+      const url = str(ctx.flags, "url");
+      if (ctx.flags.url === true) throw new UsageError("--url needs the cloud's address, like https://cloud.example.com", CLOUD_USAGE);
+      // A paired machine's link goes to its cloud: a key for another one would move it there.
+      if (url && config.cloud.enabled && config.cloud.url && trimTrailingSlashes(url.trim()) !== trimTrailingSlashes(config.cloud.url)) throw new CommandError(`This machine is paired with ${config.cloud.url}; log in to that cloud (skillhook cloud login), or disconnect first (skillhook cloud disconnect).`);
+      let given = str(ctx.flags, "key");
+      if (!given && ctx.io.isTTY) given = await promptHidden("Organisation API key (dashboard → Settings → API keys): ");
+      if (!given) throw new UsageError("Give the organisation API key: --key shc_…, or --key - to read it from stdin (Settings → API keys on the dashboard); at a terminal, skillhook cloud login asks for it", CLOUD_USAGE);
       const key = (given === "-" ? await readStdin(ctx) : given).trim();
       if (!API_KEY_RE.test(key)) throw new UsageError("That is not an organisation API key: those are shc_ followed by letters, digits, - and _ (Settings → API keys on the dashboard)", CLOUD_USAGE);
-      const client = fleetClient(env, config.cloud, key);
+      const client = fleetClient(env, config.cloud, key, { url });
       const { data: me } = await client.get("/me", MeSchema);
       upsertEnvVar(ctx.paths.envFile, CLOUD_API_KEY_ENV, key);
       ensureSecretFileMode(ctx.paths.envFile);
+      // The commands and `skillhook mcp --cloud` find the cloud where pairing would have put it.
+      const remembered = url !== undefined && client.url !== (config.cloud.url ? trimTrailingSlashes(config.cloud.url) : undefined);
+      if (remembered) updateConfig(ctx.paths, { set: { "cloud.url": client.url } });
       const fromEnvironment = env[CLOUD_API_KEY_ENV]?.trim();
       const lines = [
-        `Logged in to ${client.url} as ${me.organisation.name}: key "${me.key.name}" (${me.key.scopes.join(", ") || "no scopes"}), kept in ${ctx.paths.envFile} as ${CLOUD_API_KEY_ENV}.`,
+        `Logged in to ${client.url} as ${me.organisation.name}: key "${me.key.name}" (${me.key.scopes.join(", ") || "no scopes"}), kept in ${ctx.paths.envFile} as ${CLOUD_API_KEY_ENV}${remembered ? `; cloud.url set to ${client.url}` : ""}.`,
         ...(fromEnvironment && fromEnvironment !== key ? [`${CLOUD_API_KEY_ENV} is also set in this environment, and wins over .env.`] : []),
+        ...(url && env.SKILLHOOK_CLOUD_URL?.trim() && trimTrailingSlashes(env.SKILLHOOK_CLOUD_URL.trim()) !== client.url ? ["SKILLHOOK_CLOUD_URL is set in this environment, and wins over cloud.url."] : []),
+        "Next: skillhook cloud overview (what needs attention), skillhook cloud tools (everything this key can do); agents get the same as the skillhook-cloud MCP server (skillhook mcp --cloud).",
       ];
-      ctx.print(lines.join("\n"), { ok: true, url: client.url, organisation: me.organisation, key: me.key, role: me.role, env_file: ctx.paths.envFile });
+      ctx.print(lines.join("\n"), { ok: true, url: client.url, organisation: me.organisation, key: me.key, role: me.role, env_file: ctx.paths.envFile, cloud_url_saved: remembered });
       return 0;
     }
     case "logout": {
@@ -187,9 +207,121 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
       ctx.print(describeJob(data.job, machineOf(data.job, await machineNames(client))), raw);
       return 0;
     }
+    case "overview": {
+      const client = apiClient(ctx);
+      const data = await callTool(client, "describe_cloud", {});
+      ctx.print(describeOverview(data), data);
+      return 0;
+    }
+    case "tools": {
+      const client = apiClient(ctx);
+      const catalog = await fetchCatalog(client);
+      const name = ctx.args[1];
+      if (name) {
+        const tool = catalog.tools.find((t) => t.name === toolName(name));
+        if (!tool) throw new UsageError(`${client.url} offers no tool "${name}"; skillhook cloud tools lists them`, CLOUD_USAGE);
+        ctx.print(toolUsage(tool), tool);
+        return 0;
+      }
+      ctx.print(describeCatalog(catalog), catalog);
+      return 0;
+    }
+    case "secret": {
+      const [, machine, given] = ctx.args;
+      if (!machine || !given) throw new UsageError("Name the machine and the skill (or its secret's variable): skillhook cloud secret mac-mini hello", CLOUD_USAGE);
+      const client = apiClient(ctx);
+      const name = await secretNameFor(client, machine, given);
+      const made = await generateRemoteSecret(client, { machine, name, force: bool(ctx.flags, "force") });
+      if (made.secret === null) ctx.print(`${made.machine} already has ${name}; --force replaces it (the sender then needs the new value).`, { ok: true, ...made });
+      else ctx.print(`${name}=${made.secret}\n\nGenerated on ${made.machine} and kept in its .env (shown once; sealed to this terminal, the cloud never saw it). Configure the sender with this value.`, { ok: true, ...made });
+      return 0;
+    }
     default:
-      throw new UsageError(`Unknown cloud subcommand "${sub}"`, CLOUD_USAGE);
+      return callCloudTool(ctx, sub);
   }
+}
+
+/** A client with the organisation API key kept here (or in the environment). */
+function apiClient(ctx: Ctx): FleetClient {
+  return fleetClient(ctx.io.env, ctx.config().cloud, storedApiKey(ctx.paths, ctx.io.env));
+}
+
+/** `skillhook cloud <tool> …`: any tool of the cloud's catalogue, its input from the arguments and flags. */
+async function callCloudTool(ctx: Ctx, given: string): Promise<number> {
+  if (!/^[a-z][a-z0-9_-]*$/i.test(given)) throw new UsageError(`Unknown cloud subcommand "${given}"`, CLOUD_USAGE);
+  let client: FleetClient;
+  try {
+    client = apiClient(ctx);
+  } catch (error) {
+    if (error instanceof CloudApiError) throw new UsageError(`Unknown cloud subcommand "${given}" (the cloud's tools, skillhook cloud tools, need an organisation API key: skillhook cloud login)`, CLOUD_USAGE);
+    throw error;
+  }
+  const catalog = await fetchCatalog(client);
+  const tool = catalog.tools.find((t) => t.name === toolName(given));
+  if (!tool) throw new UsageError(`Unknown cloud subcommand or tool "${given}"; skillhook cloud tools lists the tools`, CLOUD_USAGE);
+  let input: Record<string, unknown>;
+  try {
+    input = await toolInput(tool, ctx.args.slice(1), ctx.flags, {
+      stdin: () => readStdin(ctx),
+      file: (path) => {
+        try {
+          return readFileSync(path, "utf8");
+        } catch (error) {
+          throw new ToolInputError(`Cannot read ${path}: ${(error as Error).message}`);
+        }
+      },
+    });
+  } catch (error) {
+    if (error instanceof ToolInputError) throw new UsageError(error.message, toolUsage(tool));
+    throw error;
+  }
+  if (tool.allowed === false) throw new CommandError(`${tool.name} needs a key with the ${tool.scope ?? "?"} scope; this one has ${catalog.key?.scopes?.join(", ") || "?"}. Create one under Settings → API keys, then: skillhook cloud login`);
+  const result = await callTool(client, tool.name, input);
+  ctx.print(renderResult(result), result);
+  return 0;
+}
+
+function describeCatalog(catalog: Catalog): string {
+  const firstSentence = (text: string) => (text.split(/(?<=\.)\s/)[0] ?? text).slice(0, 100);
+  const rows = catalog.tools.map((t) => [t.name, t.scope ?? "", t.allowed === false ? "no" : "yes", firstSentence(t.title ?? t.description)]);
+  return [`${catalog.organisation?.name ?? "?"} · key "${catalog.key?.name ?? "?"}" (${catalog.key?.scopes?.join(", ") ?? "?"})`, "", table(rows, ["tool", "scope", "allowed", "what"]), "", "skillhook cloud tools <tool> shows a tool's parameters; skillhook cloud <tool> … runs it (--json for the answer as it came)."].join("\n");
+}
+
+type Brief = { id?: string; local_id?: string | null; machine?: string | null; skill?: string; status?: string; outcome?: string | null; question?: { text?: string; options?: string[] | null } | null; failure?: { kind?: string } | null; code?: string | null; reason?: string | null; created_at?: string; received_at?: string; waiting_since?: string | null };
+
+/** `skillhook cloud overview`: describe_cloud as a page, the most pressing things first. */
+function describeOverview(data: Record<string, unknown>): string {
+  const o = data as {
+    organisation?: { name?: string };
+    key?: { name?: string; scopes?: string[] };
+    machines?: { total?: number; online?: number; list?: { name?: string; status?: string; mode?: string; skillhook_version?: string | null; last_seen_at?: string | null; runners_not_ready?: { runner?: string | null; detail?: string | null }[] }[] };
+    waiting_for_a_person?: number;
+    needs_attention?: { waiting_jobs?: Brief[]; open_alerts?: { count?: number; recent?: { type?: string; title?: string; opened_at?: string }[] }; failing_checks?: { machine?: string | null; name?: string; status?: string; detail?: string | null; hint?: string | null }[]; failed_jobs_24h?: { count?: number; recent?: Brief[] }; rejected_deliveries_24h?: { count?: number; recent?: Brief[] } };
+    last_24h?: { jobs?: { total?: number; succeeded?: number; failed?: number; running?: number; needs_human?: number; cost_usd?: number }; deliveries?: { total?: number; accepted?: number; rejected?: number } };
+    next_steps?: string[];
+  };
+  if (!o.machines || !o.needs_attention) return renderResult(data);
+  const attention = o.needs_attention;
+  const id = (b: Brief) => b.local_id ?? b.id ?? "?";
+  const lines = [`${o.organisation?.name ?? "?"} · key "${o.key?.name ?? "?"}" (${o.key?.scopes?.join(", ") ?? "?"}) · ${o.machines.online ?? 0}/${o.machines.total ?? 0} machines online`];
+  const section = (title: string, rows: string[]) => {
+    if (rows.length) lines.push("", title, ...rows.map((row) => `  ${row}`));
+  };
+  section(
+    `Waiting for a person (${o.waiting_for_a_person ?? 0})`,
+    (attention.waiting_jobs ?? []).map((j) => `${id(j)}  ${j.skill ?? "?"} on ${j.machine ?? "?"}: ${firstLine(j.question?.text ?? "finished needing a person")}${j.question?.options?.length ? ` [${j.question.options.join(" | ")}]` : ""}`),
+  );
+  section(`Open alerts (${attention.open_alerts?.count ?? 0})`, (attention.open_alerts?.recent ?? []).map((a) => `${a.type ?? "?"}: ${firstLine(a.title ?? "")}  ${relativeTime(a.opened_at)}`));
+  section("Failing health checks", (attention.failing_checks ?? []).map((c) => `${c.machine ?? "?"}  ${c.name ?? "?"} (${c.status ?? "?"})${c.detail ? `: ${firstLine(c.detail)}` : ""}${c.hint ? `  fix: ${firstLine(c.hint)}` : ""}`));
+  section(`Failed jobs, 24 h (${attention.failed_jobs_24h?.count ?? 0})`, (attention.failed_jobs_24h?.recent ?? []).map((j) => `${id(j)}  ${j.skill ?? "?"} on ${j.machine ?? "?"}: ${j.status ?? "?"}${j.failure?.kind ? ` (${j.failure.kind})` : ""}  ${relativeTime(j.created_at)}`));
+  section(`Rejected webhooks, 24 h (${attention.rejected_deliveries_24h?.count ?? 0})`, (attention.rejected_deliveries_24h?.recent ?? []).map((d) => `${id(d)}  ${d.skill ?? "?"} on ${d.machine ?? "?"}: ${d.code ?? ""}${d.reason ? ` ${firstLine(d.reason)}` : ""}  ${relativeTime(d.received_at)}`));
+  const jobs = o.last_24h?.jobs;
+  const deliveries = o.last_24h?.deliveries;
+  if (jobs || deliveries) lines.push("", `Last 24 h: ${jobs?.total ?? 0} jobs (${jobs?.succeeded ?? 0} succeeded, ${jobs?.failed ?? 0} failed, ${jobs?.running ?? 0} running)${typeof jobs?.cost_usd === "number" ? `, $${jobs.cost_usd.toFixed(2)}` : ""}; ${deliveries?.total ?? 0} webhooks (${deliveries?.accepted ?? 0} accepted, ${deliveries?.rejected ?? 0} rejected)`);
+  const machines = (o.machines.list ?? []).map((m) => [m.name ?? "?", m.status ?? "", m.mode ?? "", m.skillhook_version ?? "", m.last_seen_at ? relativeTime(m.last_seen_at) : "never", (m.runners_not_ready ?? []).map((r) => `${r.runner ?? "?"} not ready`).join(", ")]);
+  if (machines.length) lines.push("", table(machines, ["machine", "status", "mode", "version", "last seen", "runners"]));
+  section("Next steps", (o.next_steps ?? []).map((step) => `- ${step}`));
+  return lines.join("\n");
 }
 
 async function readStdin(ctx: Ctx): Promise<string> {

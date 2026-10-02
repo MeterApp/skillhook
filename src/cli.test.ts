@@ -822,6 +822,136 @@ describe("cli", () => {
     }
   });
 
+  it("does what the cloud's catalogue offers: login with --url, the overview, every tool by name, a sealed secret", async () => {
+    const { FakeCloud } = await import("./test-support/fake-cloud.js");
+    const fake = await FakeCloud.start();
+    const home = tempHome("skillhook-cli-tools-");
+    const at = ["--dir", home.home];
+    try {
+      const env = { SKILLHOOK_NO_UPDATE_CHECK: "1" };
+      // Without a key, a word that is no subcommand is a usage mistake, and nothing is sent.
+      const typo = io(env);
+      expect(await main(["cloud", "stauts", ...at], typo.cli)).toBe(2);
+      expect(typo.err()).toContain('Unknown cloud subcommand "stauts" (the cloud\'s tools, skillhook cloud tools, need an organisation API key: skillhook cloud login)');
+
+      // --url names the cloud once: checked, then kept as cloud.url for every later command; never over a pairing elsewhere.
+      const insecure = io(env);
+      expect(await main(["cloud", "login", "--url", "http://cloud.example.invalid", "--key", fake.apiKey, ...at], insecure.cli)).toBe(1);
+      expect(insecure.err()).toContain("must use https");
+      writeConfigFile(home, { cloud: { enabled: true, url: "https://other-cloud.example.invalid", machine_id: "m1" } });
+      const elsewhere = io(env);
+      expect(await main(["cloud", "login", "--url", fake.url, "--key", fake.apiKey, ...at], elsewhere.cli)).toBe(1);
+      expect(elsewhere.err()).toContain("This machine is paired with https://other-cloud.example.invalid");
+      writeConfigFile(home, {});
+      expect(fake.apiRequests).toEqual([]);
+      const login = io(env);
+      expect(await main(["cloud", "login", "--url", `${fake.url}/`, "--key", fake.apiKey, ...at], login.cli)).toBe(0);
+      expect(login.out()).toContain(`Logged in to ${fake.url} as Fake Org: key "laptop" (fleet:read), kept in ${home.envFile} as SKILLHOOK_CLOUD_API_KEY; cloud.url set to ${fake.url}.`);
+      expect(login.out()).not.toContain(fake.apiKey);
+      expect(JSON.parse(readFileSync(home.configFile, "utf8"))).toMatchObject({ cloud: { url: fake.url } });
+      const status = io(env);
+      expect(await main(["cloud", "status", ...at], status.cli)).toBe(0);
+      expect(status.out()).toContain(`API key: present (${home.envFile})`);
+
+      const overview = io(env);
+      expect(await main(["cloud", "overview", ...at], overview.cli)).toBe(0);
+      expect(overview.out()).toContain('Fake Org · key "laptop" (fleet:read) · 1/2 machines online');
+      expect(overview.out()).toContain("Waiting for a person (1)\n  20260929T101500Z-a1b2c3  triage on mac-mini: Deploy the fix to production? [yes | no]");
+      expect(overview.out()).toContain("Failing health checks\n  mac-mini  claude auth (fail): not logged in  fix: run claude login");
+      expect(overview.out()).toContain("Last 24 h: 2 jobs (1 succeeded, 0 failed, 1 running), $0.01; 3 webhooks (3 accepted, 0 rejected)");
+      expect(overview.out()).toMatch(/build-box\s+offline\s+observe\s+0\.5\.0\s+3d ago/);
+      expect(overview.out()).toContain("Next steps\n  - 1 agent(s) wait for a person");
+
+      const tools = io(env);
+      expect(await main(["cloud", "tools", ...at], tools.cli)).toBe(0);
+      expect(tools.out()).toMatch(/answer_job\s+fleet:run\s+no\s+Answer an agent/);
+      expect(tools.out()).toMatch(/describe_cloud\s+fleet:read\s+yes\s+Overview/);
+      const one = io(env);
+      expect(await main(["cloud", "tools", "answer-job", ...at], one.cli)).toBe(0);
+      expect(one.out()).toContain("skillhook cloud answer_job <job> <answer> [options]");
+      expect(one.out()).toContain("Scope: fleet:run (this key does not have it)");
+      const catalog = io(env);
+      expect(await main(["cloud", "tools", ...at, "--json"], catalog.cli)).toBe(0);
+      expect((catalog.json().tools as unknown[]).length).toBeGreaterThan(5);
+
+      // Any tool by name (kebab or snake case): arguments in order, typed flags, the answer as text or as it came.
+      const waiting = io(env);
+      expect(await main(["cloud", "list-jobs", "--waiting", "--limit", "5", ...at], waiting.cli)).toBe(0);
+      expect(fake.toolCalls.at(-1)).toEqual({ name: "list_jobs", input: { waiting: true, limit: 5 } });
+      expect(waiting.out()).toContain("jobs:\n  - id: c1f4e0aa-0b1c-4d2e-8f3a-9b8c7d6e5f01");
+      expect(waiting.out()).toContain("    question:\n      id: q1\n      text: Deploy the fix to production?\n      options: yes, no");
+      const job = io(env);
+      expect(await main(["cloud", "get_job", "20260929T090000Z-d4e5f6", ...at, "--json"], job.cli)).toBe(0);
+      expect(job.json()).toEqual({ job: { ...fake.jobs[1], timeline: [] } });
+      const body = io(env);
+      expect(await main(["cloud", "get_delivery", "--include-body", "dlv-1", ...at, "--json"], body.cli)).toBe(0);
+      expect(fake.toolCalls.at(-1)).toEqual({ name: "get_delivery", input: { delivery: "dlv-1", include_body: true } });
+      const report = io(env);
+      expect(await main(["cloud", "report_issue", "Replays hang", "--body", "since 0.6.0", ...at, "--json"], report.cli)).toBe(0);
+      expect(fake.toolCalls.at(-1)).toEqual({ name: "report_issue", input: { title: "Replays hang", body: "since 0.6.0" } });
+      const unknownJob = io(env);
+      expect(await main(["cloud", "get_job", "nope", ...at, "--json"], unknownJob.cli)).toBe(1);
+      expect(String(unknownJob.json().error)).toContain('unknown_job: No job "nope" in Fake Org.');
+
+      // Mistakes are usage errors with the tool's usage; a tool beyond the key's scope is refused before anything is sent.
+      const calls = fake.toolCalls.length;
+      const missing = io(env);
+      expect(await main(["cloud", "get_job", ...at], missing.cli)).toBe(2);
+      expect(missing.err()).toContain("get_job needs <job>");
+      expect(missing.err()).toContain("skillhook cloud get_job <job>");
+      expect(await main(["cloud", "list_jobs", "--colour", "red", ...at], io(env).cli)).toBe(2);
+      const nope = io(env);
+      expect(await main(["cloud", "drop_everything", ...at], nope.cli)).toBe(2);
+      expect(nope.err()).toContain('Unknown cloud subcommand or tool "drop_everything"');
+      const answer = io(env);
+      expect(await main(["cloud", "answer_job", "20260929T101500Z-a1b2c3", "yes", ...at], answer.cli)).toBe(1);
+      expect(answer.err()).toContain("answer_job needs a key with the fleet:run scope; this one has fleet:read.");
+      expect(fake.toolCalls.length).toBe(calls);
+
+      // With a wider key the same line runs; a JSON payload from a file reaches the tool as JSON.
+      fake.apiScopes = ["fleet:admin"];
+      const answered = io(env);
+      expect(await main(["cloud", "answer_job", "20260929T101500Z-a1b2c3", "yes", "--option", "yes", ...at], answered.cli)).toBe(0);
+      expect(fake.toolCalls.at(-1)).toEqual({ name: "answer_job", input: { job: "20260929T101500Z-a1b2c3", answer: "yes", option: "yes" } });
+      expect(answered.out()).toContain("delivered: live");
+      const event = path.join(home.home, "event.json");
+      writeFileSync(event, '{"action":"opened","number":7}');
+      expect(await main(["cloud", "run_skill", "mac-mini", "triage", "--payload", `@${event}`, "--wait-seconds", "0", ...at], io(env).cli)).toBe(0);
+      expect(fake.toolCalls.at(-1)).toEqual({ name: "run_skill", input: { machine: "mac-mini", skill: "triage", payload: { action: "opened", number: 7 }, wait_seconds: 0 } });
+
+      // A secret is generated on the machine, sealed to this terminal's key pair, and opened only here.
+      const secret = io(env);
+      expect(await main(["cloud", "secret", "mac-mini", "hello", ...at], secret.cli)).toBe(0);
+      expect(secret.out()).toContain(`SKILLHOOK_SECRET_HELLO=${fake.secretValue}`);
+      expect(fake.secretRequests).toMatchObject([{ machine: "mac-mini", name: "SKILLHOOK_SECRET_HELLO", claims: 2 }]);
+      expect(fake.secretRequests[0]?.recipient_key).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      const kept = io(env);
+      expect(await main(["cloud", "secret", "mac-mini", "SKILLHOOK_SECRET_KEPT", ...at, "--json"], kept.cli)).toBe(0);
+      expect(kept.json()).toMatchObject({ ok: true, name: "SKILLHOOK_SECRET_KEPT", secret: null, existed: true });
+      const noSkill = io(env);
+      expect(await main(["cloud", "secret", "mac-mini", "nope", ...at], noSkill.cli)).toBe(1);
+      expect(noSkill.err()).toContain("mac-mini has no skill named nope");
+      // A skill saved a moment ago is not listed yet: the machine's own answer names its secret.
+      const fresh = io(env);
+      expect(await main(["cloud", "secret", "mac-mini", "fresh", ...at, "--json"], fresh.cli)).toBe(0);
+      expect(fresh.json()).toMatchObject({ name: "SKILLHOOK_SECRET_FRESH", secret: fake.secretValue });
+      fake.apiScopes = ["fleet:run"];
+      const denied = io(env);
+      expect(await main(["cloud", "secret", "mac-mini", "SKILLHOOK_SECRET_HELLO", ...at], denied.cli)).toBe(1);
+      expect(denied.err()).toContain("needs the admin role");
+
+      // A cloud from before the catalogue says so; the reads of 0.6 still work there.
+      fake.catalogMode = "missing";
+      const old = io(env);
+      expect(await main(["cloud", "tools", ...at], old.cli)).toBe(1);
+      expect(old.err()).toContain("has no tool catalogue (GET /api/v1/tools): it runs an older Skillhook Cloud");
+      expect(await main(["cloud", "machines", ...at], io(env).cli)).toBe(0);
+      expect(fake.requests).toEqual([]);
+    } finally {
+      await fake.close();
+    }
+  });
+
   it("runs doctor, url and expose status without crashing", async () => {
     const d = io({ SKILLHOOK_NO_UPDATE_CHECK: "1" });
     const code = await main(["doctor", ...dir, "--json"], d.cli);
@@ -921,8 +1051,8 @@ describe("cli", () => {
       runners: [[], ["--refresh", "--local"]],
       stats: [[], ["--since", "7d"]],
       config: [[], ["show"], ["get", "port"], ["set", "port", "9999"], ["unset", "runners"], ["reload"], ["path"]],
-      cloud: [[], ["connect", "--code", "ABCD-EFGH", "--control"], ["disconnect"], ["status"], ["report", "Broken", "--body", "details"], ["login", "--key", "shc_placeholder-other-key"], ["logout"], ["machines"], ["jobs", "--waiting"], ["job", job]],
-      mcp: [[], ["--print-config"], ["--job", job]],
+      cloud: [[], ["connect", "--code", "ABCD-EFGH", "--control"], ["disconnect"], ["status"], ["report", "Broken", "--body", "details"], ["login", "--key", "shc_placeholder-other-key", "--url", "https://cloud.example.invalid"], ["logout"], ["overview"], ["machines"], ["jobs", "--waiting"], ["job", job], ["tools"], ["tools", "answer_job"], ["answer_job", job, "yes"], ["save-skill", "mac-mini", "hello", "--content-file", "SKILL.md"], ["secret", "mac-mini", "hello", "--force"]],
+      mcp: [[], ["--print-config"], ["--cloud"], ["--job", job]],
       update: [[], ["--install"], ["--refresh"]],
       link: [[], [unlinked]],
       unlink: [[linked]],

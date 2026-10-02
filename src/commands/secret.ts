@@ -1,6 +1,6 @@
 import { readEnvFile, redactValue, removeEnvVar } from "../env.js";
 import { createOps, generateSecretFor, resolveSecretName, setSecret } from "../ops.js";
-import { bool, CommandError, num, str, table, UsageError, type Ctx } from "./shared.js";
+import { bool, CommandError, num, promptHidden, str, table, UsageError, type Ctx } from "./shared.js";
 
 export const SECRET_USAGE = `Usage:
   skillhook secret set <NAME|skill|admin> [--value VALUE | --stdin]   store a provider's signing secret
@@ -59,17 +59,3 @@ export async function secretCommand(ctx: Ctx): Promise<number> {
   }
 }
 
-async function promptHidden(question: string): Promise<string> {
-  const readline = await import("node:readline");
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stderr, terminal: true });
-    process.stderr.write(question);
-    // Suppress echo so the secret never shows on screen or in scrollback.
-    (rl as unknown as { _writeToOutput: (text: string) => void })._writeToOutput = () => {};
-    rl.question("", (answer) => {
-      rl.close();
-      process.stderr.write("\n");
-      resolve(answer.trim());
-    });
-  });
-}

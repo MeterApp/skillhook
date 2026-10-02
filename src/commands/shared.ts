@@ -37,9 +37,13 @@ export class CommandError extends Error {
 }
 
 /** Flags that never take a value. Everything else takes the next token unless it starts with `-`. */
-const BOOLEAN_FLAGS = new Set(["json", "help", "h", "dry-run", "follow", "f", "yes", "y", "force", "pretty", "stdin", "public", "serve", "funnel", "result", "prompt", "stdout", "stderr", "exec", "all", "print-config", "quiet", "q", "version", "v", "overwrite", "no-secret", "print", "watch", "verbose", "local", "install", "check", "refresh", "body", "response", "skip-filters", "waiting", "quick", "control", "observe", "keep-token"]);
-/** Switches elsewhere that take a value in one subcommand: `cloud report --body TEXT` (`deliveries show <id> --body` is a switch). */
-const VALUE_FLAGS = new Map([["cloud report", ["body"]]]);
+const BOOLEAN_FLAGS = new Set(["json", "help", "h", "dry-run", "follow", "f", "yes", "y", "force", "pretty", "stdin", "public", "serve", "funnel", "result", "prompt", "stdout", "stderr", "exec", "all", "print-config", "quiet", "q", "version", "v", "overwrite", "no-secret", "print", "watch", "verbose", "local", "install", "check", "refresh", "body", "response", "skip-filters", "waiting", "quick", "control", "observe", "keep-token", "cloud"]);
+/** Switches elsewhere that take a value in one subcommand: `cloud report --body TEXT` (`deliveries show <id> --body` is a switch), and the cloud's report_issue tool. */
+const VALUE_FLAGS = new Map([
+  ["cloud report", ["body"]],
+  ["cloud report_issue", ["body"]],
+  ["cloud report-issue", ["body"]],
+]);
 
 export function parseArgs(argv: string[]): { flags: Flags; positionals: string[] } {
   const flags: Flags = {};
@@ -237,4 +241,19 @@ export function parseHeaderFlags(values: string[]): Record<string, string> {
     out[value.slice(0, idx).trim().toLowerCase()] = value.slice(idx + 1).trim();
   }
   return out;
+}
+
+/** Asks at the terminal without echoing the answer (a secret never shows on screen or in scrollback). */
+export async function promptHidden(question: string): Promise<string> {
+  const readline = await import("node:readline");
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stderr, terminal: true });
+    process.stderr.write(question);
+    (rl as unknown as { _writeToOutput: (text: string) => void })._writeToOutput = () => {};
+    rl.question("", (answer) => {
+      rl.close();
+      process.stderr.write("\n");
+      resolve(answer.trim());
+    });
+  });
 }
