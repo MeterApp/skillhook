@@ -105,4 +105,5 @@ Cloud itself is reported to the Skillhook team with `report_issue` when the pers
 | `skillhook cloud machines`, `jobs [--waiting]`, `job <id>` | tables of machines and jobs |
 | `skillhook cloud secret <machine> <skill>` | a skill's secret, generated there and opened only here |
 
-`--json` prints the cloud's answer as it came.
+`--json` prints the cloud's answer as it came. skillhook's own options (`--json`, `--help`, `--version`, `--dir`) mean the
+same anywhere on the line, so a text that is one of them goes after an equals sign: `--answer=--help`.

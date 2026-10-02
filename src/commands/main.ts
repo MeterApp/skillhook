@@ -1,6 +1,6 @@
 import { ConfigError } from "../config.js";
 import { SkillError } from "../skills.js";
-import { errorMessage } from "../util.js";
+import { errorMessage, printable } from "../util.js";
 import { VERSION } from "../version.js";
 import { bool, CommandError, createCtx, parseArgs, UsageError, type CliIO, type Ctx } from "./shared.js";
 import { initCommand, INIT_USAGE } from "./init.js";
@@ -198,21 +198,22 @@ export async function main(argv: string[], io: CliIO = defaultIO()): Promise<num
     noticeUpdate(ctx, name);
     return typeof code === "number" ? code : 0;
   } catch (error) {
+    // Messages can carry text from the cloud, machines and senders: a terminal gets it without control characters.
     if (error instanceof UsageError) {
-      io.stderr(`${error.message}\n${error.usage ? `\n${error.usage}\n` : ""}`);
+      io.stderr(printable(`${error.message}\n${error.usage ? `\n${error.usage}\n` : ""}`));
       return 2;
     }
     if (error instanceof CommandError) {
       if (ctx.json) io.stdout(`${JSON.stringify({ ok: false, error: error.message }, null, 2)}\n`);
-      else io.stderr(`${error.message}\n`);
+      else io.stderr(`${printable(error.message)}\n`);
       return error.exitCode;
     }
     if (error instanceof ConfigError || error instanceof SkillError) {
       if (ctx.json) io.stdout(`${JSON.stringify({ ok: false, error: error.message }, null, 2)}\n`);
-      else io.stderr(`${error.message}\n`);
+      else io.stderr(`${printable(error.message)}\n`);
       return 1;
     }
-    io.stderr(`error: ${errorMessage(error)}\n`);
+    io.stderr(`error: ${printable(errorMessage(error))}\n`);
     if (io.env.SKILLHOOK_DEBUG) io.stderr(`${(error as Error).stack ?? ""}\n`);
     return 1;
   }

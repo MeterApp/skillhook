@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createServer } from "node:http";
 import { COMMANDS, main, nodeVersionProblem, usageOf } from "./commands/main.js";
+import { VERSION } from "./version.js";
 import type { CliIO } from "./commands/shared.js";
 import { installService, restartService, uninstallService } from "./service.js";
 import { disableExposure, enableExposure } from "./tailscale.js";
@@ -738,6 +739,14 @@ describe("cli", () => {
       expect(String(wrong.json().error)).toMatch(/refused the API key \(invalid_key: The API key is unknown, revoked or expired\. \(request req_\d+\)\)\. Log in with a valid one: skillhook cloud login/);
       expect(readFileSync(home.envFile, "utf8")).not.toContain("SKILLHOOK_CLOUD_API_KEY");
 
+      // A key kept by skillhook 0.6 has no cloud of its own: it goes to the machine's, and status says so.
+      writeEnv(home, { SKILLHOOK_CLOUD_TOKEN: fake.token, SKILLHOOK_CLOUD_API_KEY: fake.apiKey });
+      expect(await main(["cloud", "machines", ...at], io(env).cli)).toBe(0);
+      const unbound = io(env);
+      expect(await main(["cloud", "status", ...at], unbound.cli)).toBe(0);
+      expect(unbound.out()).toContain(`API key: present, kept without its cloud: it goes to the machine's (${fake.url}) until skillhook cloud login names one`);
+      writeEnv(home, { SKILLHOOK_CLOUD_TOKEN: fake.token });
+
       // Checked with /me, kept in .env (mode 600), never printed; from the flag or from stdin.
       const login = io(env);
       expect(await main(["cloud", "login", "--key", fake.apiKey, ...at], login.cli)).toBe(0);
@@ -805,8 +814,11 @@ describe("cli", () => {
       const killed = io({ ...env, SKILLHOOK_NO_CLOUD: "1" });
       expect(await main(["cloud", "jobs", ...at], killed.cli)).toBe(1);
       expect(killed.err()).toContain("SKILLHOOK_NO_CLOUD is set");
-      // A key from the environment goes where the environment says, and only over https.
-      const insecure = io({ SKILLHOOK_NO_UPDATE_CHECK: "1", SKILLHOOK_CLOUD_API_KEY: fake.apiKey, SKILLHOOK_CLOUD_URL: "http://cloud.example.invalid" });
+      // A key from the environment goes to the cloud kept with that same key at login, else where the environment says,
+      // and only over https.
+      const same = io({ SKILLHOOK_NO_UPDATE_CHECK: "1", SKILLHOOK_CLOUD_API_KEY: fake.apiKey, SKILLHOOK_CLOUD_URL: "http://cloud.example.invalid" });
+      expect(await main(["cloud", "machines", ...at], same.cli)).toBe(0);
+      const insecure = io({ SKILLHOOK_NO_UPDATE_CHECK: "1", SKILLHOOK_CLOUD_API_KEY: "shc_placeholder-ci-key", SKILLHOOK_CLOUD_URL: "http://cloud.example.invalid" });
       expect(await main(["cloud", "machines", ...at], insecure.cli)).toBe(1);
       expect(insecure.err()).toContain("must use https");
       expect(await main(["cloud", "logout", "--help", ...at], io(env).cli)).toBe(0);
@@ -852,6 +864,10 @@ describe("cli", () => {
       const status = io(env);
       expect(await main(["cloud", "status", ...at], status.cli)).toBe(0);
       expect(status.out()).toContain(`API key: present for ${fake.url} (${home.envFile})`);
+      // Logging in again without --url (a new key, say) checks it with the cloud logged in to before, not the machine's.
+      const relogin = io(env);
+      expect(await main(["cloud", "login", "--key", fake.apiKey, ...at], relogin.cli)).toBe(0);
+      expect(relogin.out()).toContain(`Logged in to ${fake.url} as Fake Org`);
 
       writeConfigFile(home, { cloud: { url: "https://somewhere-else.example.invalid" } });
       const overview = io(env);
@@ -894,6 +910,10 @@ describe("cli", () => {
       const unknownJob = io(env);
       expect(await main(["cloud", "get_job", "nope", ...at, "--json"], unknownJob.cli)).toBe(1);
       expect(String(unknownJob.json().error)).toContain('unknown_job: No job "nope" in Fake Org.');
+      // What the cloud says reaches the terminal without control characters or bidirectional overrides.
+      const shady = io(env);
+      expect(await main(["cloud", "get_job", "nope\u202eevil\u001b[2J\u009b", ...at], shady.cli)).toBe(1);
+      expect(shady.err()).toContain('No job "nopeevil[2J" in Fake Org.');
 
       // Mistakes are usage errors with the tool's usage; a tool beyond the key's scope is refused before anything is sent.
       const calls = fake.toolCalls.length;
@@ -912,6 +932,25 @@ describe("cli", () => {
 
       // With a wider key the same line runs; a JSON payload from a file reaches the tool as JSON.
       fake.apiScopes = ["fleet:admin"];
+      // The tool's options may come before its name too.
+      expect(await main(["cloud", "--machine", "mac-mini", "list_jobs", "--waiting", ...at], io(env).cli)).toBe(0);
+      expect(fake.toolCalls.at(-1)).toEqual({ name: "list_jobs", input: { machine: "mac-mini", waiting: true } });
+      // skillhook's own options mean the same wherever they stand, never a parameter's value: the text goes after =.
+      const sent = fake.toolCalls.length;
+      const ownJson = io(env);
+      expect(await main(["cloud", "answer_job", "20260929T101500Z-a1b2c3", "--answer", "--json", ...at], ownJson.cli)).toBe(2);
+      expect(ownJson.err()).toContain("--answer needs a value: --json is skillhook's own option (as the text itself: --answer=--json)");
+      const version = io(env);
+      expect(await main(["cloud", "answer_job", "20260929T101500Z-a1b2c3", "--answer", "-v", ...at], version.cli)).toBe(0);
+      expect(version.out()).toBe(`${VERSION}\n`);
+      const usage = io(env);
+      expect(await main(["cloud", "answer_job", "20260929T101500Z-a1b2c3", "--answer", "--help", ...at], usage.cli)).toBe(0);
+      expect(usage.out()).toContain("skillhook cloud <tool> [arguments] [--param value]");
+      expect(fake.toolCalls.length).toBe(sent);
+      const literal = io(env);
+      expect(await main(["cloud", "answer_job", "20260929T101500Z-a1b2c3", "--answer=--json", "--option", "yes", ...at, "--json"], literal.cli)).toBe(0);
+      expect(fake.toolCalls.at(-1)).toEqual({ name: "answer_job", input: { job: "20260929T101500Z-a1b2c3", answer: "--json", option: "yes" } });
+      expect(literal.json()).toMatchObject({ delivered: "live" });
       const answered = io(env);
       expect(await main(["cloud", "answer_job", "20260929T101500Z-a1b2c3", "yes", "--option", "yes", ...at], answered.cli)).toBe(0);
       expect(fake.toolCalls.at(-1)).toEqual({ name: "answer_job", input: { job: "20260929T101500Z-a1b2c3", answer: "yes", option: "yes" } });

@@ -16,12 +16,15 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
   - `skillhook cloud tools [tool]` lists the tools the key has (and which a wider key would add) or
     describes one; `skillhook cloud <tool> [args] [--param value]…` runs any of them by name:
     `answer_job`, `replay_job`, `run_skill`, `test_skill`, `save_skill`, `get_job_artifact`,
-    `get_stats`, `list_alerts`, `enable_hosted_url`, `send_command`, … The arguments after the tool's
+    `get_stats`, `list_alerts`, `enable_hosted_url`, `send_command`, … The words around the tool's
     name are read with its schema: required parameters as arguments in order, typed flags (switches,
     checked numbers, JSON as a literal, `@file` or `-`, `--param-file PATH` for long text, `--input` for
-    the whole input). The answer prints as indented text (control characters removed), or as it came
-    with `--json`. A catalogue entry this version cannot read is skipped; a newer catalogue shape asks
-    for an update.
+    the whole input). skillhook's own options (`--json`, `--help`, `--version`, `--dir`) mean the same
+    wherever they stand and are never a parameter's value (`--answer=--help` sends that text), so
+    `--help` never runs a tool. The answer prints as indented text, or as it came with `--json`. Text
+    from the cloud, machines and senders reaches the terminal without control characters or
+    bidirectional overrides, error messages included. A catalogue entry this version cannot read (a
+    malformed schema included) is skipped; a newer catalogue shape asks for an update.
   - `skillhook cloud secret <machine> <skill|NAME> [--force]`: the machine generates a skill's secret
     (only a skill's: never its admin token or a runner's key) sealed to a key pair made for this one
     request; only this terminal can open it, the cloud only forwards the sealed value.
@@ -29,17 +32,24 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
     tools for the agent, the cloud's instructions, and `generate_secret`. Without a key it offers only
     `skillhook_cloud_setup`, which says what is missing and loads the tools once the person logged in;
     the agent never handles the key.
-  - `skillhook cloud login [--url URL]` checks the key against the cloud named (else the machine's) and
-    keeps it with that cloud (`SKILLHOOK_CLOUD_API_URL` next to `SKILLHOOK_CLOUD_API_KEY` in `.env`): the key
-    goes there and nowhere else, whatever `cloud.url` says later, and login never touches the machine's link.
-    At a terminal it asks for the key without echoing it. `cloud status` and the MCP tool `cloud_status` say
-    whether a key is kept and for which cloud.
+  - `skillhook cloud login [--url URL]` checks the key against the cloud named (else the one logged in to
+    before, else the machine's) and keeps it with that cloud (`SKILLHOOK_CLOUD_API_URL` next to
+    `SKILLHOOK_CLOUD_API_KEY` in `.env`): the key goes there and nowhere else, whatever `cloud.url` says
+    later, and login never touches the machine's link. The same key set in the environment goes there too.
+    A key kept by 0.6 goes to the machine's cloud until the next login. At a terminal login asks for the key
+    without echoing it. `cloud status` and the MCP tool `cloud_status` say whether a key is kept and for
+    which cloud.
   - The local MCP server refuses `cloud.*` settings in `update_config` and `SKILLHOOK_CLOUD_*` names in
-    `set_secret` and `generate_secret`: an agent can change neither where the link and the API key go nor
-    their credentials.
+    `set_secret` and `generate_secret`, so its configuration and secret tools do not move the link or the
+    API key. An agent that can run commands on the machine still acts with the person's rights.
   - A new plugin skill, `skillhook-cloud`, teaches the agent to triage the organisation (failure kinds,
     rejected deliveries, failing checks), act on it safely and set up machines, skills, secrets and hosted
     URLs.
+- A skill's `secret_env` can no longer name one of skillhook's own credentials (`SKILLHOOK_ADMIN_TOKEN`,
+  `SKILLHOOK_CLOUD_*`): generating or setting the skill's secret would have overwritten it (a cloud link's
+  token, where the API key goes). Such a skill is reported invalid. The machine also refuses the cloud's
+  `secret.generate` and `secret.set` for these variables by whatever name they come (a skill's or the
+  variable's), so the cloud cannot rotate the admin token either.
 - `--help` and `-h` never run a command. Most commands used to ignore them and do their work, so
   `skillhook jobs prune --help` pruned jobs and `skillhook service install --help` installed the service
   (0.6.0 fixed only `skillhook cloud`). Now `skillhook <command> [subcommand …] --help`, or

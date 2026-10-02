@@ -72,12 +72,17 @@ export interface ApiCredentials {
   url: string | undefined;
 }
 
-/** `SKILLHOOK_CLOUD_API_KEY` (with `SKILLHOOK_CLOUD_API_URL`) from the environment (CI), else from `.env`, where login keeps both. */
+/**
+ * `SKILLHOOK_CLOUD_API_KEY` and its cloud: from the environment (CI) with `SKILLHOOK_CLOUD_API_URL` there, or the cloud
+ * login kept with the same key; else both from `.env`, where login keeps them. A key without a cloud of its own (kept by
+ * skillhook 0.6, or set in the environment alone) goes to the machine's cloud, `SKILLHOOK_CLOUD_URL` or `cloud.url`.
+ */
 export function storedApiCredentials(paths: Paths, env: NodeJS.ProcessEnv): ApiCredentials {
-  const fromEnvironment = env[CLOUD_API_KEY_ENV]?.trim();
-  if (fromEnvironment) return { key: fromEnvironment, url: env[CLOUD_API_URL_ENV]?.trim() || undefined };
   const file = readEnvFile(paths.envFile);
-  return { key: file[CLOUD_API_KEY_ENV] || undefined, url: file[CLOUD_API_URL_ENV] || undefined };
+  const kept = { key: file[CLOUD_API_KEY_ENV] || undefined, url: file[CLOUD_API_URL_ENV] || undefined };
+  const fromEnvironment = env[CLOUD_API_KEY_ENV]?.trim();
+  if (!fromEnvironment) return kept;
+  return { key: fromEnvironment, url: env[CLOUD_API_URL_ENV]?.trim() || (fromEnvironment === kept.key ? kept.url : undefined) };
 }
 
 export interface FleetClient {
@@ -92,7 +97,7 @@ export interface FleetClient {
 /**
  * A client with the key for the cloud it was checked against (`credentials.url`; `options.url` at login), else the
  * machine's cloud for a key that has none; refused under `SKILLHOOK_NO_CLOUD`, without a well-formed key, to the
- * placeholder URL, or to a URL that is not https. A key never follows a `cloud.url` changed after login.
+ * placeholder URL, or to a URL that is not https. A key login kept never follows a `cloud.url` changed after it.
  */
 export function fleetClient(env: NodeJS.ProcessEnv, cloud: { url?: string }, credentials: ApiCredentials, options: { fetchImpl?: typeof fetch; url?: string } = {}): FleetClient {
   const { key } = credentials;
@@ -125,7 +130,7 @@ export function fleetClient(env: NodeJS.ProcessEnv, cloud: { url?: string }, cre
 /** A refused key says to log in again, a missing scope says which, an unreachable cloud where it was looked for. */
 export function describeApiFailure(error: CloudHttpError, url: string, method: "GET" | "POST" = "GET"): string {
   const said = `${error.code}: ${error.message}${error.requestId ? ` (request ${error.requestId})` : ""}`;
-  if (error.status === 0) return `Could not reach ${url} (${error.message}); the machine's cloud URL is cloud.url or SKILLHOOK_CLOUD_URL (skillhook config set cloud.url https://…)`;
+  if (error.status === 0) return `Could not reach ${url} (${error.message}). If the cloud moved: skillhook cloud login --url https://<its address>`;
   if (error.status === 401) return `${url} refused the API key (${said}). Log in with a valid one: skillhook cloud login --key -   (keys: Settings → API keys on the dashboard)`;
   // A read needs fleet:read; a tool the cloud refused names the scope it needs (and what the key has).
   if (error.status === 403 && method === "GET") return `The API key is not allowed to read this (${said}); it needs the fleet:read scope. Create a key with it under Settings → API keys, then: skillhook cloud login --key -`;

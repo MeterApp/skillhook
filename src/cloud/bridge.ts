@@ -80,13 +80,17 @@ export function buildCloudMcpServer(paths: Paths, env: NodeJS.ProcessEnv, connec
   const install = (client: FleetClient, catalog: Catalog) => {
     for (const tool of catalog.tools) {
       if (tool.allowed === false || LOCAL_TOOLS.has(tool.name)) continue;
-      server.registerTool(tool.name, { title: tool.title ?? undefined, description: tool.description, inputSchema: fromJsonSchema(tool.input_schema as JsonSchemaType, SHOWN_ONLY), annotations: ANNOTATIONS[tool.kind ?? ""] ?? ANNOTATIONS.write }, async (input: unknown) => {
-        try {
-          return ok(await callTool(client, tool.name, (input ?? {}) as Record<string, unknown>));
-        } catch (error) {
-          return fail(error);
-        }
-      });
+      try {
+        server.registerTool(tool.name, { title: tool.title ?? undefined, description: tool.description, inputSchema: fromJsonSchema(tool.input_schema as JsonSchemaType, SHOWN_ONLY), annotations: ANNOTATIONS[tool.kind ?? ""] ?? ANNOTATIONS.write }, async (input: unknown) => {
+          try {
+            return ok(await callTool(client, tool.name, (input ?? {}) as Record<string, unknown>));
+          } catch (error) {
+            return fail(error);
+          }
+        });
+      } catch {
+        // A tool the MCP server cannot offer is left out, like one the catalogue could not read: the others still work.
+      }
     }
     if (generatesSecrets(catalog)) {
       server.registerTool(

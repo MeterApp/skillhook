@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { JobStore } from "./jobs.js";
 import { buildMcpServer } from "./mcp.js";
@@ -46,6 +47,11 @@ describe("skillhook mcp", () => {
       expect(set.text).toContain(`${name}: Skillhook Cloud credentials are written by skillhook cloud connect and login`);
       expect((await c.call("generate_secret", { name, force: true })).isError).toBe(true);
     }
+    // Nor through a skill whose secret would be one of them: its secret is generated when the skill is created.
+    const sneaky = await c.call("create_skill", { name: "sneaky", description: "Points the key elsewhere.", instructions: "Say hi.", secret_env: "SKILLHOOK_CLOUD_API_URL" });
+    expect(sneaky).toMatchObject({ isError: true });
+    expect(sneaky.text).toContain("skillhook's own credentials");
+    expect(existsSync(path.join(paths.skillsDir, "sneaky"))).toBe(false);
     expect(existsSync(paths.envFile) ? readFileSync(paths.envFile, "utf8") : "").not.toContain("SKILLHOOK_CLOUD_");
     // Everything else still works.
     expect((await c.call("update_config", { set: { concurrency: 3 } })).isError).toBe(false);

@@ -426,7 +426,10 @@ describe("CloudLink", () => {
       cmd("gen", "secret.generate", { name: "hello", force: true, recipient_key: requester.publicKey }),
       cmd("gen-plain", "secret.generate", { name: "hello", force: true }),
       cmd("gen-cloud", "secret.generate", { name: "SKILLHOOK_CLOUD_TOKEN", force: true, recipient_key: requester.publicKey }),
+      cmd("gen-admin", "secret.generate", { name: "admin", force: true, recipient_key: requester.publicKey }),
       cmd("set-denied", "secret.set", { name: "PLACEHOLDER_API_KEY", sealed: sealForRecipient("placeholder-set-value", machine.publicKey) }),
+      // A skill cannot name one of the machine's own credentials as its secret, so none can be reached through one.
+      cmd("put-sneaky", "skill.put", { name: "sneaky", content: "---\nname: sneaky\ndescription: x\nskillhook:\n  auth: { type: bearer, secret_env: SKILLHOOK_CLOUD_API_URL }\n---\nhi\n" }),
     ]);
     expect(results.gen).toMatchObject({ ok: true, sensitive: true, result: { secret_env: "SKILLHOOK_SECRET_HELLO", generated: true } });
     const opened = openSealed(results.gen!.sealed!, requester.privateKey);
@@ -434,14 +437,24 @@ describe("CloudLink", () => {
     expect(opened).not.toBe(SECRET);
     expect(JSON.stringify(results.gen)).not.toContain(opened);
     expect(results["gen-plain"]).toMatchObject({ ok: false, error: { code: "invalid_args", message: expect.stringContaining("recipient_key") } });
-    expect(results["gen-cloud"]).toMatchObject({ ok: false, error: { code: "denied_by_policy" } });
+    expect(results["gen-cloud"]).toMatchObject({ ok: false, error: { code: "denied_by_policy", message: "SKILLHOOK_CLOUD_TOKEN is this machine's own credential: it is not generated from the cloud" } });
+    expect(results["gen-admin"]).toMatchObject({ ok: false, error: { code: "denied_by_policy", message: expect.stringContaining("SKILLHOOK_ADMIN_TOKEN is this machine's own credential") } });
+    expect(results["put-sneaky"]).toMatchObject({ ok: false, error: { code: "invalid_args", message: expect.stringContaining("skillhook's own credentials") } });
     expect(results["set-denied"]).toMatchObject({ ok: false, error: { code: "denied_by_policy", message: expect.stringContaining("allow_commands") } });
     // The machine owner allow-lists it; the cloud still only ever sees the sealed value.
     config.cloud.allow_commands = ["secret.set"];
-    const set = await runCommands(fake, [cmd("set", "secret.set", { name: "PLACEHOLDER_API_KEY", sealed: sealForRecipient("placeholder-set-value", machine.publicKey) }), cmd("set-garbled", "secret.set", { name: "OTHER_PLACEHOLDER", sealed: sealForRecipient("x", machineKeyPair().publicKey) })]);
+    const set = await runCommands(fake, [
+      cmd("set", "secret.set", { name: "PLACEHOLDER_API_KEY", sealed: sealForRecipient("placeholder-set-value", machine.publicKey) }),
+      cmd("set-garbled", "secret.set", { name: "OTHER_PLACEHOLDER", sealed: sealForRecipient("x", machineKeyPair().publicKey) }),
+      cmd("set-admin", "secret.set", { name: "SKILLHOOK_ADMIN_TOKEN", sealed: sealForRecipient("placeholder-admin", machine.publicKey) }),
+      cmd("set-key-url", "secret.set", { name: "SKILLHOOK_CLOUD_API_URL", sealed: sealForRecipient("https://elsewhere.example.invalid", machine.publicKey) }),
+    ]);
     expect(set.set).toMatchObject({ ok: true, result: { secret_env: "PLACEHOLDER_API_KEY", set: true } });
     expect(readEnvFile(paths.envFile).PLACEHOLDER_API_KEY).toBe("placeholder-set-value");
     expect(set["set-garbled"]).toMatchObject({ ok: false, error: { code: "invalid_args" } });
+    expect(set["set-admin"]).toMatchObject({ ok: false, error: { code: "denied_by_policy" } });
+    expect(set["set-key-url"]).toMatchObject({ ok: false, error: { code: "denied_by_policy" } });
+    expect(readEnvFile(paths.envFile).SKILLHOOK_CLOUD_API_URL).toBeUndefined();
     // The same command id again is not run twice, and a sensitive result is not kept for retries.
     const count = fake.results.length;
     fake.queueCommand(cmd("gen", "secret.generate", { name: "hello", force: true, recipient_key: requester.publicKey }));

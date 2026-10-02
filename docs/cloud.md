@@ -98,26 +98,34 @@ skillhook cloud job 20260929T101500Z-a1b2c3
 skillhook cloud logout                                  # forget the key here; revoke it on the dashboard to end it
 ```
 
-`login` checks the key with `GET /api/v1/me` against the cloud `--url` names (else this machine's cloud, `cloud.url` or
-`SKILLHOOK_CLOUD_URL`) and keeps both in `.env`, as `SKILLHOOK_CLOUD_API_KEY` and `SKILLHOOK_CLOUD_API_URL` (mode 600,
-the key never printed); `logout` removes them. From then on the key goes to that cloud and nowhere else: a `cloud.url`
-changed later moves neither the key nor, since login never touches it, this machine's link. In CI,
-`SKILLHOOK_CLOUD_API_KEY` in the environment takes precedence (with `SKILLHOOK_CLOUD_API_URL`, else the machine's
-cloud). A key never goes to the built-in placeholder URL, and it must look like one (`shc_` and then letters, digits, `-`
-and `_`), so a pasted second line or the machine token is refused before anything is sent. HTTPS only (plain http only
-to a loopback address); they refuse under `SKILLHOOK_NO_CLOUD=1`. An agent cannot change any of this: the local MCP
-server refuses `cloud.*` settings in `update_config` and `SKILLHOOK_CLOUD_*` names in `set_secret` and
-`generate_secret`.
+`login` checks the key with `GET /api/v1/me` against the cloud `--url` names (else the one logged in to before, else
+this machine's cloud, `cloud.url` or `SKILLHOOK_CLOUD_URL`) and keeps both in `.env`, as `SKILLHOOK_CLOUD_API_KEY` and
+`SKILLHOOK_CLOUD_API_URL` (mode 600, the key never printed); `logout` removes them. From then on the key goes to that
+cloud and nowhere else: a `cloud.url` changed later moves neither the key nor, since login never touches it, this
+machine's link. In CI, `SKILLHOOK_CLOUD_API_KEY` in the environment takes precedence, with `SKILLHOOK_CLOUD_API_URL`
+there, else the cloud kept with the same key at login, else the machine's cloud. A key kept by skillhook 0.6 has no cloud
+of its own either: it goes to the machine's cloud until the next `skillhook cloud login` (`cloud status` says so). A key
+never goes to the built-in placeholder URL, and it must look like one (`shc_` and then letters, digits, `-` and `_`), so
+a pasted second line or the machine token is refused before anything is sent. HTTPS only (plain http only to a loopback
+address); they refuse under `SKILLHOOK_NO_CLOUD=1`.
+
+skillhook's own tools do not move the key or the link for an agent: the local MCP server refuses `cloud.*` settings in
+`update_config` and `SKILLHOOK_CLOUD_*` names in `set_secret` and `generate_secret`, and no skill may name one of
+skillhook's own credentials (`SKILLHOOK_CLOUD_*`, `SKILLHOOK_ADMIN_TOKEN`) as its `secret_env`. That is no boundary
+against an agent that can run commands on this computer (a shell skill, a linked project's hook, a terminal): it acts
+with your account's rights, `.env` included.
 
 **Tools.** The cloud publishes its tools (`GET /api/v1/tools`: name, description, JSON Schema, the scope each needs), and
 `skillhook cloud <tool>` runs one (`POST /api/v1/tools/<tool>`; `list-jobs` and `list_jobs` are the same), so a tool the
-cloud adds works without a new skillhook. The arguments after the tool's name are read with its schema: required
+cloud adds works without a new skillhook. The words around the tool's name are read with its schema: required
 parameters may be given as arguments in order, the others as `--param value` or `--param=value` (`--wait-seconds` or
-`--wait_seconds`; a text parameter always takes the next word, `--` ends the flags); booleans are switches (`--waiting`,
-`--no-waiting`), numbers are checked, JSON parameters (payloads, arguments) take a literal, `@file` or `-` for stdin, a
-long text takes `--param-file PATH`, and `--input JSON|@file|-` gives the whole input (flags win over it). The answer
-prints as indented text (control characters removed), or as the cloud sent it with `--json`. A tool beyond the key's
-scope is refused before anything is sent.
+`--wait_seconds`; `--` ends the flags); booleans are switches (`--waiting`, `--no-waiting`), numbers are checked, JSON
+parameters (payloads, arguments) take a literal, `@file` or `-` for stdin, a long text takes `--param-file PATH`, and
+`--input JSON|@file|-` gives the whole input (flags win over it). A text parameter takes the next word even when it
+starts with a dash, except skillhook's own options (`--json`, `--help`/`-h`, `--version`/`-v`, `--dir`), which mean the
+same wherever they stand: such a text goes after an equals sign, `--answer=--help`. The answer prints as indented text
+(control characters and bidirectional overrides removed, as from every cloud command), or as the cloud sent it with
+`--json`. A tool beyond the key's scope is refused before anything is sent.
 
 **The MCP server.** `skillhook mcp --cloud` serves the same tools to an agent (the skillhook plugin registers it as
 `skillhook-cloud`, next to this machine's own `skillhook` server): the catalogue is read when it starts, each call is
@@ -194,11 +202,11 @@ What each control command does, and the rules it adds on top of the policy:
 | `service.restart` | Restarts a server run by launchd / systemd once the cloud has the answer (`when: idle` lets running jobs finish, up to `wait_seconds`; `now` does not wait). |
 | `schedule.run` | Fires a scheduled skill now. |
 | `update.install` | Installs a newer skillhook with the package manager that installed it; the server keeps running the old version until `service.restart`. |
-| `secret.generate` | Generates a skill's secret (or any `ENV_NAME`) and returns it only sealed to the requester's key (`recipient_key`, required); the value never travels or rests in the clear. `SKILLHOOK_CLOUD_*` names are refused. |
+| `secret.generate` | Generates a skill's secret (or any `ENV_NAME`) and returns it only sealed to the requester's key (`recipient_key`, required); the value never travels or rests in the clear. The machine's own credentials (`SKILLHOOK_CLOUD_*`, `SKILLHOOK_ADMIN_TOKEN`) are refused, by whatever name they are asked for (`admin`, a skill's, the variable's). |
 | `skill.put` | Writes `skills/<name>/SKILL.md` after validating it. Never for a name that comes from a linked repository; `auth: none` needs `allow_unauthenticated`. No secret is created: `secret.generate` does that, sealed. |
 | `skill.delete` | Removes a skill of `skills/` by moving its directory to `jobs/.removed-skills/<name>-<time>/`, where it can be restored. |
 
-`secret.set` (a value sealed to this machine's key, created at pairing and kept in `.env` as `SKILLHOOK_CLOUD_PRIVATE_KEY`) is allowed only when listed in `cloud.allow_commands`, whatever the mode.
+`secret.set` (a value sealed to this machine's key, created at pairing and kept in `.env` as `SKILLHOOK_CLOUD_PRIVATE_KEY`) is allowed only when listed in `cloud.allow_commands`, whatever the mode, and never for the machine's own credentials.
 
 ## Live output and artifacts
 

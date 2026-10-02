@@ -52,7 +52,7 @@ Errors are `SyncError` `{ok: false, error, message?, retry_after_ms?, min_protoc
 - `skill.run`, `skill.test`, `delivery.replay`, `job.replay`, `schedule.run`: `{accepted: true, job_id, …}` (a replay whose filters do not match: `{accepted: false, skipped: true, reason}`); the job itself is followed through its events.
 - `job.answer`: `{job_id, delivered: live|resumed|recorded, answer, resume_job_id}`.
 - `config.patch`: `{applied, restart_required_keys, pending_restart}`.
-- `secret.generate`: `{secret_env, existed, generated}` with the value in the result's `sealed` field only, `sensitive: true`.
+- `secret.generate`: `{secret_env, existed, generated}` with the value in the result's `sealed` field only, `sensitive: true`. It and `secret.set` answer `denied_by_policy` for the machine's own credentials (`SKILLHOOK_CLOUD_*`, `SKILLHOOK_ADMIN_TOKEN`) by any name.
 - `job.artifact`: `{job_id, name, bytes, text, truncated}` inline, or `{job_id, name, uploaded: true, bytes, sha256, chunks}`.
 - `service.restart`: `{restarting: true, when, wait_seconds, running}`; the restart begins once a sync response acknowledges this result (or 15 seconds later).
 

@@ -8,8 +8,9 @@ import { ISSUE_KINDS, ISSUE_SEVERITIES, JOB_OUTCOMES, JOB_STATUSES, type IssueKi
 import { generateRemoteSecret, secretNameFor } from "../cloud/remote-secret.js";
 import { buildIssueReport, IssueReportError, reportIssue, type IssueReportInput } from "../cloud/report.js";
 import { machineKeyPair, publicKeyOf, SealError } from "../cloud/seal.js";
-import { callTool, fetchCatalog, printable, renderResult, toolInput, ToolInputError, toolName, toolUsage, type Catalog } from "../cloud/tools.js";
+import { callTool, fetchCatalog, renderResult, toolInput, ToolInputError, toolName, toolUsage, type Catalog } from "../cloud/tools.js";
 import { ensureSecretFileMode, readEnvFile, removeEnvVar, upsertEnvVar } from "../env.js";
+import { printable } from "../util.js";
 import { bool, CommandError, formatDuration, num, parseArgs, promptHidden, relativeTime, str, table, UsageError, type Ctx } from "./shared.js";
 
 export const CLOUD_USAGE = `Usage:
@@ -95,13 +96,13 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
         running ? "The running server picks the link up within a few seconds." : "Start the server (skillhook serve, or skillhook service install) to bring the link up.",
         ...(cloudDisabledByEnv(env) ? ["SKILLHOOK_NO_CLOUD is set in this environment: the link will not start until it is unset."] : []),
       ];
-      ctx.print(lines.join("\n"), { ok: true, url, machine_id: response.machine_id, mode: response.mode, dashboard_url: response.dashboard_url, account: response.account, server_running: Boolean(running) });
+      ctx.print(printable(lines.join("\n")), { ok: true, url, machine_id: response.machine_id, mode: response.mode, dashboard_url: response.dashboard_url, account: response.account, server_running: Boolean(running) });
       return 0;
     }
     case "disconnect": {
       const keepToken = bool(ctx.flags, "keep-token");
       const done = await disconnectCloud(ctx.paths, env, { keepToken, notify: (baseUrl) => notifyReload(ctx, baseUrl) });
-      ctx.print(`${done.was_enabled ? "Disconnected from" : "Not connected to"} ${done.url}.${done.token_removed ? (done.revoked ? " Token revoked." : " The cloud could not be told; the token was removed here.") : keepToken ? " Token kept in .env." : ""} The running server stops the link within a few seconds.`, { ok: true, ...done });
+      ctx.print(printable(`${done.was_enabled ? "Disconnected from" : "Not connected to"} ${done.url}.${done.token_removed ? (done.revoked ? " Token revoked." : " The cloud could not be told; the token was removed here.") : keepToken ? " Token kept in .env." : ""} The running server stops the link within a few seconds.`), { ok: true, ...done });
       return 0;
     }
     case "status": {
@@ -111,16 +112,18 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
         `${data.enabled ? "enabled" : "not connected"} · ${data.url}${data.machine_id ? ` · machine ${data.machine_id}` : ""} · mode ${data.mode} · token ${data.token_present ? "present" : "missing"}${data.env_disabled ? " · SKILLHOOK_NO_CLOUD set" : ""}`,
         ...(link ? [`link: ${link.state}${link.reason ? ` (${link.reason})` : ""}${link.last_sync_at ? `, last sync ${link.last_sync_at}` : ""}${link.outbox_depth ? `, ${link.outbox_depth} event(s) waiting` : ""}${link.last_error ? `, last error: ${link.last_error}` : ""}`] : data.server_running ? ["link: the running server reports no link state"] : ["link: no running server"]),
         ...(Object.keys(link?.ingress_urls ?? {}).length ? [`hosted URLs: ${Object.entries(link?.ingress_urls ?? {}).map(([skill, u]) => `${skill} ${u}`).join(", ")}`] : []),
-        data.api_key.present ? `API key: present${data.api_key.url ? ` for ${data.api_key.url}` : ""} (${data.api_key.source === "environment" ? CLOUD_API_KEY_ENV : ctx.paths.envFile}): skillhook cloud overview, skillhook cloud tools` : "API key: none (skillhook cloud login reads the whole organisation)",
+        data.api_key.present
+          ? `API key: ${data.api_key.url ? `present for ${data.api_key.url}` : `present, kept without its cloud: it goes to the machine's (${data.url}) until skillhook cloud login names one`} (${data.api_key.source === "environment" ? CLOUD_API_KEY_ENV : ctx.paths.envFile}): skillhook cloud overview, skillhook cloud tools`
+          : "API key: none (skillhook cloud login reads the whole organisation)",
       ];
-      ctx.print(lines.join("\n"), data);
+      ctx.print(printable(lines.join("\n")), data);
       return 0;
     }
     case "report": {
       const input = await reportInput(ctx);
       if (bool(ctx.flags, "dry-run")) {
         const built = await buildIssueReport(ctx.paths, env, input, { config });
-        ctx.print(`Would send to ${built.url}/api/agent/issues (nothing was sent):\n${JSON.stringify(built.request, null, 2)}`, { dry_run: true, ...built });
+        ctx.print(printable(`Would send to ${built.url}/api/agent/issues (nothing was sent):\n${JSON.stringify(built.request, null, 2)}`), { dry_run: true, ...built });
         return 0;
       }
       const { issue, request } = await reportIssue(ctx.paths, env, input, { config });
@@ -129,7 +132,7 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
         issue.acknowledged ? `A confirmation email was sent${request.contact_email ? ` to ${request.contact_email}` : ""}.` : "No confirmation email was sent.",
         ...(request.diagnostics ? ["Diagnostics went with it (--dry-run shows them; --no-diagnostics leaves them out)."] : []),
       ];
-      ctx.print(lines.join("\n"), issue);
+      ctx.print(printable(lines.join("\n")), issue);
       return 0;
     }
     case "login": {
@@ -140,9 +143,11 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
       if (!given) throw new UsageError("Give the organisation API key: --key shc_…, or --key - to read it from stdin (Settings → API keys on the dashboard); at a terminal, skillhook cloud login asks for it", CLOUD_USAGE);
       const key = (given === "-" ? await readStdin(ctx) : given).trim();
       if (!API_KEY_RE.test(key)) throw new UsageError("That is not an organisation API key: those are shc_ followed by letters, digits, - and _ (Settings → API keys on the dashboard)", CLOUD_USAGE);
-      // The cloud named here (else the machine's) is the one the key is checked against, kept with it, and the only one
-      // it is ever sent to: changing cloud.url later moves neither the key nor this machine's link.
-      const client = fleetClient(env, config.cloud, { key, url: undefined }, { url });
+      // The cloud named here (else the one logged in to before, else the machine's) is the one the key is checked against,
+      // kept with it, and the only one it is ever sent to: changing cloud.url later moves neither the key nor this
+      // machine's link.
+      const before = env[CLOUD_API_URL_ENV]?.trim() || readEnvFile(ctx.paths.envFile)[CLOUD_API_URL_ENV] || undefined;
+      const client = fleetClient(env, config.cloud, { key, url: undefined }, { url: url ?? before });
       const { data: me } = await client.get("/me", MeSchema);
       upsertEnvVar(ctx.paths.envFile, CLOUD_API_KEY_ENV, key);
       upsertEnvVar(ctx.paths.envFile, CLOUD_API_URL_ENV, client.url);
@@ -160,7 +165,7 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
       const removed = removeEnvVar(ctx.paths.envFile, CLOUD_API_KEY_ENV);
       removeEnvVar(ctx.paths.envFile, CLOUD_API_URL_ENV);
       const inEnvironment = Boolean(env[CLOUD_API_KEY_ENV]?.trim());
-      ctx.print(`${removed ? `Removed ${CLOUD_API_KEY_ENV} from ${ctx.paths.envFile}.` : `No API key was kept in ${ctx.paths.envFile}.`}${inEnvironment ? ` ${CLOUD_API_KEY_ENV} is still set in this environment.` : ""} The key itself works until it is revoked under Settings → API keys.`, { ok: true, removed, env_var_set: inEnvironment });
+      ctx.print(printable(`${removed ? `Removed ${CLOUD_API_KEY_ENV} from ${ctx.paths.envFile}.` : `No API key was kept in ${ctx.paths.envFile}.`}${inEnvironment ? ` ${CLOUD_API_KEY_ENV} is still set in this environment.` : ""} The key itself works until it is revoked under Settings → API keys.`), { ok: true, removed, env_var_set: inEnvironment });
       return 0;
     }
     case "machines": {
@@ -229,8 +234,8 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
       const client = apiClient(ctx);
       const name = await secretNameFor(client, machine, given);
       const made = await generateRemoteSecret(client, { machine, name, force: bool(ctx.flags, "force") });
-      if (made.secret === null) ctx.print(`${made.machine} already has ${name}; --force replaces it (the sender then needs the new value).`, { ok: true, ...made });
-      else ctx.print(`${name}=${made.secret}\n\nGenerated on ${made.machine} and kept in its .env (shown once; sealed to this terminal, the cloud never saw it). Configure the sender with this value.`, { ok: true, ...made });
+      if (made.secret === null) ctx.print(printable(`${made.machine} already has ${name}; --force replaces it (the sender then needs the new value).`), { ok: true, ...made });
+      else ctx.print(printable(`${name}=${made.secret}\n\nGenerated on ${made.machine} and kept in its .env (shown once; sealed to this terminal, the cloud never saw it). Configure the sender with this value.`), { ok: true, ...made });
       return 0;
     }
     default:
@@ -243,7 +248,10 @@ function apiClient(ctx: Ctx): FleetClient {
   return fleetClient(ctx.io.env, ctx.config().cloud, storedApiCredentials(ctx.paths, ctx.io.env));
 }
 
-/** `skillhook cloud <tool> …`: any tool of the cloud's catalogue, its input from the arguments after its name. */
+/**
+ * `skillhook cloud <tool> …`: any tool of the cloud's catalogue, its input from the words around its name, read with its
+ * schema (a switch never takes the next word, a text parameter does) rather than as the flags of every command.
+ */
 async function callCloudTool(ctx: Ctx, given: string): Promise<number> {
   if (!/^[a-z][a-z0-9_-]*$/i.test(given)) throw new UsageError(`Unknown cloud subcommand "${given}"`, CLOUD_USAGE);
   let client: FleetClient;
@@ -257,12 +265,10 @@ async function callCloudTool(ctx: Ctx, given: string): Promise<number> {
   const catalog = await fetchCatalog(client);
   const tool = catalog.tools.find((t) => t.name === toolName(given));
   if (!tool) throw new UsageError(`Unknown cloud subcommand or tool "${given}"; skillhook cloud tools lists the tools`, CLOUD_USAGE);
-  // Read with the tool's own schema from the command line as given (a switch never takes the next word, a text
-  // parameter always does), not from the flags parsed for every command.
   const at = parseArgs(ctx.rawArgs).positionalIndexes[0] ?? ctx.rawArgs.length;
   let input: Record<string, unknown>;
   try {
-    input = await toolInput(tool, ctx.rawArgs.slice(at + 1), {
+    input = await toolInput(tool, [...ctx.rawArgs.slice(0, at), ...ctx.rawArgs.slice(at + 1)], {
       stdin: () => readStdin(ctx),
       file: (path: string) => {
         try {
@@ -273,7 +279,7 @@ async function callCloudTool(ctx: Ctx, given: string): Promise<number> {
       },
     });
   } catch (error) {
-    if (error instanceof ToolInputError) throw new UsageError(error.message, printable(toolUsage(tool)));
+    if (error instanceof ToolInputError) throw new UsageError(error.message, toolUsage(tool));
     throw error;
   }
   if (tool.allowed === false) throw new CommandError(`${tool.name} needs a key with the ${tool.scope ?? "?"} scope; this one has ${catalog.key?.scopes?.join(", ") || "?"}. Create one under Settings → API keys, then: skillhook cloud login`);

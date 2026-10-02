@@ -106,6 +106,21 @@ export function errorMessage(error: unknown): string {
   return String(error);
 }
 
+/**
+ * Text from machines, senders and the cloud as a terminal should show it: without control characters (C0 but newlines
+ * and tabs, DEL, C1), which could drive the terminal, and bidirectional overrides and isolates, which reorder what it shows.
+ */
+export function printable(value: string): string {
+  let out = "";
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    const control = (code < 32 && code !== 10 && code !== 9) || (code >= 0x7f && code <= 0x9f);
+    const bidi = (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069);
+    if (!control && !bidi) out += char;
+  }
+  return out;
+}
+
 /** Stringifies for humans: strings as-is, everything else as JSON. */
 export function display(value: unknown): string {
   if (typeof value === "string") return value;

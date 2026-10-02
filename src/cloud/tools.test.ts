@@ -24,6 +24,9 @@ describe("the cloud's tools on the command line", () => {
   it("takes required parameters as arguments in order and the rest as typed flags, global options aside", async () => {
     expect(await toolInput(tool("answer_job"), ["20260929T101500Z-a1b2c3", "ship it", "--option", "yes", "--wait-seconds", "5"], sources)).toEqual({ job: "20260929T101500Z-a1b2c3", answer: "ship it", option: "yes", wait_seconds: 5 });
     expect(await toolInput(tool("list_jobs"), ["--waiting", "--limit=10", "--json", "--dir", "/tmp/home"], sources)).toEqual({ waiting: true, limit: 10 });
+    expect(await toolInput(tool("list_jobs"), ["--dir=/tmp/home", "-h", "-v", "--home", "/tmp/other", "--waiting"], sources)).toEqual({ waiting: true });
+    // --dir takes the next word as every command reads it: not one that starts with a dash.
+    expect(await toolInput(tool("get_job"), ["--dir", "--json", "job-1"], sources)).toEqual({ job: "job-1" });
     expect(await toolInput(tool("list_jobs"), ["--no-waiting"], sources)).toEqual({ waiting: false });
     expect(await toolInput(tool("list_jobs"), ["--waiting=false"], sources)).toEqual({ waiting: false });
     expect(await toolInput(tool("get_delivery"), ["--include-body", "dlv-1"], sources)).toEqual({ delivery: "dlv-1", include_body: true });
@@ -35,6 +38,16 @@ describe("the cloud's tools on the command line", () => {
     expect(await toolInput(reportIssue, ["Replays hang", "--body", "since 0.6.0"], sources)).toEqual({ title: "Replays hang", body: "since 0.6.0" });
     expect(await toolInput(tool("answer_job"), ["job-1", "--answer", "--no-op is fine"], sources)).toEqual({ job: "job-1", answer: "--no-op is fine" });
     expect(await toolInput(tool("answer_job"), ["job-1", "--", "--force"], sources)).toEqual({ job: "job-1", answer: "--force" });
+  });
+
+  it("never takes skillhook's own options as a value: they mean the same everywhere, and the text itself goes after =", async () => {
+    for (const own of ["--json", "--help", "-h", "--version", "-v", "--dir", "--home", "--json=false", "--dir=/tmp/x"]) {
+      await expect(toolInput(tool("answer_job"), ["job-1", "--answer", own], sources)).rejects.toThrow(`--answer needs a value: ${own} is skillhook's own option (as the text itself: --answer=${own})`);
+    }
+    expect(await toolInput(tool("answer_job"), ["job-1", "--answer=--json"], sources)).toEqual({ job: "job-1", answer: "--json" });
+    expect(await toolInput(tool("answer_job"), ["job-1", "--answer=-v"], sources)).toEqual({ job: "job-1", answer: "-v" });
+    expect(await toolInput(tool("answer_job"), ["job-1", "--answer", "--jsonish", "--option", "-"], sources)).toEqual({ job: "job-1", answer: "--jsonish", option: "from stdin" });
+    await expect(toolInput(tool("answer_job"), ["--input", "--json"], sources)).rejects.toThrow("--input needs a value");
   });
 
   it("reads JSON, files and stdin where a parameter takes them, and --input under the flags", async () => {
@@ -86,11 +99,28 @@ describe("the catalogue", () => {
   const good = (name: string) => ({ name, description: "A tool.", input_schema: { type: "object" } });
 
   it("keeps the tools it can read and the first of a name listed twice", async () => {
-    const catalog = await fetchCatalog(client({ version: 1, tools: [good("list_jobs"), { name: "Bad-Name", description: "x", input_schema: {} }, { name: "no_schema", description: "x" }, { ...good("list_jobs"), description: "A second one." }, good("get_job")] }));
+    const catalog = await fetchCatalog(
+      client({
+        version: 1,
+        tools: [
+          good("list_jobs"),
+          { name: "Bad-Name", description: "x", input_schema: { type: "object" } },
+          { name: "no_schema", description: "x" },
+          { name: "not_an_object", description: "x", input_schema: { type: "string" } },
+          { name: "untyped", description: "x", input_schema: {} },
+          { name: "null_parameter", description: "x", input_schema: { type: "object", properties: { a: null } } },
+          { name: "listed_parameter", description: "x", input_schema: { type: "object", properties: { a: [] } } },
+          { name: "odd_required", description: "x", input_schema: { type: "object", required: 5 } },
+          { ...good("list_jobs"), description: "A second one." },
+          { ...good("get_job"), input_schema: { type: "object", properties: { job: { type: "string" } }, required: ["job"], additionalProperties: false } },
+        ],
+      }),
+    );
     expect(catalog.tools.map((t) => [t.name, t.description])).toEqual([
       ["list_jobs", "A tool."],
       ["get_job", "A tool."],
     ]);
+    expect(catalog.tools[1]?.input_schema).toEqual({ type: "object", properties: { job: { type: "string" } }, required: ["job"], additionalProperties: false });
   });
 
   it("asks for a newer skillhook when the catalogue's shape is newer than it reads", async () => {

@@ -43,7 +43,7 @@ Secrets the dashboard asks for are generated here and sent only sealed to the re
 
 The kill switches: `cloud.enabled: false`, `SKILLHOOK_NO_CLOUD=1` in the server's environment, `skillhook cloud disconnect` (which also revokes the token and removes the machine's key). Treat the machine token like the admin token: it identifies the machine to the cloud, and whoever holds it can read what the link uploads.
 
-An organisation API key kept with `skillhook cloud login` (`SKILLHOOK_CLOUD_API_KEY` in `.env`, mode 600) reads the whole organisation with the key's scopes; keep a `fleet:read` key on a machine, not an admin one, and revoke it on the dashboard when the machine should stop reading. The machine token is never used for those reads, so pairing alone gives a machine no view of the rest of the organisation.
+An organisation API key kept with `skillhook cloud login` (`SKILLHOOK_CLOUD_API_KEY` in `.env`, mode 600) reads the whole organisation with the key's scopes; keep a `fleet:read` key on a machine, not an admin one, and revoke it on the dashboard when the machine should stop reading. The machine token is never used for those reads, so pairing alone gives a machine no view of the rest of the organisation. The key is kept with the cloud it was checked against (`SKILLHOOK_CLOUD_API_URL`) and goes nowhere else. skillhook's own credentials (`SKILLHOOK_CLOUD_*`, `SKILLHOOK_ADMIN_TOKEN`) are never a skill's `secret_env`, the local MCP server's configuration and secret tools refuse them, and the machine never generates or sets them for the cloud; an agent that can run commands on the machine is not held back by any of that, since it acts with your account's rights.
 
 ## Authentication schemes
 

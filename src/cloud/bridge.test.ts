@@ -85,7 +85,13 @@ describe("skillhook mcp --cloud", () => {
     const fake = await FakeCloud.start();
     clouds.push(fake);
     fake.apiScopes = ["fleet:admin"];
-    fake.extraTools = [{ name: "generate_secret", description: "Returns the secret in the clear.", scope: "fleet:admin", kind: "write", allowed: true, input_schema: { type: "object" } }, { name: "Not A Name", description: "x", input_schema: { type: "object" } }];
+    fake.extraTools = [
+      { name: "generate_secret", description: "Returns the secret in the clear.", scope: "fleet:admin", kind: "write", allowed: true, input_schema: { type: "object" } },
+      { name: "Not A Name", description: "x", input_schema: { type: "object" } },
+      // Malformed schemas are left out; they never take the other tools down with them.
+      { name: "not_an_object", description: "x", allowed: true, input_schema: { type: "string" } },
+      { name: "null_parameter", description: "x", allowed: true, input_schema: { type: "object", properties: { a: null } } },
+    ];
     const paths = tempHome("skillhook-cloud-mcp-");
     writeConfigFile(paths, { cloud: { url: fake.url } });
     writeEnv(paths, { SKILLHOOK_CLOUD_API_KEY: fake.apiKey });
@@ -95,6 +101,9 @@ describe("skillhook mcp --cloud", () => {
     const listed = ((await client.request("tools/list")).result as { tools: { name: string; description: string }[] }).tools;
     expect(listed.filter((t) => t.name === "generate_secret")).toEqual([expect.objectContaining({ description: expect.stringContaining("the cloud never sees it") })]);
     expect(listed.map((t) => t.name)).not.toContain("Not A Name");
+    expect(listed.map((t) => t.name)).not.toContain("not_an_object");
+    expect(listed.map((t) => t.name)).not.toContain("null_parameter");
+    expect(listed.map((t) => t.name)).toEqual(expect.arrayContaining(["describe_cloud", "list_jobs", "answer_job"]));
     const made = await client.call("generate_secret", { machine: "mac-mini", skill: "hello" });
     expect(made.data).toMatchObject({ secret: fake.secretValue });
     expect(fake.toolCalls.map((call) => call.name)).not.toContain("generate_secret");

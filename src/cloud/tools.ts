@@ -3,9 +3,13 @@
 // scope it needs. `skillhook cloud <tool>` and `skillhook mcp --cloud` build their commands and tools from it at run
 // time, so an operation the cloud adds needs no new skillhook. A call is `POST /api/v1/tools/<name>` with the key.
 import { z } from "zod";
+import { printable } from "../util.js";
 import { CloudApiError, type FleetClient } from "./api.js";
 
 const text = z.string().nullish();
+
+/** A tool's input as JSON Schema: an object whose parameters are schemas (objects), as MCP requires; read loosely within. */
+const InputSchemaSchema = z.object({ type: z.literal("object"), properties: z.record(z.string(), z.record(z.string(), z.unknown())).optional(), required: z.array(z.string()).optional() }).loose();
 
 export const CatalogToolSchema = z
   .object({
@@ -18,7 +22,7 @@ export const CatalogToolSchema = z
     kind: text,
     /** Whether the key that listed it may call it. */
     allowed: z.boolean().nullish(),
-    input_schema: z.record(z.string(), z.unknown()),
+    input_schema: InputSchemaSchema,
   })
   .loose();
 export type CatalogTool = z.infer<typeof CatalogToolSchema>;
@@ -48,8 +52,9 @@ export interface Catalog {
 const ResultSchema = z.record(z.string(), z.unknown());
 
 /**
- * The catalogue as this key sees it: the tools this version can read (one it cannot is skipped, not fatal; a name
- * listed twice counts once). A cloud from before the catalogue, or with a newer shape of it, says so.
+ * The catalogue as this key sees it: the tools this version can read (one it cannot, a malformed schema included, is
+ * skipped, not fatal; a name listed twice counts once). A cloud from before the catalogue, or with a newer shape of it,
+ * says so.
  */
 export async function fetchCatalog(client: FleetClient, options: { timeoutMs?: number } = {}): Promise<Catalog> {
   let listing: z.infer<typeof ListingSchema>;
@@ -141,16 +146,25 @@ export interface InputSources {
   file: (path: string) => string;
 }
 
-/** Options every command takes, never a tool's parameter: these take a value, the others are switches. */
-const GLOBAL_VALUE_FLAGS = new Set(["dir", "home"]);
-const GLOBAL_SWITCHES = new Set(["json", "help", "h"]);
+/** skillhook's own options, read by every command wherever they stand (src/commands/main.ts): never a tool's value. */
+const OWN_OPTIONS = new Set(["json", "help", "h", "version", "v", "dir", "home"]);
+
+/** The option a word is as every command reads it (`--json`, `--dir=PATH`, `-h`…), when it is one of skillhook's own. */
+function ownOption(word: string): string | undefined {
+  if (word === "-" || !word.startsWith("-")) return undefined;
+  const eq = word.indexOf("=");
+  const name = word.startsWith("--") ? (eq > 0 ? word.slice(2, eq) : word.slice(2)) : word.slice(1);
+  return OWN_OPTIONS.has(name) ? name : undefined;
+}
 
 /**
- * A tool's input from the command line after its name, read with its schema: `--param value` or `--param=value` (a text
- * parameter always takes the next word, even one that starts with a dash), booleans as switches (`--param`,
- * `--no-param`, `--param=false`), numbers checked, JSON parameters (objects, payloads) as a literal, `@file` or `-`,
- * `--param-file PATH` for a long text, `--input JSON|@file|-` for the whole input (flags win over it), and the required
- * parameters not given as flags from the remaining arguments, in order. `--` ends the flags.
+ * A tool's input from the words around its name, read with its schema: `--param value` or `--param=value` (a text
+ * parameter takes the next word, even one that starts with a dash, unless it is one of skillhook's own options: those,
+ * `--json`, `--help`/`-h`, `--version`/`-v`, `--dir`/`--home`, mean the same everywhere, so such a text is given as
+ * `--param=--json`), booleans as switches (`--param`, `--no-param`, `--param=false`), numbers checked, JSON parameters
+ * (objects, payloads) as a literal, `@file` or `-`, `--param-file PATH` for a long text, `--input JSON|@file|-` for the
+ * whole input (flags win over it), and the required parameters not given as flags from the remaining arguments, in
+ * order. `--` ends the flags.
  */
 export async function toolInput(tool: CatalogTool, tokens: string[], sources: InputSources): Promise<Record<string, unknown>> {
   const parameters = toolParameters(tool);
@@ -168,6 +182,13 @@ export async function toolInput(tool: CatalogTool, tokens: string[], sources: In
       positionals.push(...tokens.slice(i + 1));
       break;
     }
+    const own = ownOption(token);
+    if (own) {
+      // Read by main.ts already; --dir and --home take the next word the way it reads them.
+      const next = tokens[i + 1];
+      if ((own === "dir" || own === "home") && !token.includes("=") && next !== undefined && (next === "-" || !next.startsWith("-"))) i++;
+      continue;
+    }
     if (!token.startsWith("--")) {
       positionals.push(token);
       continue;
@@ -179,14 +200,10 @@ export async function toolInput(tool: CatalogTool, tokens: string[], sources: In
       if (inline !== undefined) return inline;
       const next = tokens[i + 1];
       if (next === undefined) throw new ToolInputError(`--${name} needs a value`);
+      if (ownOption(next)) throw new ToolInputError(`--${name} needs a value: ${next} is skillhook's own option (as the text itself: --${name}=${next})`);
       i++;
       return next;
     };
-    if (GLOBAL_VALUE_FLAGS.has(name)) {
-      value();
-      continue;
-    }
-    if (GLOBAL_SWITCHES.has(name)) continue;
     if (name === "input") {
       whole = value();
       continue;
@@ -283,18 +300,8 @@ export function toolUsage(tool: CatalogTool): string {
     `Scope: ${tool.scope ?? "?"}${tool.allowed === false ? " (this key does not have it)" : ""}${tool.kind ? ` · ${tool.kind}` : ""}`,
     ...(rows.length ? ["", ...rows.map(([left, right]) => `${(left ?? "").padEnd(width)}  ${right ?? ""}`.trimEnd())] : []),
     "",
-    "Required parameters may also be given as arguments, in this order; --input JSON|@file|- gives the whole input; --json prints the answer as it came.",
+    "Required parameters may also be given as arguments, in this order; --input JSON|@file|- gives the whole input; --json prints the answer as it came. A text that is one of skillhook's own options (--json, --help, -h, --version, -v, --dir) goes after an equals sign: --answer=--help.",
   ].join("\n");
-}
-
-/** Control characters (but newlines and tabs) out of text from machines and senders, so a terminal shows it as text. */
-export function printable(value: string): string {
-  let out = "";
-  for (const char of value) {
-    const code = char.charCodeAt(0);
-    out += code === 10 || code === 9 || (code >= 32 && code !== 127) ? char : "";
-  }
-  return out;
 }
 
 /** A tool's answer as indented `key: value` lines: lists as `- ` items, text with newlines as an indented block. */
