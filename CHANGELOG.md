@@ -45,6 +45,9 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
   - A new plugin skill, `skillhook-cloud`, teaches the agent to triage the organisation (failure kinds,
     rejected deliveries, failing checks), act on it safely and set up machines, skills, secrets and hosted
     URLs.
+- With `cloud.upload_payloads` false, or an organisation that keeps no bodies, the cloud's `job.artifact` and
+  `job.get` no longer send a job's `payload`, `event` or `prompt` (which quotes the payload): webhook bodies stay
+  on the machine, as the docs promised.
 - A skill's `secret_env` can no longer name one of skillhook's own credentials (`SKILLHOOK_ADMIN_TOKEN`,
   `SKILLHOOK_CLOUD_*`): generating or setting the skill's secret would have overwritten it (a cloud link's
   token, where the API key goes). Such a skill is reported invalid. The machine also refuses the cloud's

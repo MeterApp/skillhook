@@ -76,6 +76,10 @@ export interface CommandOutcome {
   after?: () => void;
 }
 
+/** A job's artifacts that hold the webhook body (prompt.md quotes it): they leave the machine only when bodies may. */
+const BODY_ARTIFACTS: ReadonlySet<string> = new Set(["payload", "event", "prompt"]);
+const BODY_WITHHELD = "cloud.upload_payloads is false on this machine";
+
 const DEFAULT_TIMEOUT_MS = 30_000;
 const LONG_TIMEOUT_MS = 90_000;
 const ARTIFACT_INLINE_DEFAULT = 256 * 1024;
@@ -130,12 +134,21 @@ const readHandlers: Partial<Record<CommandType, CommandHandler>> = {
     const job = deps.store.get(args.id);
     if (!job) throw new CommandError("not_found", `unknown job ${args.id}`);
     const artifacts: Record<string, string | undefined> = {};
-    if (deps.uploadArtifacts()) for (const name of args.include ?? []) artifacts[name] = deps.store.readArtifact(job.id, name, 64 * 1024);
+    const bodies = (args.include ?? []).filter((name) => BODY_ARTIFACTS.has(name) && !deps.uploadPayloads());
+    if (deps.uploadArtifacts()) for (const name of args.include ?? []) if (!bodies.includes(name)) artifacts[name] = deps.store.readArtifact(job.id, name, 64 * 1024);
     const progress = readProgress(deps.store.pathsFor(job.id).dir, { timelineLimit: 100 });
-    return { result: { job: publicJob(job), artifacts, ...(progress.timeline.length || progress.question ? { progress } : {}), ...(args.include?.length && !deps.uploadArtifacts() ? { artifacts_withheld: "cloud.upload_artifacts is false on this machine" } : {}) } };
+    return {
+      result: {
+        job: publicJob(job),
+        artifacts,
+        ...(progress.timeline.length || progress.question ? { progress } : {}),
+        ...(args.include?.length && !deps.uploadArtifacts() ? { artifacts_withheld: "cloud.upload_artifacts is false on this machine" } : bodies.length ? { artifacts_withheld: `${bodies.join(", ")}: ${BODY_WITHHELD}` } : {}),
+      },
+    };
   },
   "job.artifact": async (args: Args<{ id: string; name: "stdout" | "stderr" | "prompt" | "result" | "payload" | "event" | "response"; max_inline_bytes?: number }>, _c, deps) => {
     if (!deps.uploadArtifacts()) throw new CommandError("denied_by_policy", "cloud.upload_artifacts is false on this machine");
+    if (BODY_ARTIFACTS.has(args.name) && !deps.uploadPayloads()) throw new CommandError("denied_by_policy", `${args.name} holds the webhook body, and ${BODY_WITHHELD}`);
     const job = deps.store.get(args.id);
     if (!job) throw new CommandError("not_found", `unknown job ${args.id}`);
     const file = deps.store.pathsFor(job.id)[args.name];

@@ -20,7 +20,7 @@ Skillhook Cloud is the hosted control plane for machines running skillhook: ever
 | `cloud.machine_id` | unset | Assigned at pairing. |
 | `cloud.mode` | `observe` | `observe` or `control`. |
 | `cloud.allow_commands`, `cloud.deny_commands` | `[]` | Command types (`skill.run`, patterns like `job.*`, `*`) allowed regardless of mode, or refused regardless of anything. `secret.set` is never allowed without an explicit allow entry. |
-| `cloud.upload_payloads` | `true` | Upload webhook payloads with deliveries (redacted headers; bodies at most 256 KiB). |
+| `cloud.upload_payloads` | `true` | Upload webhook payloads with deliveries (redacted headers; bodies at most 256 KiB). When false (or the organisation keeps no bodies), the job artifacts that hold the body (`payload`, `event`, and `prompt`, which quotes it) stay on the machine too. |
 | `cloud.upload_artifacts` | `true` | Let the cloud fetch job artifacts and live output. |
 | `cloud.ingress` | `true` | Accept hosted-ingress deliveries (webhooks the cloud received for this machine). |
 | `cloud.snapshot_interval_seconds` | `60` | How often the full snapshot (skills, schedules, config, health summary) is sent. |
