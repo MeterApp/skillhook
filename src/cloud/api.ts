@@ -131,7 +131,7 @@ export function fleetClient(env: NodeJS.ProcessEnv, cloud: { url?: string }, cre
 export function describeApiFailure(error: CloudHttpError, url: string, method: "GET" | "POST" = "GET"): string {
   const said = `${error.code}: ${error.message}${error.requestId ? ` (request ${error.requestId})` : ""}`;
   if (error.status === 0) return `Could not reach ${url} (${error.message}). If the cloud moved: skillhook cloud login --url https://<its address>`;
-  if (error.status === 401) return `${url} refused the API key (${said}). Log in with a valid one: skillhook cloud login --key -   (keys: Settings → API keys on the dashboard)`;
+  if (error.status === 401) return `${url} refused the API key (${said}). Log in with a valid one: skillhook cloud login --url ${url} --key -   (keys: Settings → API keys on that cloud's dashboard)`;
   // A read needs fleet:read; a tool the cloud refused names the scope it needs (and what the key has).
   if (error.status === 403 && method === "GET") return `The API key is not allowed to read this (${said}); it needs the fleet:read scope. Create a key with it under Settings → API keys, then: skillhook cloud login --key -`;
   if (error.status === 403) return `The API key is not allowed to do this (${said}). Reading needs the fleet:read scope, acting fleet:run, changing fleet:admin: create a key with the one it needs under Settings → API keys, then: skillhook cloud login`;

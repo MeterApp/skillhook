@@ -149,16 +149,39 @@ export interface InputSources {
 /** skillhook's own options, read by every command wherever they stand (src/commands/main.ts): never a tool's value. */
 const OWN_OPTIONS = new Set(["json", "help", "h", "version", "v", "dir", "home"]);
 
-/** The option a word is as every command reads it (`--json`, `--dir=PATH`, `-h`…), when it is one of skillhook's own. */
-function ownOption(word: string): string | undefined {
+/**
+ * Which of skillhook's own options a word is, read exactly as every command reads it (`parseArgs` in
+ * src/commands/shared.ts): `--json`, `--no-json`, `--dir=PATH`, `-h`…; and whether it takes the next word as its value
+ * (`--dir PATH`, but not `--dir --json`).
+ */
+export function ownOption(word: string, next: string | undefined): { name: string; takesNext: boolean } | undefined {
   if (word === "-" || !word.startsWith("-")) return undefined;
-  const eq = word.indexOf("=");
-  const name = word.startsWith("--") ? (eq > 0 ? word.slice(2, eq) : word.slice(2)) : word.slice(1);
-  return OWN_OPTIONS.has(name) ? name : undefined;
+  let name = word.slice(1);
+  let inline = false;
+  if (word.startsWith("--")) {
+    const eq = word.indexOf("=");
+    inline = eq > 0;
+    name = inline ? word.slice(2, eq) : word.slice(2);
+    if (!inline && name.startsWith("no-") && OWN_OPTIONS.has(name.slice(3))) return { name: name.slice(3), takesNext: false };
+  }
+  if (!OWN_OPTIONS.has(name)) return undefined;
+  const takesValue = (name === "dir" || name === "home") && !inline;
+  return { name, takesNext: takesValue && next !== undefined && (next === "-" || !next.startsWith("-")) };
+}
+
+/** The first word from `from` on that is neither one of skillhook's own options nor the value one takes. */
+export function afterOwnOptions(words: string[], from = 0): number {
+  let i = from;
+  while (i < words.length) {
+    const own = ownOption(words[i] as string, words[i + 1]);
+    if (!own) break;
+    i += own.takesNext ? 2 : 1;
+  }
+  return i;
 }
 
 /**
- * A tool's input from the words around its name, read with its schema: `--param value` or `--param=value` (a text
+ * A tool's input from the words after its name, read with its schema: `--param value` or `--param=value` (a text
  * parameter takes the next word, even one that starts with a dash, unless it is one of skillhook's own options: those,
  * `--json`, `--help`/`-h`, `--version`/`-v`, `--dir`/`--home`, mean the same everywhere, so such a text is given as
  * `--param=--json`), booleans as switches (`--param`, `--no-param`, `--param=false`), numbers checked, JSON parameters
@@ -182,11 +205,10 @@ export async function toolInput(tool: CatalogTool, tokens: string[], sources: In
       positionals.push(...tokens.slice(i + 1));
       break;
     }
-    const own = ownOption(token);
+    const own = ownOption(token, tokens[i + 1]);
     if (own) {
-      // Read by main.ts already; --dir and --home take the next word the way it reads them.
-      const next = tokens[i + 1];
-      if ((own === "dir" || own === "home") && !token.includes("=") && next !== undefined && (next === "-" || !next.startsWith("-"))) i++;
+      // Read by main.ts already, with its value when it takes one.
+      if (own.takesNext) i++;
       continue;
     }
     if (!token.startsWith("--")) {
@@ -200,7 +222,7 @@ export async function toolInput(tool: CatalogTool, tokens: string[], sources: In
       if (inline !== undefined) return inline;
       const next = tokens[i + 1];
       if (next === undefined) throw new ToolInputError(`--${name} needs a value`);
-      if (ownOption(next)) throw new ToolInputError(`--${name} needs a value: ${next} is skillhook's own option (as the text itself: --${name}=${next})`);
+      if (ownOption(next, undefined)) throw new ToolInputError(`--${name} needs a value: ${next} is skillhook's own option (as the text itself: --${name}=${next})`);
       i++;
       return next;
     };

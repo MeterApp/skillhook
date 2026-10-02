@@ -99,7 +99,8 @@ skillhook cloud logout                                  # forget the key here; r
 ```
 
 `login` checks the key with `GET /api/v1/me` against the cloud `--url` names (else the one logged in to before, else
-this machine's cloud, `cloud.url` or `SKILLHOOK_CLOUD_URL`) and keeps both in `.env`, as `SKILLHOOK_CLOUD_API_KEY` and
+this machine's cloud, `cloud.url` or `SKILLHOOK_CLOUD_URL`; when those two differ it asks for `--url` rather than send a
+key to the wrong one) and keeps both in `.env`, as `SKILLHOOK_CLOUD_API_KEY` and
 `SKILLHOOK_CLOUD_API_URL` (mode 600, the key never printed); `logout` removes them. From then on the key goes to that
 cloud and nowhere else: a `cloud.url` changed later moves neither the key nor, since login never touches it, this
 machine's link. In CI, `SKILLHOOK_CLOUD_API_KEY` in the environment takes precedence, with `SKILLHOOK_CLOUD_API_URL`
@@ -117,15 +118,15 @@ with your account's rights, `.env` included.
 
 **Tools.** The cloud publishes its tools (`GET /api/v1/tools`: name, description, JSON Schema, the scope each needs), and
 `skillhook cloud <tool>` runs one (`POST /api/v1/tools/<tool>`; `list-jobs` and `list_jobs` are the same), so a tool the
-cloud adds works without a new skillhook. The words around the tool's name are read with its schema: required
-parameters may be given as arguments in order, the others as `--param value` or `--param=value` (`--wait-seconds` or
+cloud adds works without a new skillhook. Only skillhook's own options may come before the tool's name; the words after
+it are read with its schema: required parameters may be given as arguments in order, the others as `--param value` or `--param=value` (`--wait-seconds` or
 `--wait_seconds`; `--` ends the flags); booleans are switches (`--waiting`, `--no-waiting`), numbers are checked, JSON
 parameters (payloads, arguments) take a literal, `@file` or `-` for stdin, a long text takes `--param-file PATH`, and
 `--input JSON|@file|-` gives the whole input (flags win over it). A text parameter takes the next word even when it
 starts with a dash, except skillhook's own options (`--json`, `--help`/`-h`, `--version`/`-v`, `--dir`), which mean the
 same wherever they stand: such a text goes after an equals sign, `--answer=--help`. The answer prints as indented text
 (control characters and bidirectional overrides removed, as from every cloud command), or as the cloud sent it with
-`--json`. A tool beyond the key's scope is refused before anything is sent.
+`--json` (where such characters are `\u` escapes, so the JSON is the same). A tool beyond the key's scope is refused before anything is sent.
 
 **The MCP server.** `skillhook mcp --cloud` serves the same tools to an agent (the skillhook plugin registers it as
 `skillhook-cloud`, next to this machine's own `skillhook` server): the catalogue is read when it starts, each call is

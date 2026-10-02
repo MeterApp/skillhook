@@ -342,7 +342,14 @@ export class FakeCloud {
       case "get_delivery":
         return { delivery: { id: input.delivery, outcome: "rejected", code: "invalid_signature", reason: "the signature does not match", ...(input.include_body === true ? { body: { encoding: "utf8", text: '{"a":1}', truncated: false } } : {}) } };
       case "list_skills":
-        return { skills: [{ machine: "mac-mini", name: "hello", auth: "bearer", auth_configured: true, secret_env: "SKILLHOOK_SECRET_HELLO" }, { machine: "mac-mini", name: "deploy", auth: "github", auth_configured: false, secret_env: null }] };
+        return {
+          skills: [
+            { machine: "mac-mini", name: "hello", auth: "bearer", auth_configured: true, secret_env: "SKILLHOOK_SECRET_HELLO" },
+            { machine: "mac-mini", name: "deploy", auth: "github", auth_configured: false, secret_env: null },
+            // As an older skillhook allowed: a skill that names the machine's admin token as its secret.
+            { machine: "mac-mini", name: "legacy", auth: "bearer", auth_configured: true, secret_env: "SKILLHOOK_ADMIN_TOKEN" },
+          ],
+        };
       case "get_skill":
         // `fresh` was saved a moment ago: no snapshot lists it yet, but the machine knows it.
         return input.skill === "fresh" ? { machine: String(input.machine), skill: { name: "fresh", auth: "bearer", auth_configured: false, secret_env: "SKILLHOOK_SECRET_FRESH" }, content: "---\nname: fresh\n---\n", pending: false } : { machine: String(input.machine), skill: null, content: null, pending: false, command: { type: "skill.get", status: "failed", error: { code: "not_found", message: `no skill named "${String(input.skill)}"` } } };

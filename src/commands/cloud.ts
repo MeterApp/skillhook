@@ -1,17 +1,17 @@
 import { readFileSync } from "node:fs";
 import { adminRequest, findRunningServer, readServerState } from "../client.js";
 import { API_KEY_RE, CloudApiError, fleetClient, JobDetailSchema, JobListSchema, machineNames, MachineListSchema, MeSchema, storedApiCredentials, type FleetClient, type FleetJob } from "../cloud/api.js";
-import { assertSecureCloudUrl, CLOUD_API_KEY_ENV, CLOUD_API_URL_ENV, CLOUD_PRIVATE_KEY_ENV, CLOUD_TOKEN_ENV, cloudDisabledByEnv, resolveCloudUrl } from "../cloud/config.js";
+import { assertSecureCloudUrl, CLOUD_API_KEY_ENV, CLOUD_API_URL_ENV, CLOUD_PRIVATE_KEY_ENV, CLOUD_TOKEN_ENV, cloudDisabledByEnv, DEFAULT_CLOUD_URL, resolveCloudUrl, trimTrailingSlashes } from "../cloud/config.js";
 import { CloudHttpError } from "../cloud/http.js";
 import { cloudStatus, disconnectCloud, machineInfo, pairMachine, writeLinkCredentials } from "../cloud/pair.js";
 import { ISSUE_KINDS, ISSUE_SEVERITIES, JOB_OUTCOMES, JOB_STATUSES, type IssueKind, type IssueSeverity } from "../cloud/protocol.js";
 import { generateRemoteSecret, secretNameFor } from "../cloud/remote-secret.js";
 import { buildIssueReport, IssueReportError, reportIssue, type IssueReportInput } from "../cloud/report.js";
 import { machineKeyPair, publicKeyOf, SealError } from "../cloud/seal.js";
-import { callTool, fetchCatalog, renderResult, toolInput, ToolInputError, toolName, toolUsage, type Catalog } from "../cloud/tools.js";
+import { afterOwnOptions, callTool, fetchCatalog, renderResult, toolInput, ToolInputError, toolName, toolUsage, type Catalog } from "../cloud/tools.js";
 import { ensureSecretFileMode, readEnvFile, removeEnvVar, upsertEnvVar } from "../env.js";
 import { printable } from "../util.js";
-import { bool, CommandError, formatDuration, num, parseArgs, promptHidden, relativeTime, str, table, UsageError, type Ctx } from "./shared.js";
+import { bool, CommandError, formatDuration, num, promptHidden, relativeTime, str, table, UsageError, type Ctx } from "./shared.js";
 
 export const CLOUD_USAGE = `Usage:
   skillhook cloud connect --code XXXX-XXXX [--url URL] [--control|--observe] [--force]   pair this machine with Skillhook Cloud (the dashboard shows the code)
@@ -51,7 +51,12 @@ export async function cloudCommand(ctx: Ctx): Promise<number> {
 }
 
 async function cloudSubcommand(ctx: Ctx): Promise<number> {
-  const [sub = "status"] = ctx.args;
+  // Before the subcommand (or tool) only skillhook's own options: only a tool's schema says which of its options take a
+  // value, so one before the tool's name could swallow it.
+  const at = afterOwnOptions(ctx.rawArgs);
+  const word = ctx.rawArgs[at];
+  if (word !== undefined && word !== "-" && word.startsWith("-")) throw new UsageError(`Name the subcommand or tool first, then its options: skillhook cloud <subcommand|tool> … ${word} …`, CLOUD_USAGE);
+  const sub = word ?? "status";
   const config = ctx.config();
   const env = ctx.io.env;
   switch (sub) {
@@ -147,6 +152,9 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
       // kept with it, and the only one it is ever sent to: changing cloud.url later moves neither the key nor this
       // machine's link.
       const before = env[CLOUD_API_URL_ENV]?.trim() || readEnvFile(ctx.paths.envFile)[CLOUD_API_URL_ENV] || undefined;
+      const machineCloud = resolveCloudUrl(env, config.cloud);
+      // Two clouds to choose from: the key could be for either, and it must not be sent to the other one.
+      if (!url && before && machineCloud !== DEFAULT_CLOUD_URL && trimTrailingSlashes(before) !== machineCloud) throw new UsageError(`The key kept here was for ${before}, and this machine's cloud is ${machineCloud}: name the one this key belongs to, skillhook cloud login --url https://…`, CLOUD_USAGE);
       const client = fleetClient(env, config.cloud, { key, url: undefined }, { url: url ?? before });
       const { data: me } = await client.get("/me", MeSchema);
       upsertEnvVar(ctx.paths.envFile, CLOUD_API_KEY_ENV, key);
@@ -239,7 +247,7 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
       return 0;
     }
     default:
-      return callCloudTool(ctx, sub);
+      return callCloudTool(ctx, sub, at);
   }
 }
 
@@ -249,10 +257,11 @@ function apiClient(ctx: Ctx): FleetClient {
 }
 
 /**
- * `skillhook cloud <tool> …`: any tool of the cloud's catalogue, its input from the words around its name, read with its
- * schema (a switch never takes the next word, a text parameter does) rather than as the flags of every command.
+ * `skillhook cloud <tool> …`: any tool of the cloud's catalogue, its input from the words after its name (`at` in the
+ * command line), read with its schema (a switch never takes the next word, a text parameter does) rather than as the
+ * flags of every command.
  */
-async function callCloudTool(ctx: Ctx, given: string): Promise<number> {
+async function callCloudTool(ctx: Ctx, given: string, at: number): Promise<number> {
   if (!/^[a-z][a-z0-9_-]*$/i.test(given)) throw new UsageError(`Unknown cloud subcommand "${given}"`, CLOUD_USAGE);
   let client: FleetClient;
   try {
@@ -265,10 +274,9 @@ async function callCloudTool(ctx: Ctx, given: string): Promise<number> {
   const catalog = await fetchCatalog(client);
   const tool = catalog.tools.find((t) => t.name === toolName(given));
   if (!tool) throw new UsageError(`Unknown cloud subcommand or tool "${given}"; skillhook cloud tools lists the tools`, CLOUD_USAGE);
-  const at = parseArgs(ctx.rawArgs).positionalIndexes[0] ?? ctx.rawArgs.length;
   let input: Record<string, unknown>;
   try {
-    input = await toolInput(tool, [...ctx.rawArgs.slice(0, at), ...ctx.rawArgs.slice(at + 1)], {
+    input = await toolInput(tool, ctx.rawArgs.slice(at + 1), {
       stdin: () => readStdin(ctx),
       file: (path: string) => {
         try {

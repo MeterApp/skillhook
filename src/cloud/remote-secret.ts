@@ -4,7 +4,7 @@
 // once (`POST /api/v1/commands/<id>/claim`). Only this process holds the private half, so the value never travels or
 // rests in the clear, not even in the cloud.
 import { z } from "zod";
-import { defaultSecretEnvFor } from "../env.js";
+import { defaultSecretEnvFor, isSkillhookCredential } from "../env.js";
 import { CloudApiError, type FleetClient } from "./api.js";
 import { machineKeyPair, openSealed } from "./seal.js";
 import { callTool } from "./tools.js";
@@ -26,12 +26,17 @@ type SkillSecret = { name?: string; secret_env?: string | null };
 /** Skills' own secrets look like this; any other variable must be one a skill on the machine names as its secret. */
 const SKILL_SECRET_PREFIX = "SKILLHOOK_SECRET_";
 
+function ownCredential(name: string, machine: string): CloudApiError {
+  return new CloudApiError(`${name} is ${machine}'s own credential, not a skill's secret: it is never generated from here`);
+}
+
 /**
  * The variable to generate: the secret of the machine's skill named `given` (as the machine reports it), or `given`
  * itself when it is a skill's secret (`SKILLHOOK_SECRET_*`, or a variable a skill there names). Never another variable
- * of the machine (its admin token, a runner's API key): those are set on the machine itself.
+ * of the machine (its admin token, the cloud link's, a runner's API key): those are set on the machine itself.
  */
 export async function secretNameFor(client: FleetClient, machine: string, given: string): Promise<string> {
+  if (isSkillhookCredential(given)) throw ownCredential(given, machine);
   if (SECRET_ENV_RE.test(given) && given.startsWith(SKILL_SECRET_PREFIX)) return given;
   const { skills } = (await callTool(client, "list_skills", { machine })) as { skills?: SkillSecret[] };
   if (SECRET_ENV_RE.test(given)) {
@@ -41,7 +46,10 @@ export async function secretNameFor(client: FleetClient, machine: string, given:
   // A skill saved a moment ago is in no snapshot yet: the machine itself describes it.
   const skill = skills?.find((s) => s.name === given) ?? ((await callTool(client, "get_skill", { machine, skill: given })) as { skill?: SkillSecret | null }).skill;
   if (!skill) throw new CloudApiError(`${machine} has no skill named ${given} (skillhook cloud list_skills --machine ${machine} lists them)`);
-  return skill.secret_env ?? defaultSecretEnvFor(given);
+  const name = skill.secret_env ?? defaultSecretEnvFor(given);
+  // An older machine may still have a skill that names one of its own credentials as its secret.
+  if (isSkillhookCredential(name)) throw ownCredential(name, machine);
+  return name;
 }
 
 export interface RemoteSecret {
@@ -54,6 +62,7 @@ export interface RemoteSecret {
 
 export async function generateRemoteSecret(client: FleetClient, input: { machine: string; name: string; force?: boolean }, options: { timeoutMs?: number; pollMs?: number } = {}): Promise<RemoteSecret> {
   if (!SECRET_ENV_RE.test(input.name)) throw new CloudApiError(`${input.name} is not a secret's variable name (like SKILLHOOK_SECRET_HELLO)`);
+  if (isSkillhookCredential(input.name)) throw ownCredential(input.name, input.machine);
   const keys = machineKeyPair();
   const { data: requested } = await client.post(`/machines/${encodeURIComponent(input.machine)}/secrets`, { name: input.name, recipient_key: keys.publicKey, ...(input.force ? { force: true } : {}) }, RequestedSchema);
   const machine = requested.machine ?? input.machine;

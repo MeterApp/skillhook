@@ -4,6 +4,7 @@ import { loadSecrets, type Secrets } from "../env.js";
 import { JobStore } from "../jobs.js";
 import { resolvePaths, type Paths } from "../paths.js";
 import { configProjects, SkillRegistry } from "../registry.js";
+import { jsonForTerminal } from "../util.js";
 
 export type FlagValue = string | boolean | string[];
 export type Flags = Record<string, FlagValue>;
@@ -129,7 +130,7 @@ export interface Ctx {
   paths: Paths;
   flags: Flags;
   args: string[];
-  /** The command line after the command's name, as given: for a command that reads its arguments with its own rules. */
+  /** The command line without the command's name, as given: for a command that reads its words with its own rules. */
   rawArgs: string[];
   json: boolean;
   io: CliIO;
@@ -158,7 +159,7 @@ export function createCtx(flags: Flags, args: string[], io: CliIO, rawArgs: stri
     json,
     io,
     print(human, data) {
-      if (json) io.stdout(`${JSON.stringify(data ?? { message: human }, null, 2)}\n`);
+      if (json) io.stdout(`${jsonForTerminal(data ?? { message: human })}\n`);
       else if (human) io.stdout(human.endsWith("\n") ? human : `${human}\n`);
     },
     warn(text) {

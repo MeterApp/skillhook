@@ -78,7 +78,11 @@ describe("skillhook mcp --cloud", () => {
     expect(kept.text).toContain("force: true replaces it");
     const admin = await client.call("generate_secret", { machine: "mac-mini", skill: "SKILLHOOK_ADMIN_TOKEN", force: true });
     expect(admin).toMatchObject({ isError: true });
-    expect(admin.text).toContain("SKILLHOOK_ADMIN_TOKEN is not a skill's secret on mac-mini");
+    expect(admin.text).toContain("SKILLHOOK_ADMIN_TOKEN is mac-mini's own credential, not a skill's secret");
+    const legacy = await client.call("generate_secret", { machine: "mac-mini", skill: "legacy", force: true });
+    expect(legacy).toMatchObject({ isError: true });
+    expect(legacy.text).toContain("SKILLHOOK_ADMIN_TOKEN is mac-mini's own credential");
+    expect(fake.secretRequests.map((r) => r.name)).not.toContain("SKILLHOOK_ADMIN_TOKEN");
   });
 
   it("keeps its own generate_secret when the catalogue lists one, and skips what it cannot read", async () => {

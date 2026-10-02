@@ -864,7 +864,15 @@ describe("cli", () => {
       const status = io(env);
       expect(await main(["cloud", "status", ...at], status.cli)).toBe(0);
       expect(status.out()).toContain(`API key: present for ${fake.url} (${home.envFile})`);
-      // Logging in again without --url (a new key, say) checks it with the cloud logged in to before, not the machine's.
+      // Logging in again without --url: the key kept here was for one cloud, the machine is paired with another, and the
+      // new key could be for either, so it is sent to neither until the person names one.
+      const ambiguous = io(env);
+      const before = fake.apiRequests.length;
+      expect(await main(["cloud", "login", "--key", fake.apiKey, ...at], ambiguous.cli)).toBe(2);
+      expect(ambiguous.err()).toContain(`The key kept here was for ${fake.url}, and this machine's cloud is https://other-cloud.example.invalid: name the one this key belongs to, skillhook cloud login --url https://…`);
+      expect(fake.apiRequests.length).toBe(before);
+      // With one cloud to go by (the key's), that is the one.
+      writeConfigFile(home, {});
       const relogin = io(env);
       expect(await main(["cloud", "login", "--key", fake.apiKey, ...at], relogin.cli)).toBe(0);
       expect(relogin.out()).toContain(`Logged in to ${fake.url} as Fake Org`);
@@ -914,6 +922,12 @@ describe("cli", () => {
       const shady = io(env);
       expect(await main(["cloud", "get_job", "nope\u202eevil\u001b[2J\u009b", ...at], shady.cli)).toBe(1);
       expect(shady.err()).toContain('No job "nopeevil[2J" in Fake Org.');
+      // With --json they are escapes: the same JSON, nothing a terminal acts on.
+      const shadyJson = io(env);
+      expect(await main(["cloud", "get_job", "nope\u202eevil\u009b", ...at, "--json"], shadyJson.cli)).toBe(1);
+      expect(shadyJson.out()).toContain("nope\\u202eevil\\u009b");
+      expect(shadyJson.out()).not.toMatch(/[\u0080-\u009f\u202a-\u202e]/);
+      expect(String(shadyJson.json().error)).toContain('No job "nope\u202eevil\u009b"');
 
       // Mistakes are usage errors with the tool's usage; a tool beyond the key's scope is refused before anything is sent.
       const calls = fake.toolCalls.length;
@@ -932,8 +946,16 @@ describe("cli", () => {
 
       // With a wider key the same line runs; a JSON payload from a file reaches the tool as JSON.
       fake.apiScopes = ["fleet:admin"];
-      // The tool's options may come before its name too.
-      expect(await main(["cloud", "--machine", "mac-mini", "list_jobs", "--waiting", ...at], io(env).cli)).toBe(0);
+      // Before a tool's name only skillhook's own options: one of the tool's could swallow the name (a switch only its
+      // schema knows), and words before `cloud` never reach the tool.
+      const beforeMisplaced = fake.toolCalls.length;
+      for (const line of [["cloud", "--machine", "mac-mini", "list_jobs"], ["--machine", "mac-mini", "cloud", "list_jobs"], ["cloud", "--store-payloads", "update_settings"]]) {
+        const misplaced = io(env);
+        expect(await main([...line, ...at], misplaced.cli)).toBe(2);
+        expect(misplaced.err()).toContain("Name the subcommand or tool first, then its options: skillhook cloud <subcommand|tool>");
+      }
+      expect(fake.toolCalls.length).toBe(beforeMisplaced);
+      expect(await main(["--json", "cloud", ...at, "list_jobs", "--machine", "mac-mini", "--waiting"], io(env).cli)).toBe(0);
       expect(fake.toolCalls.at(-1)).toEqual({ name: "list_jobs", input: { machine: "mac-mini", waiting: true } });
       // skillhook's own options mean the same wherever they stand, never a parameter's value: the text goes after =.
       const sent = fake.toolCalls.length;
@@ -946,6 +968,10 @@ describe("cli", () => {
       const usage = io(env);
       expect(await main(["cloud", "answer_job", "20260929T101500Z-a1b2c3", "--answer", "--help", ...at], usage.cli)).toBe(0);
       expect(usage.out()).toContain("skillhook cloud <tool> [arguments] [--param value]");
+      // Their --no- forms too: the last one wins for skillhook, and the tool takes neither as its text.
+      const negated = io(env);
+      expect(await main(["cloud", "answer_job", "20260929T101500Z-a1b2c3", "--help", "--answer", "--no-help", ...at], negated.cli)).toBe(2);
+      expect(negated.err()).toContain("--answer needs a value: --no-help is skillhook's own option");
       expect(fake.toolCalls.length).toBe(sent);
       const literal = io(env);
       expect(await main(["cloud", "answer_job", "20260929T101500Z-a1b2c3", "--answer=--json", "--option", "yes", ...at, "--json"], literal.cli)).toBe(0);
@@ -972,12 +998,13 @@ describe("cli", () => {
       const noSkill = io(env);
       expect(await main(["cloud", "secret", "mac-mini", "nope", ...at], noSkill.cli)).toBe(1);
       expect(noSkill.err()).toContain("mac-mini has no skill named nope");
-      // Only a skill's secret: never the machine's admin token or a runner's API key.
+      // Only a skill's secret: never the machine's admin token (even when an older machine has a skill naming it) or a
+      // runner's API key.
       const requests = fake.secretRequests.length;
-      for (const name of ["SKILLHOOK_ADMIN_TOKEN", "ANTHROPIC_API_KEY"]) {
+      for (const [given, said] of [["SKILLHOOK_ADMIN_TOKEN", "SKILLHOOK_ADMIN_TOKEN is mac-mini's own credential, not a skill's secret"], ["legacy", "SKILLHOOK_ADMIN_TOKEN is mac-mini's own credential"], ["SKILLHOOK_CLOUD_TOKEN", "SKILLHOOK_CLOUD_TOKEN is mac-mini's own credential"], ["ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY is not a skill's secret on mac-mini"]] as const) {
         const other = io(env);
-        expect(await main(["cloud", "secret", "mac-mini", name, "--force", ...at], other.cli)).toBe(1);
-        expect(other.err()).toContain(`${name} is not a skill's secret on mac-mini`);
+        expect(await main(["cloud", "secret", "mac-mini", given, "--force", ...at], other.cli)).toBe(1);
+        expect(other.err()).toContain(said);
       }
       expect(fake.secretRequests.length).toBe(requests);
       // A skill saved a moment ago is not listed yet: the machine's own answer names its secret.

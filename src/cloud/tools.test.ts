@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FAKE_TOOLS } from "../test-support/fake-cloud.js";
 import type { FleetClient } from "./api.js";
-import { callTimeoutMs, fetchCatalog, renderResult, toolInput, ToolInputError, toolName, toolParameters, toolUsage, type CatalogTool } from "./tools.js";
+import { afterOwnOptions, callTimeoutMs, fetchCatalog, renderResult, toolInput, ToolInputError, toolName, toolParameters, toolUsage, type CatalogTool } from "./tools.js";
 
 const tool = (name: string) => ({ ...FAKE_TOOLS.find((t) => t.name === name)!, allowed: true }) as unknown as CatalogTool;
 const files: Record<string, string> = { "event.json": '{"action":"opened"}', "SKILL.md": "---\nname: hello\n---\nSay hello.\n" };
@@ -41,13 +41,23 @@ describe("the cloud's tools on the command line", () => {
   });
 
   it("never takes skillhook's own options as a value: they mean the same everywhere, and the text itself goes after =", async () => {
-    for (const own of ["--json", "--help", "-h", "--version", "-v", "--dir", "--home", "--json=false", "--dir=/tmp/x"]) {
+    for (const own of ["--json", "--help", "-h", "--version", "-v", "--dir", "--home", "--json=false", "--dir=/tmp/x", "--no-json", "--no-help", "--no-dir", "-json"]) {
       await expect(toolInput(tool("answer_job"), ["job-1", "--answer", own], sources)).rejects.toThrow(`--answer needs a value: ${own} is skillhook's own option (as the text itself: --answer=${own})`);
     }
     expect(await toolInput(tool("answer_job"), ["job-1", "--answer=--json"], sources)).toEqual({ job: "job-1", answer: "--json" });
     expect(await toolInput(tool("answer_job"), ["job-1", "--answer=-v"], sources)).toEqual({ job: "job-1", answer: "-v" });
     expect(await toolInput(tool("answer_job"), ["job-1", "--answer", "--jsonish", "--option", "-"], sources)).toEqual({ job: "job-1", answer: "--jsonish", option: "from stdin" });
     await expect(toolInput(tool("answer_job"), ["--input", "--json"], sources)).rejects.toThrow("--input needs a value");
+    expect(await toolInput(tool("answer_job"), ["--no-json", "--no-dir", "job-1", "yes"], sources)).toEqual({ job: "job-1", answer: "yes" });
+  });
+
+  it("finds where skillhook's own options end, as every command reads them", () => {
+    expect(afterOwnOptions(["--dir", "/x", "--json", "list_jobs", "--waiting"])).toBe(3);
+    expect(afterOwnOptions(["--dir=/x", "-h", "--no-json", "list_jobs"])).toBe(3);
+    expect(afterOwnOptions(["--dir", "--json", "list_jobs"])).toBe(2); // --dir takes no word that starts with a dash
+    expect(afterOwnOptions(["--machine", "m", "list_jobs"])).toBe(0);
+    expect(afterOwnOptions(["--json"])).toBe(1);
+    expect(afterOwnOptions(["--json", "--dir", "/x", "--machine", "m"], 0)).toBe(3);
   });
 
   it("reads JSON, files and stdin where a parameter takes them, and --input under the flags", async () => {

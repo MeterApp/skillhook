@@ -1,6 +1,6 @@
 import { ConfigError } from "../config.js";
 import { SkillError } from "../skills.js";
-import { errorMessage, printable } from "../util.js";
+import { errorMessage, jsonForTerminal, printable } from "../util.js";
 import { VERSION } from "../version.js";
 import { bool, CommandError, createCtx, parseArgs, UsageError, type CliIO, type Ctx } from "./shared.js";
 import { initCommand, INIT_USAGE } from "./init.js";
@@ -186,7 +186,8 @@ export async function main(argv: string[], io: CliIO = defaultIO()): Promise<num
     io.stderr(`Unknown command "${name}".\n\n${HELP}`);
     return 1;
   }
-  const ctx = createCtx(flags, rest, io, argv.slice((positionalIndexes[offset] ?? argv.length) + 1));
+  const at = positionalIndexes[offset] ?? argv.length;
+  const ctx = createCtx(flags, rest, io, [...argv.slice(0, at), ...argv.slice(at + 1)]);
   if (help) {
     // Checked here, before any command code runs, so no command can forget it: `jobs prune --help` must not prune.
     const usage = usageOf(command, rest);
@@ -204,12 +205,12 @@ export async function main(argv: string[], io: CliIO = defaultIO()): Promise<num
       return 2;
     }
     if (error instanceof CommandError) {
-      if (ctx.json) io.stdout(`${JSON.stringify({ ok: false, error: error.message }, null, 2)}\n`);
+      if (ctx.json) io.stdout(`${jsonForTerminal({ ok: false, error: error.message })}\n`);
       else io.stderr(`${printable(error.message)}\n`);
       return error.exitCode;
     }
     if (error instanceof ConfigError || error instanceof SkillError) {
-      if (ctx.json) io.stdout(`${JSON.stringify({ ok: false, error: error.message }, null, 2)}\n`);
+      if (ctx.json) io.stdout(`${jsonForTerminal({ ok: false, error: error.message })}\n`);
       else io.stderr(`${printable(error.message)}\n`);
       return 1;
     }
