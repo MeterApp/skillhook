@@ -49,6 +49,8 @@ describe("the cloud's tools on the command line", () => {
     expect(await toolInput(tool("answer_job"), ["job-1", "--answer", "--jsonish", "--option", "-"], sources)).toEqual({ job: "job-1", answer: "--jsonish", option: "from stdin" });
     await expect(toolInput(tool("answer_job"), ["--input", "--json"], sources)).rejects.toThrow("--input needs a value");
     expect(await toolInput(tool("answer_job"), ["--no-json", "--no-dir", "job-1", "yes"], sources)).toEqual({ job: "job-1", answer: "yes" });
+    // `--` ends the options for every command: never a value either.
+    await expect(toolInput(tool("answer_job"), ["job-1", "--answer", "--", "--help"], sources)).rejects.toThrow("--answer needs a value: -- ends the options (as the text itself: --answer=--)");
   });
 
   it("finds where skillhook's own options end, as every command reads them", () => {

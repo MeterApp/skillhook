@@ -48,7 +48,8 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
     URLs.
 - With `cloud.upload_payloads` false, or an organisation that keeps no bodies, the cloud's `job.artifact` and
   `job.get` no longer send a job's `payload`, `event` or `prompt` (which quotes the payload): webhook bodies stay
-  on the machine, as the docs promised.
+  on the machine, as the docs promised. An agent's own output (its transcript, its result) can still quote what it
+  read; `cloud.upload_artifacts: false` keeps transcripts home.
 - A skill's `secret_env` can no longer name one of skillhook's own credentials (`SKILLHOOK_ADMIN_TOKEN`,
   `SKILLHOOK_CLOUD_*`): generating or setting the skill's secret would have overwritten it (a cloud link's
   token, where the API key goes). Such a skill is reported invalid. The machine also refuses the cloud's

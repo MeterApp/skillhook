@@ -92,11 +92,11 @@ describe("command dispatcher", () => {
     writeFileSync(store.pathsFor(job.id).stdout, "done\n");
     for (const name of ["payload", "event", "prompt"]) {
       const refused = await dispatcher.run(command({ id: `a-${name}`, type: "job.artifact", args: { id: job.id, name } }));
-      expect(refused).toMatchObject({ ok: false, error: { code: "denied_by_policy", message: `${name} holds the webhook body, and cloud.upload_payloads is false on this machine` } });
+      expect(refused).toMatchObject({ ok: false, error: { code: "denied_by_policy", message: `${name} holds the webhook body, and webhook bodies stay on this machine (cloud.upload_payloads is false here, or the organisation keeps none)` } });
     }
     expect(await dispatcher.run(command({ id: "a-stdout", type: "job.artifact", args: { id: job.id, name: "stdout" } }))).toMatchObject({ ok: true, result: { text: "done\n" } });
     const got = await dispatcher.run(command({ id: "g", type: "job.get", args: { id: job.id, include: ["stdout", "prompt", "payload"] } }));
-    expect(got).toMatchObject({ ok: true, result: { artifacts: { stdout: "done\n" }, artifacts_withheld: "prompt, payload: cloud.upload_payloads is false on this machine" } });
+    expect(got).toMatchObject({ ok: true, result: { artifacts: { stdout: "done\n" }, artifacts_withheld: "prompt, payload: webhook bodies stay on this machine (cloud.upload_payloads is false here, or the organisation keeps none)" } });
     expect(JSON.stringify(got)).not.toContain("4242-private");
   });
 });

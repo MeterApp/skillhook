@@ -8,7 +8,7 @@ Skillhook Cloud is the hosted control plane for machines running skillhook: ever
 
 - **Opt-in, outbound only.** A machine talks to the cloud only after `skillhook cloud connect` pairs it (a code from the dashboard) and only by opening HTTPS requests to `cloud.url` (plain `http` only to a loopback address or with `SKILLHOOK_CLOUD_ALLOW_INSECURE=1`); the cloud never connects to the machine and never holds the admin token. It works behind NAT without Tailscale. Besides the link, [`cloud report`](#reporting-a-problem) and the [API-key commands and tools](#the-whole-organisation-with-an-api-key) send requests to the same URL only when a person runs one, or their agent calls one.
 - **Observe by default.** A freshly paired machine is in `mode: observe`: the cloud can read, not act. `--control` at pairing (what the dashboard's pairing page prints) or `cloud.mode: control` later lets it run skills, answer jobs, change the configuration and restart the server. `cloud.allow_commands` / `cloud.deny_commands` refine either mode per command type; the cloud cannot raise a machine's exposure, only the machine's own config can.
-- **Payloads are data, secrets stay home.** Headers are redacted on the machine before anything is uploaded; every uploaded string is scrubbed against every value in `.env`; webhook bodies travel only when both `cloud.upload_payloads` and the organisation's policy allow, and never beyond 256 KiB. `SKILLHOOK_CLOUD_*` variables never reach a run, even when a skill lists them in `env:`. A secret the cloud asks skillhook to generate is sealed to the requester's key; the cloud never stores it in the clear.
+- **Payloads are data, secrets stay home.** Headers are redacted on the machine before anything is uploaded; every uploaded string is scrubbed against every value in `.env`; webhook bodies (a delivery's, and a job's `payload`, `event` and `prompt`, which quotes it) travel only when both `cloud.upload_payloads` and the organisation's policy allow, and never beyond 256 KiB. What an agent writes is its own output and can quote anything it read, the body included: its transcript goes only with `cloud.upload_artifacts`, its result with the job record (the first 8 KiB). `SKILLHOOK_CLOUD_*` variables never reach a run, even when a skill lists them in `env:`. A secret the cloud asks skillhook to generate is sealed to the requester's key; the cloud never stores it in the clear.
 - **Kill switches.** `cloud.enabled: false`, `SKILLHOOK_NO_CLOUD=1` in the server's environment, or `skillhook cloud disconnect` stop all traffic; the link never starts from `init`, from a job, or on its own. With `SKILLHOOK_NO_CLOUD=1` in its environment, `cloud report` and the API-key commands refuse to send anything too.
 
 ## Settings
@@ -20,7 +20,7 @@ Skillhook Cloud is the hosted control plane for machines running skillhook: ever
 | `cloud.machine_id` | unset | Assigned at pairing. |
 | `cloud.mode` | `observe` | `observe` or `control`. |
 | `cloud.allow_commands`, `cloud.deny_commands` | `[]` | Command types (`skill.run`, patterns like `job.*`, `*`) allowed regardless of mode, or refused regardless of anything. `secret.set` is never allowed without an explicit allow entry. |
-| `cloud.upload_payloads` | `true` | Upload webhook payloads with deliveries (redacted headers; bodies at most 256 KiB). When false (or the organisation keeps no bodies), the job artifacts that hold the body (`payload`, `event`, and `prompt`, which quotes it) stay on the machine too. |
+| `cloud.upload_payloads` | `true` | Upload webhook payloads with deliveries (redacted headers; bodies at most 256 KiB). When false (or the organisation keeps no bodies), the job artifacts that hold the body (`payload`, `event`, and `prompt`, which quotes it) stay on the machine too; an agent's transcript can still quote it (`cloud.upload_artifacts: false` keeps transcripts home). |
 | `cloud.upload_artifacts` | `true` | Let the cloud fetch job artifacts and live output. |
 | `cloud.ingress` | `true` | Accept hosted-ingress deliveries (webhooks the cloud received for this machine). |
 | `cloud.snapshot_interval_seconds` | `60` | How often the full snapshot (skills, schedules, config, health summary) is sent. |
@@ -176,7 +176,7 @@ A skill can have a hosted webhook URL on the cloud (the dashboard creates it) in
 
 ## What never leaves the machine
 
-`.env` and every value in it, the admin token, command lines and run environments, `authorization` / cookie / signature / token headers, job artifacts unless `cloud.upload_artifacts` allows them and a command asks, webhook bodies unless `cloud.upload_payloads` allows them, and anything a command policy refuses.
+`.env` and every value in it, the admin token, command lines and run environments, `authorization` / cookie / signature / token headers, job artifacts unless `cloud.upload_artifacts` allows them and a command asks, webhook bodies (deliveries, and a job's `payload`, `event` and `prompt`) unless `cloud.upload_payloads` allows them, and anything a command policy refuses. An agent's transcript and result are its own output: they can quote what it read, the body included.
 
 ## Commands the cloud may send
 

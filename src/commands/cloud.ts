@@ -52,10 +52,12 @@ export async function cloudCommand(ctx: Ctx): Promise<number> {
 
 async function cloudSubcommand(ctx: Ctx): Promise<number> {
   // Before the subcommand (or tool) only skillhook's own options: only a tool's schema says which of its options take a
-  // value, so one before the tool's name could swallow it.
-  const at = afterOwnOptions(ctx.rawArgs);
+  // value, so one before the tool's name could swallow it. After `--` every word is an argument, as for every command.
+  let at = afterOwnOptions(ctx.rawArgs);
+  const ended = ctx.rawArgs[at] === "--";
+  if (ended) at++;
   const word = ctx.rawArgs[at];
-  if (word !== undefined && word !== "-" && word.startsWith("-")) throw new UsageError(`Name the subcommand or tool first, then its options: skillhook cloud <subcommand|tool> … ${word} …`, CLOUD_USAGE);
+  if (!ended && word !== undefined && word !== "-" && word.startsWith("-")) throw new UsageError(`Name the subcommand or tool first, then its options: skillhook cloud <subcommand|tool> … ${word} …`, CLOUD_USAGE);
   const sub = word ?? "status";
   const config = ctx.config();
   const env = ctx.io.env;
@@ -141,20 +143,19 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
       return 0;
     }
     case "login": {
-      const url = str(ctx.flags, "url");
-      if (ctx.flags.url === true) throw new UsageError("--url needs the cloud's address, like https://cloud.example.com", CLOUD_USAGE);
+      const url = str(ctx.flags, "url")?.trim() || undefined;
+      if (ctx.flags.url === true || (ctx.flags.url !== undefined && !url)) throw new UsageError("--url needs the cloud's address, like https://cloud.example.com", CLOUD_USAGE);
+      // The cloud named here (else the one logged in to before, else the machine's) is the one the key is checked against,
+      // kept with it, and the only one it is ever sent to: changing cloud.url later moves neither the key nor this
+      // machine's link. With two to choose from the key could be for either, and it must not be sent to the other.
+      const before = env[CLOUD_API_URL_ENV]?.trim() || readEnvFile(ctx.paths.envFile)[CLOUD_API_URL_ENV] || undefined;
+      const machineCloud = resolveCloudUrl(env, config.cloud);
+      if (!url && before && machineCloud !== DEFAULT_CLOUD_URL && trimTrailingSlashes(before) !== machineCloud) throw new UsageError(`The key kept here was for ${before}, and this machine's cloud is ${machineCloud}: name the one this key belongs to, skillhook cloud login --url https://…`, CLOUD_USAGE);
       let given = str(ctx.flags, "key");
       if (!given && ctx.io.isTTY) given = await promptHidden("Organisation API key (dashboard → Settings → API keys): ");
       if (!given) throw new UsageError("Give the organisation API key: --key shc_…, or --key - to read it from stdin (Settings → API keys on the dashboard); at a terminal, skillhook cloud login asks for it", CLOUD_USAGE);
       const key = (given === "-" ? await readStdin(ctx) : given).trim();
       if (!API_KEY_RE.test(key)) throw new UsageError("That is not an organisation API key: those are shc_ followed by letters, digits, - and _ (Settings → API keys on the dashboard)", CLOUD_USAGE);
-      // The cloud named here (else the one logged in to before, else the machine's) is the one the key is checked against,
-      // kept with it, and the only one it is ever sent to: changing cloud.url later moves neither the key nor this
-      // machine's link.
-      const before = env[CLOUD_API_URL_ENV]?.trim() || readEnvFile(ctx.paths.envFile)[CLOUD_API_URL_ENV] || undefined;
-      const machineCloud = resolveCloudUrl(env, config.cloud);
-      // Two clouds to choose from: the key could be for either, and it must not be sent to the other one.
-      if (!url && before && machineCloud !== DEFAULT_CLOUD_URL && trimTrailingSlashes(before) !== machineCloud) throw new UsageError(`The key kept here was for ${before}, and this machine's cloud is ${machineCloud}: name the one this key belongs to, skillhook cloud login --url https://…`, CLOUD_USAGE);
       const client = fleetClient(env, config.cloud, { key, url: undefined }, { url: url ?? before });
       const { data: me } = await client.get("/me", MeSchema);
       upsertEnvVar(ctx.paths.envFile, CLOUD_API_KEY_ENV, key);
@@ -247,7 +248,7 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
       return 0;
     }
     default:
-      return callCloudTool(ctx, sub, at);
+      return callCloudTool(ctx, sub, at, ended);
   }
 }
 
@@ -259,9 +260,9 @@ function apiClient(ctx: Ctx): FleetClient {
 /**
  * `skillhook cloud <tool> …`: any tool of the cloud's catalogue, its input from the words after its name (`at` in the
  * command line), read with its schema (a switch never takes the next word, a text parameter does) rather than as the
- * flags of every command.
+ * flags of every command; after a `--` before the name (`ended`), all of them as arguments.
  */
-async function callCloudTool(ctx: Ctx, given: string, at: number): Promise<number> {
+async function callCloudTool(ctx: Ctx, given: string, at: number, ended: boolean): Promise<number> {
   if (!/^[a-z][a-z0-9_-]*$/i.test(given)) throw new UsageError(`Unknown cloud subcommand "${given}"`, CLOUD_USAGE);
   let client: FleetClient;
   try {
@@ -276,7 +277,7 @@ async function callCloudTool(ctx: Ctx, given: string, at: number): Promise<numbe
   if (!tool) throw new UsageError(`Unknown cloud subcommand or tool "${given}"; skillhook cloud tools lists the tools`, CLOUD_USAGE);
   let input: Record<string, unknown>;
   try {
-    input = await toolInput(tool, ctx.rawArgs.slice(at + 1), {
+    input = await toolInput(tool, [...(ended ? ["--"] : []), ...ctx.rawArgs.slice(at + 1)], {
       stdin: () => readStdin(ctx),
       file: (path: string) => {
         try {

@@ -871,6 +871,16 @@ describe("cli", () => {
       expect(await main(["cloud", "login", "--key", fake.apiKey, ...at], ambiguous.cli)).toBe(2);
       expect(ambiguous.err()).toContain(`The key kept here was for ${fake.url}, and this machine's cloud is https://other-cloud.example.invalid: name the one this key belongs to, skillhook cloud login --url https://…`);
       expect(fake.apiRequests.length).toBe(before);
+      // Asked before the key is: at a terminal, nobody types a key only to be told which cloud is missing.
+      const asked = io(env);
+      asked.cli.isTTY = true;
+      expect(await main(["cloud", "login", ...at], asked.cli)).toBe(2);
+      expect(asked.err()).toContain("name the one this key belongs to");
+      // A blank --url is no cloud at all, not "no --url".
+      const blank = io(env);
+      expect(await main(["cloud", "login", "--url", " ", "--key", fake.apiKey, ...at], blank.cli)).toBe(2);
+      expect(blank.err()).toContain("--url needs the cloud's address");
+      expect(fake.apiRequests.length).toBe(before);
       // With one cloud to go by (the key's), that is the one.
       writeConfigFile(home, {});
       const relogin = io(env);
@@ -955,6 +965,14 @@ describe("cli", () => {
         expect(misplaced.err()).toContain("Name the subcommand or tool first, then its options: skillhook cloud <subcommand|tool>");
       }
       expect(fake.toolCalls.length).toBe(beforeMisplaced);
+      // After `--`, as for every command, every word is an argument: the subcommand's and the tool's.
+      const ended = io(env);
+      expect(await main(["cloud", ...at, "--", "status"], ended.cli)).toBe(0);
+      expect(ended.out()).toContain("API key: present for");
+      const endedTool = io(env);
+      expect(await main(["cloud", ...at, "--", "get_job", "20260929T090000Z-d4e5f6"], endedTool.cli)).toBe(0);
+      expect(fake.toolCalls.at(-1)).toEqual({ name: "get_job", input: { job: "20260929T090000Z-d4e5f6" } });
+      expect(await main(["cloud", ...at, "--", "get_job", "20260929T090000Z-d4e5f6", "--json"], io(env).cli)).toBe(2);
       expect(await main(["--json", "cloud", ...at, "list_jobs", "--machine", "mac-mini", "--waiting"], io(env).cli)).toBe(0);
       expect(fake.toolCalls.at(-1)).toEqual({ name: "list_jobs", input: { machine: "mac-mini", waiting: true } });
       // skillhook's own options mean the same wherever they stand, never a parameter's value: the text goes after =.

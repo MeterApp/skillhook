@@ -222,7 +222,7 @@ export async function toolInput(tool: CatalogTool, tokens: string[], sources: In
       if (inline !== undefined) return inline;
       const next = tokens[i + 1];
       if (next === undefined) throw new ToolInputError(`--${name} needs a value`);
-      if (ownOption(next, undefined)) throw new ToolInputError(`--${name} needs a value: ${next} is skillhook's own option (as the text itself: --${name}=${next})`);
+      if (ownOption(next, undefined) || next === "--") throw new ToolInputError(`--${name} needs a value: ${next} ${next === "--" ? "ends the options" : "is skillhook's own option"} (as the text itself: --${name}=${next})`);
       i++;
       return next;
     };

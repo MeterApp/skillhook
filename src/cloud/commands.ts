@@ -78,7 +78,7 @@ export interface CommandOutcome {
 
 /** A job's artifacts that hold the webhook body (prompt.md quotes it): they leave the machine only when bodies may. */
 const BODY_ARTIFACTS: ReadonlySet<string> = new Set(["payload", "event", "prompt"]);
-const BODY_WITHHELD = "cloud.upload_payloads is false on this machine";
+const BODY_WITHHELD = "webhook bodies stay on this machine (cloud.upload_payloads is false here, or the organisation keeps none)";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const LONG_TIMEOUT_MS = 90_000;
@@ -124,7 +124,7 @@ const readHandlers: Partial<Record<CommandType, CommandHandler>> = {
     const delivery = deps.deliveryLog.get(args.id);
     if (!delivery) throw new CommandError("not_found", `unknown delivery ${args.id}`);
     const body = args.include_body && deps.uploadPayloads() ? readDeliveryBody(deps.deliveryLog, deps.store, delivery) : undefined;
-    return { result: { delivery, ...(body ? { body } : {}), ...(args.include_body && !deps.uploadPayloads() ? { body_withheld: "cloud.upload_payloads is false on this machine" } : {}) } };
+    return { result: { delivery, ...(body ? { body } : {}), ...(args.include_body && !deps.uploadPayloads() ? { body_withheld: BODY_WITHHELD } : {}) } };
   },
   "job.list": (args: Args<{ skill?: string; status?: never; outcome?: never; failure?: never; trigger?: never; waiting?: boolean; since?: string; after?: string; limit?: number }>, _c, deps) => {
     const page = deps.store.listPage({ skill: args.skill, status: args.status, outcome: args.outcome, failure: args.failure, trigger: args.trigger, waiting: args.waiting || undefined, since: args.since, after: args.after, limit: args.limit ?? 50 });

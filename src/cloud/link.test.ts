@@ -497,6 +497,12 @@ describe("CloudLink", () => {
     expect(uploaded.ranges[0]).toMatch(/^bytes 0-1048575\/\d+$/);
     expect((art.art!.result as { sha256: string }).sha256).toBe(uploaded.sha256);
     expect(art.small).toMatchObject({ ok: true, result: { name: "prompt", truncated: false, text: expect.stringContaining("# Skill: slow") } });
+
+    // An organisation that keeps no bodies says so in its hints: the artifacts that hold the body stay here then too.
+    fake.hints = { upload_payloads: false };
+    const hinted = await runCommands(fake, [cmd("hinted", "job.artifact", { id: jobId, name: "prompt" }), cmd("hinted-stdout", "job.artifact", { id: jobId, name: "stdout", max_inline_bytes: 64 })]);
+    expect(hinted.hinted).toMatchObject({ ok: false, error: { code: "denied_by_policy", message: expect.stringContaining("or the organisation keeps none") } });
+    expect(hinted["hinted-stdout"]).toMatchObject({ ok: true });
   });
 
   it("checks the runners once it connects, so their readiness reaches the cloud before any job runs", async () => {
