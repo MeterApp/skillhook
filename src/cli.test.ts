@@ -741,13 +741,14 @@ describe("cli", () => {
       // Checked with /me, kept in .env (mode 600), never printed; from the flag or from stdin.
       const login = io(env);
       expect(await main(["cloud", "login", "--key", fake.apiKey, ...at], login.cli)).toBe(0);
-      expect(login.out()).toContain(`Logged in to ${fake.url} as Fake Org: key "laptop" (fleet:read), kept in ${home.envFile} as SKILLHOOK_CLOUD_API_KEY.`);
+      expect(login.out()).toContain(`Logged in to ${fake.url} as Fake Org: key "laptop" (fleet:read), kept in ${home.envFile} with its cloud (SKILLHOOK_CLOUD_API_KEY, SKILLHOOK_CLOUD_API_URL).`);
       const piped = io(env);
       piped.cli.stdin = async () => `${fake.apiKey}\n`;
       expect(await main(["cloud", "login", "--key", "-", ...at, "--json"], piped.cli)).toBe(0);
       expect(piped.json()).toMatchObject({ ok: true, url: fake.url, organisation: { name: "Fake Org" }, key: { name: "laptop", scopes: ["fleet:read"] }, role: "viewer" });
       for (const output of [login.out(), login.err(), piped.out(), piped.err()]) expect(output).not.toContain(fake.apiKey);
       expect(readFileSync(home.envFile, "utf8")).toContain(`SKILLHOOK_CLOUD_API_KEY=${fake.apiKey}`);
+      expect(readFileSync(home.envFile, "utf8")).toContain(`SKILLHOOK_CLOUD_API_URL=${fake.url}`);
       expect(statSync(home.envFile).mode & 0o777).toBe(0o600);
 
       const machines = io(env);
@@ -804,7 +805,8 @@ describe("cli", () => {
       const killed = io({ ...env, SKILLHOOK_NO_CLOUD: "1" });
       expect(await main(["cloud", "jobs", ...at], killed.cli)).toBe(1);
       expect(killed.err()).toContain("SKILLHOOK_NO_CLOUD is set");
-      const insecure = io({ ...env, SKILLHOOK_CLOUD_URL: "http://cloud.example.invalid" });
+      // A key from the environment goes where the environment says, and only over https.
+      const insecure = io({ SKILLHOOK_NO_UPDATE_CHECK: "1", SKILLHOOK_CLOUD_API_KEY: fake.apiKey, SKILLHOOK_CLOUD_URL: "http://cloud.example.invalid" });
       expect(await main(["cloud", "machines", ...at], insecure.cli)).toBe(1);
       expect(insecure.err()).toContain("must use https");
       expect(await main(["cloud", "logout", "--help", ...at], io(env).cli)).toBe(0);
@@ -813,6 +815,7 @@ describe("cli", () => {
       expect(await main(["cloud", "logout", ...at, "--json"], logout.cli)).toBe(0);
       expect(logout.json()).toEqual({ ok: true, removed: true, env_var_set: false });
       expect(readFileSync(home.envFile, "utf8")).not.toContain("SKILLHOOK_CLOUD_API_KEY");
+      expect(readFileSync(home.envFile, "utf8")).not.toContain("SKILLHOOK_CLOUD_API_URL");
       expect(readFileSync(home.envFile, "utf8")).toContain(`SKILLHOOK_CLOUD_TOKEN=${fake.token}`);
       const again = io(env);
       expect(await main(["cloud", "logout", ...at], again.cli)).toBe(0);
@@ -834,27 +837,26 @@ describe("cli", () => {
       expect(await main(["cloud", "stauts", ...at], typo.cli)).toBe(2);
       expect(typo.err()).toContain('Unknown cloud subcommand "stauts" (the cloud\'s tools, skillhook cloud tools, need an organisation API key: skillhook cloud login)');
 
-      // --url names the cloud once: checked, then kept as cloud.url for every later command; never over a pairing elsewhere.
+      // --url names the cloud the key is checked against and kept with; the machine's own link (cloud.url) is not touched.
       const insecure = io(env);
       expect(await main(["cloud", "login", "--url", "http://cloud.example.invalid", "--key", fake.apiKey, ...at], insecure.cli)).toBe(1);
       expect(insecure.err()).toContain("must use https");
-      writeConfigFile(home, { cloud: { enabled: true, url: "https://other-cloud.example.invalid", machine_id: "m1" } });
-      const elsewhere = io(env);
-      expect(await main(["cloud", "login", "--url", fake.url, "--key", fake.apiKey, ...at], elsewhere.cli)).toBe(1);
-      expect(elsewhere.err()).toContain("This machine is paired with https://other-cloud.example.invalid");
-      writeConfigFile(home, {});
       expect(fake.apiRequests).toEqual([]);
+      writeConfigFile(home, { cloud: { enabled: false, url: "https://other-cloud.example.invalid", machine_id: "m1" } });
       const login = io(env);
       expect(await main(["cloud", "login", "--url", `${fake.url}/`, "--key", fake.apiKey, ...at], login.cli)).toBe(0);
-      expect(login.out()).toContain(`Logged in to ${fake.url} as Fake Org: key "laptop" (fleet:read), kept in ${home.envFile} as SKILLHOOK_CLOUD_API_KEY; cloud.url set to ${fake.url}.`);
+      expect(login.out()).toContain(`Logged in to ${fake.url} as Fake Org: key "laptop" (fleet:read), kept in ${home.envFile} with its cloud (SKILLHOOK_CLOUD_API_KEY, SKILLHOOK_CLOUD_API_URL).`);
       expect(login.out()).not.toContain(fake.apiKey);
-      expect(JSON.parse(readFileSync(home.configFile, "utf8"))).toMatchObject({ cloud: { url: fake.url } });
+      expect(JSON.parse(readFileSync(home.configFile, "utf8"))).toMatchObject({ cloud: { url: "https://other-cloud.example.invalid", machine_id: "m1" } });
+      expect(readFileSync(home.envFile, "utf8")).toContain(`SKILLHOOK_CLOUD_API_URL=${fake.url}\n`);
       const status = io(env);
       expect(await main(["cloud", "status", ...at], status.cli)).toBe(0);
-      expect(status.out()).toContain(`API key: present (${home.envFile})`);
+      expect(status.out()).toContain(`API key: present for ${fake.url} (${home.envFile})`);
 
+      writeConfigFile(home, { cloud: { url: "https://somewhere-else.example.invalid" } });
       const overview = io(env);
       expect(await main(["cloud", "overview", ...at], overview.cli)).toBe(0);
+      expect(fake.apiRequests.at(-1)).toMatchObject({ method: "POST", path: "/api/v1/tools/describe_cloud", authorization: `Bearer ${fake.apiKey}` });
       expect(overview.out()).toContain('Fake Org · key "laptop" (fleet:read) · 1/2 machines online');
       expect(overview.out()).toContain("Waiting for a person (1)\n  20260929T101500Z-a1b2c3  triage on mac-mini: Deploy the fix to production? [yes | no]");
       expect(overview.out()).toContain("Failing health checks\n  mac-mini  claude auth (fail): not logged in  fix: run claude login");
@@ -931,6 +933,14 @@ describe("cli", () => {
       const noSkill = io(env);
       expect(await main(["cloud", "secret", "mac-mini", "nope", ...at], noSkill.cli)).toBe(1);
       expect(noSkill.err()).toContain("mac-mini has no skill named nope");
+      // Only a skill's secret: never the machine's admin token or a runner's API key.
+      const requests = fake.secretRequests.length;
+      for (const name of ["SKILLHOOK_ADMIN_TOKEN", "ANTHROPIC_API_KEY"]) {
+        const other = io(env);
+        expect(await main(["cloud", "secret", "mac-mini", name, "--force", ...at], other.cli)).toBe(1);
+        expect(other.err()).toContain(`${name} is not a skill's secret on mac-mini`);
+      }
+      expect(fake.secretRequests.length).toBe(requests);
       // A skill saved a moment ago is not listed yet: the machine's own answer names its secret.
       const fresh = io(env);
       expect(await main(["cloud", "secret", "mac-mini", "fresh", ...at, "--json"], fresh.cli)).toBe(0);
@@ -939,6 +949,10 @@ describe("cli", () => {
       const denied = io(env);
       expect(await main(["cloud", "secret", "mac-mini", "SKILLHOOK_SECRET_HELLO", ...at], denied.cli)).toBe(1);
       expect(denied.err()).toContain("needs the admin role");
+
+      const killed = io({ ...env, SKILLHOOK_NO_CLOUD: "1" });
+      expect(await main(["cloud", "get_stats", ...at, "--json"], killed.cli)).toBe(1);
+      expect(String(killed.json().error)).toContain("SKILLHOOK_NO_CLOUD is set");
 
       // A cloud from before the catalogue says so; the reads of 0.6 still work there.
       fake.catalogMode = "missing";

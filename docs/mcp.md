@@ -118,7 +118,7 @@ Every tool returns a text block (a one-line summary followed by JSON) and the sa
 | `update_config` | `set` (dotted keys to values) and/or `unset` (dotted keys) | Change `skillhook.json` in one validated write; the running server re-reads it at once and reports what applied live and what (host, port) needs `restart_server`. Never writes an invalid file. |
 | `restart_server` | optional `force`, `wait_seconds` (default 30) | Ask the service-run server to stop (letting jobs finish) and let launchd / systemd start it again; `409` for a server run in a terminal. |
 | `check_update` | optional `install` | Ask npm for a newer skillhook; `install: true` upgrades with the package manager that installed it and restarts an idle service. |
-| `cloud_status` | none | Whether the machine is paired with Skillhook Cloud: URL, machine id, mode, whether the token is present (never the token), the running server's link state, and whether an organisation API key is kept here (`api_key`; [`skillhook mcp --cloud`](#skillhook-cloud-skillhook-mcp---cloud) uses it). |
+| `cloud_status` | none | Whether the machine is paired with Skillhook Cloud: URL, machine id, mode, whether the token is present (never the token), the running server's link state, and whether an organisation API key is kept here and for which cloud (`api_key`; [`skillhook mcp --cloud`](#skillhook-cloud-skillhook-mcp---cloud) uses it). `update_config` refuses `cloud.*` keys and `set_secret` / `generate_secret` refuse `SKILLHOOK_CLOUD_*` names: where the link and the API key go is the person's to set. |
 | `cloud_disconnect` | optional `keep_token` | Stop the Skillhook Cloud link: `cloud.enabled: false`, token and machine key revoked and removed, spool deleted. There is no `cloud_connect` tool on purpose: pairing hands the machine to an account, so the person runs `skillhook cloud connect --code …` themselves ([cloud.md](cloud.md#connecting)). |
 | `cloud_report_issue` | `title`; optional `body`, `kind` (bug, question, feature, other), `severity` (low, normal, high, urgent), `contact_email`, `job_id`, `delivery_id`, `skill`, `diagnostics` (default true), `dry_run` | Send a problem report to the Skillhook team from a paired machine, when the person asks for one (what `skillhook cloud report` does; `dry_run: true` returns the exact report without sending it). With diagnostics: versions, OS, cloud mode, the link's state, whether each runner is ready and the failing or warning checks, all scrubbed of every `.env` value; never payloads, logs, prompts or job output ([cloud.md](cloud.md#reporting-a-problem)). Returns the issue number and URL, whether a confirmation email went out, and the diagnostics that were sent. |
 | `get_runners` | optional `refresh` | Is each runner (claude, codex, shell) installed and logged in or given an API key: what every job checks before it starts. Through the running server's cached answer when there is one. |
@@ -137,9 +137,10 @@ codex mcp add skillhook-cloud -- skillhook mcp --cloud
 
 It needs an organisation API key, which the person keeps here once with `skillhook cloud login --url https://<cloud>`
 ([cloud.md](cloud.md#the-whole-organisation-with-an-api-key)). When it starts it reads the cloud's catalogue of tools
-(`GET /api/v1/tools`) and offers each one the key's scope allows, with the cloud's own name, description and input
-schema; a call goes to `POST /api/v1/tools/<name>` with the key, and the cloud validates, authorises and audits it. So
-the tools are always the cloud's current ones: `describe_cloud` (start here: what needs a person now, with
+(`GET /api/v1/tools`, waiting at most 8 s) and offers each one the key's scope allows, with the cloud's own name,
+description and input schema; a call goes to `POST /api/v1/tools/<name>` with the key (only to the cloud the key was
+checked against at login), and the cloud validates, authorises and audits it. So the tools are the cloud's as of the
+server's start (reconnect it to see tools the cloud added since): `describe_cloud` (start here: what needs a person now, with
 `next_steps`), `get_stats`, `list_alerts`, `list_machines`, `get_machine`, `list_skills`, `get_skill`, `list_jobs`,
 `get_job`, `get_job_artifact`, `answer_job`, `replay_job`, `run_skill`, `test_skill`, `save_skill`,
 `list_deliveries`, `get_delivery`, `replay_delivery`, `list_hosted_urls`, `enable_hosted_url`, `send_command` and the
@@ -147,7 +148,8 @@ rest ([the cloud's list](https://github.com/MeterApp/skillhook-cloud/blob/main/d
 announces are the cloud's, with the organisation and the key's scopes.
 
 One tool is local: `generate_secret {machine, skill, force?}` (admin keys) has the machine generate a skill's secret
-sealed to a key pair made for that call, and returns the value once; the cloud never sees it.
+(only a skill's: never its admin token or a runner's key) sealed to a key pair made for that call, and returns the value
+once; the cloud only forwards the sealed value. A catalogue tool of that name never replaces it.
 
 Without a key (or while the cloud cannot be reached, or under `SKILLHOOK_NO_CLOUD=1`) the server offers only
 `skillhook_cloud_setup`: it says what is missing, and once the person logged in a call loads the cloud's tools (a

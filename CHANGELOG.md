@@ -16,20 +16,27 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
   - `skillhook cloud tools [tool]` lists the tools the key has (and which a wider key would add) or
     describes one; `skillhook cloud <tool> [args] [--param value]…` runs any of them by name:
     `answer_job`, `replay_job`, `run_skill`, `test_skill`, `save_skill`, `get_job_artifact`,
-    `get_stats`, `list_alerts`, `enable_hosted_url`, `send_command`, … Required parameters may be
-    given as arguments in order; flags are typed from the schema (switches, checked numbers, JSON as a
-    literal, `@file` or `-`, `--param-file PATH` for long text, `--input` for the whole input). The
-    answer prints as indented text, or as it came with `--json`.
+    `get_stats`, `list_alerts`, `enable_hosted_url`, `send_command`, … The arguments after the tool's
+    name are read with its schema: required parameters as arguments in order, typed flags (switches,
+    checked numbers, JSON as a literal, `@file` or `-`, `--param-file PATH` for long text, `--input` for
+    the whole input). The answer prints as indented text (control characters removed), or as it came
+    with `--json`. A catalogue entry this version cannot read is skipped; a newer catalogue shape asks
+    for an update.
   - `skillhook cloud secret <machine> <skill|NAME> [--force]`: the machine generates a skill's secret
-    sealed to a key pair made for this one request; only this terminal can open it, the cloud never
-    sees it.
+    (only a skill's: never its admin token or a runner's key) sealed to a key pair made for this one
+    request; only this terminal can open it, the cloud only forwards the sealed value.
   - `skillhook mcp --cloud`, registered by the plugin as the `skillhook-cloud` MCP server: the same
     tools for the agent, the cloud's instructions, and `generate_secret`. Without a key it offers only
     `skillhook_cloud_setup`, which says what is missing and loads the tools once the person logged in;
     the agent never handles the key.
-  - `skillhook cloud login --url URL` names the cloud (kept as `cloud.url`; refused on a machine paired
-    with another one) and, at a terminal, asks for the key without echoing it. `cloud status` and the MCP
-    tool `cloud_status` say whether a key is kept here.
+  - `skillhook cloud login [--url URL]` checks the key against the cloud named (else the machine's) and
+    keeps it with that cloud (`SKILLHOOK_CLOUD_API_URL` next to `SKILLHOOK_CLOUD_API_KEY` in `.env`): the key
+    goes there and nowhere else, whatever `cloud.url` says later, and login never touches the machine's link.
+    At a terminal it asks for the key without echoing it. `cloud status` and the MCP tool `cloud_status` say
+    whether a key is kept and for which cloud.
+  - The local MCP server refuses `cloud.*` settings in `update_config` and `SKILLHOOK_CLOUD_*` names in
+    `set_secret` and `generate_secret`: an agent can change neither where the link and the API key go nor
+    their credentials.
   - A new plugin skill, `skillhook-cloud`, teaches the agent to triage the organisation (failure kinds,
     rejected deliveries, failing checks), act on it safely and set up machines, skills, secrets and hosted
     URLs.

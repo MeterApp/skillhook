@@ -98,20 +98,26 @@ skillhook cloud job 20260929T101500Z-a1b2c3
 skillhook cloud logout                                  # forget the key here; revoke it on the dashboard to end it
 ```
 
-`login` checks the key with `GET /api/v1/me` and keeps it in `.env` as `SKILLHOOK_CLOUD_API_KEY` (mode 600, never
-printed); `SKILLHOOK_CLOUD_API_KEY` in the environment (CI) takes precedence; `logout` removes it from `.env`. `--url`
-names the cloud and keeps it as `cloud.url` (refused on a machine paired with another cloud); pairing sets it too, and
-until one is set the commands refuse, so a key never goes to the built-in placeholder URL. A key must look like one
-(`shc_` and then letters, digits, `-` and `_`), so a pasted second line or the machine token is refused before anything
-is sent. HTTPS only; they refuse under `SKILLHOOK_NO_CLOUD=1`.
+`login` checks the key with `GET /api/v1/me` against the cloud `--url` names (else this machine's cloud, `cloud.url` or
+`SKILLHOOK_CLOUD_URL`) and keeps both in `.env`, as `SKILLHOOK_CLOUD_API_KEY` and `SKILLHOOK_CLOUD_API_URL` (mode 600,
+the key never printed); `logout` removes them. From then on the key goes to that cloud and nowhere else: a `cloud.url`
+changed later moves neither the key nor, since login never touches it, this machine's link. In CI,
+`SKILLHOOK_CLOUD_API_KEY` in the environment takes precedence (with `SKILLHOOK_CLOUD_API_URL`, else the machine's
+cloud). A key never goes to the built-in placeholder URL, and it must look like one (`shc_` and then letters, digits, `-`
+and `_`), so a pasted second line or the machine token is refused before anything is sent. HTTPS only (plain http only
+to a loopback address); they refuse under `SKILLHOOK_NO_CLOUD=1`. An agent cannot change any of this: the local MCP
+server refuses `cloud.*` settings in `update_config` and `SKILLHOOK_CLOUD_*` names in `set_secret` and
+`generate_secret`.
 
 **Tools.** The cloud publishes its tools (`GET /api/v1/tools`: name, description, JSON Schema, the scope each needs), and
 `skillhook cloud <tool>` runs one (`POST /api/v1/tools/<tool>`; `list-jobs` and `list_jobs` are the same), so a tool the
-cloud adds works without a new skillhook. Required parameters may be given as arguments in order, the others as
-`--param value` (`--wait-seconds` or `--wait_seconds`); booleans are switches (`--waiting`, `--no-waiting`), numbers are
-checked, JSON parameters (payloads, arguments) take a literal, `@file` or `-` for stdin, a long text takes
-`--param-file PATH`, and `--input JSON|@file|-` gives the whole input. The answer prints as indented text, or as the
-cloud sent it with `--json`. A tool beyond the key's scope is refused before anything is sent.
+cloud adds works without a new skillhook. The arguments after the tool's name are read with its schema: required
+parameters may be given as arguments in order, the others as `--param value` or `--param=value` (`--wait-seconds` or
+`--wait_seconds`; a text parameter always takes the next word, `--` ends the flags); booleans are switches (`--waiting`,
+`--no-waiting`), numbers are checked, JSON parameters (payloads, arguments) take a literal, `@file` or `-` for stdin, a
+long text takes `--param-file PATH`, and `--input JSON|@file|-` gives the whole input (flags win over it). The answer
+prints as indented text (control characters removed), or as the cloud sent it with `--json`. A tool beyond the key's
+scope is refused before anything is sent.
 
 **The MCP server.** `skillhook mcp --cloud` serves the same tools to an agent (the skillhook plugin registers it as
 `skillhook-cloud`, next to this machine's own `skillhook` server): the catalogue is read when it starts, each call is
@@ -122,9 +128,12 @@ handles the key. See [mcp.md](mcp.md#skillhook-cloud-skillhook-mcp---cloud).
 **Secrets.** `skillhook cloud secret <machine> <skill|NAME> [--force]` (and the tool `generate_secret`) has the machine
 generate a skill's secret and seal it to a key pair made for this one request: `POST /api/v1/machines/<m>/secrets` with
 the public half, then `POST /api/v1/commands/<id>/claim` until the sealed value is there (the cloud keeps it two
-minutes and hands it to this key once). Only this process can open it, so the value never travels or rests in the
-clear, not even in the cloud. An existing secret is kept unless `--force` (which replaces it: the sender then needs
-the new value). It needs a `fleet:admin` key and a machine that accepts `secret.generate` (control mode).
+minutes and hands it to this key once). Only this process holds the private half: the cloud stores and forwards the
+sealed value and has no key to open it (as with the dashboard's own secrets, this relies on the cloud passing the
+public key on unchanged). An existing secret is kept unless `--force` (which replaces it: the sender then needs the new
+value). Only a skill's secret: the skill's name, a `SKILLHOOK_SECRET_*` variable, or a variable a skill on that machine
+names as its secret; never the machine's admin token or a runner's key. It needs a `fleet:admin` key and a machine that
+accepts `secret.generate` (control mode).
 
 The fixed views:
 

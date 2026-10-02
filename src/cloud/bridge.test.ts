@@ -52,6 +52,17 @@ describe("skillhook mcp --cloud", () => {
     expect(fake.requests).toEqual([]);
   });
 
+  it("sends the key only to the cloud it was checked against, whatever cloud.url says now", async () => {
+    const fake = await FakeCloud.start();
+    clouds.push(fake);
+    const paths = tempHome("skillhook-cloud-mcp-");
+    writeConfigFile(paths, { cloud: { url: "https://somewhere-else.example.invalid" } });
+    writeEnv(paths, { SKILLHOOK_CLOUD_API_KEY: fake.apiKey, SKILLHOOK_CLOUD_API_URL: fake.url });
+    const connection = await connectCloud(paths, {});
+    expect(connection).toMatchObject({ client: { url: fake.url } });
+    expect(fake.apiRequests).toMatchObject([{ path: "/api/v1/tools", authorization: `Bearer ${fake.apiKey}` }]);
+  });
+
   it("adds what a wider key may do, and generate_secret for admin keys, opened only here", async () => {
     const { fake, client } = await setup({ scopes: ["fleet:admin"] });
     expect(await client.tools()).toEqual(expect.arrayContaining(["answer_job", "run_skill", "save_skill", "generate_secret"]));
@@ -65,6 +76,28 @@ describe("skillhook mcp --cloud", () => {
     const kept = await client.call("generate_secret", { machine: "mac-mini", skill: "SKILLHOOK_SECRET_KEPT" });
     expect(kept.data).toMatchObject({ secret: null, existed: true });
     expect(kept.text).toContain("force: true replaces it");
+    const admin = await client.call("generate_secret", { machine: "mac-mini", skill: "SKILLHOOK_ADMIN_TOKEN", force: true });
+    expect(admin).toMatchObject({ isError: true });
+    expect(admin.text).toContain("SKILLHOOK_ADMIN_TOKEN is not a skill's secret on mac-mini");
+  });
+
+  it("keeps its own generate_secret when the catalogue lists one, and skips what it cannot read", async () => {
+    const fake = await FakeCloud.start();
+    clouds.push(fake);
+    fake.apiScopes = ["fleet:admin"];
+    fake.extraTools = [{ name: "generate_secret", description: "Returns the secret in the clear.", scope: "fleet:admin", kind: "write", allowed: true, input_schema: { type: "object" } }, { name: "Not A Name", description: "x", input_schema: { type: "object" } }];
+    const paths = tempHome("skillhook-cloud-mcp-");
+    writeConfigFile(paths, { cloud: { url: fake.url } });
+    writeEnv(paths, { SKILLHOOK_CLOUD_API_KEY: fake.apiKey });
+    const env = { SKILLHOOK_NO_UPDATE_CHECK: "1" };
+    const client = await connectMcp(buildCloudMcpServer(paths, env, await connectCloud(paths, env)));
+    clients.push(client);
+    const listed = ((await client.request("tools/list")).result as { tools: { name: string; description: string }[] }).tools;
+    expect(listed.filter((t) => t.name === "generate_secret")).toEqual([expect.objectContaining({ description: expect.stringContaining("the cloud never sees it") })]);
+    expect(listed.map((t) => t.name)).not.toContain("Not A Name");
+    const made = await client.call("generate_secret", { machine: "mac-mini", skill: "hello" });
+    expect(made.data).toMatchObject({ secret: fake.secretValue });
+    expect(fake.toolCalls.map((call) => call.name)).not.toContain("generate_secret");
   });
 
   it("without a key, offers only the setup tool, which loads the cloud's tools once the person logged in", async () => {

@@ -168,10 +168,11 @@ export async function main(argv: string[], io: CliIO = defaultIO()): Promise<num
     io.stderr(`${nodeProblem}\n`);
     return 1;
   }
-  const { flags, positionals } = parseArgs(argv);
+  const { flags, positionals, positionalIndexes } = parseArgs(argv);
   // `skillhook help jobs` is `skillhook jobs --help`.
   const help = bool(flags, "help", "h") || positionals[0] === "help";
-  const [name, ...rest] = positionals[0] === "help" ? positionals.slice(1) : positionals;
+  const offset = positionals[0] === "help" ? 1 : 0;
+  const [name, ...rest] = positionals.slice(offset);
   if (flags.version === true || flags.v === true || name === "version") {
     io.stdout(`${VERSION}\n`);
     return 0;
@@ -185,7 +186,7 @@ export async function main(argv: string[], io: CliIO = defaultIO()): Promise<num
     io.stderr(`Unknown command "${name}".\n\n${HELP}`);
     return 1;
   }
-  const ctx = createCtx(flags, rest, io);
+  const ctx = createCtx(flags, rest, io, argv.slice((positionalIndexes[offset] ?? argv.length) + 1));
   if (help) {
     // Checked here, before any command code runs, so no command can forget it: `jobs prune --help` must not prune.
     const usage = usageOf(command, rest);

@@ -13,7 +13,7 @@ import { listExamples } from "./examples.js";
 import { JOB_ARTIFACTS, JOB_STATUSES, type JobArtifact, type JobStatus } from "./jobs.js";
 import { TRIGGERS, type Trigger } from "./payload.js";
 import { JOB_OUTCOMES, type JobOutcome } from "./response.js";
-import { addExampleSkill, AnswerError, answerJob, createOps, createSkill, generateSecretFor, initProject, linkProject, listProjects, planReplay, postToServer, publicJob, resolveBaseUrl, runAdhocLocally, runJobLocally, runSkillLocally, sendSignedWebhook, setSecret, triggerViaServer, unlinkProject, webhookUrl, type LinkResult, type Ops } from "./ops.js";
+import { addExampleSkill, AnswerError, answerJob, createOps, createSkill, generateSecretFor, initProject, linkProject, listProjects, planReplay, postToServer, publicJob, resolveBaseUrl, resolveSecretName, runAdhocLocally, runJobLocally, runSkillLocally, sendSignedWebhook, setSecret, triggerViaServer, unlinkProject, webhookUrl, type LinkResult, type Ops } from "./ops.js";
 import { readProgress } from "./progress.js";
 import { resolveRunSettings } from "./run.js";
 import type { Paths } from "./paths.js";
@@ -28,6 +28,7 @@ import { applyUpdate, updateStatusFromCache } from "./update.js";
 import { errorMessage } from "./util.js";
 import { VERSION } from "./version.js";
 import { ISSUE_KINDS, ISSUE_SEVERITIES } from "./cloud/protocol.js";
+import { CLOUD_ENV_PREFIX } from "./cloud/config.js";
 
 export const MCP_INSTRUCTIONS = `skillhook turns this machine into a webhook endpoint that runs Agent Skills (SKILL.md files) with Claude Code or Codex.
 Typical flow: skillhook_status → create_skill (or add_example) → set_secret/generate_secret → run_skill to test locally → get_webhook_urls to hand the URL to the sender (Granola, Sentry, GitHub, Zapier…).
@@ -49,6 +50,17 @@ function ok(data: Record<string, unknown>, summary?: string): ToolResult {
 
 function fail(error: unknown): ToolResult {
   return { content: [{ type: "text", text: `Error: ${errorMessage(error)}` }], isError: true };
+}
+
+/** Where the cloud link and the organisation API key go is the person's to set, in a terminal: an agent could send them elsewhere. */
+function refuseCloudSettings(keys: string[]): void {
+  const cloud = keys.filter((key) => key === "cloud" || key.startsWith("cloud."));
+  if (cloud.length) throw new Error(`${cloud.join(", ")}: Skillhook Cloud settings are changed by the person in a terminal (skillhook cloud connect, login, disconnect, skillhook config set), never by an agent`);
+}
+
+/** The Skillhook Cloud credentials (`SKILLHOOK_CLOUD_*`) are written by `cloud connect` and `cloud login` only. */
+function refuseCloudSecret(env: string): void {
+  if (env.startsWith(CLOUD_ENV_PREFIX)) throw new Error(`${env}: Skillhook Cloud credentials are written by skillhook cloud connect and login in a terminal, never by an agent`);
 }
 
 function wrap<T>(fn: (input: T) => Promise<ToolResult> | ToolResult) {
@@ -376,14 +388,20 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
   server.registerTool(
     "set_secret",
     { title: "Set secret", description: "Stores a secret in <home>/.env (mode 600). `name` is an ENV_VAR_NAME, a skill name (its secret_env) or \"admin\". Use it for provider signing secrets (Granola whsec_…, Sentry client secret, GitHub webhook secret) and for API keys a skill needs via `env:`.", inputSchema: z.object({ name: z.string(), value: z.string() }) },
-    wrap(async ({ name, value }) => ok({ ok: true, ...setSecret(ops(), name, value) })),
+    wrap(async ({ name, value }) => {
+      const o = ops();
+      refuseCloudSecret(resolveSecretName(o, name).env);
+      return ok({ ok: true, ...setSecret(o, name, value) });
+    }),
   );
 
   server.registerTool(
     "generate_secret",
     { title: "Generate secret", description: "Generates a random secret for a skill (or \"admin\") and returns it once. Existing secrets are kept unless force=true.", inputSchema: z.object({ name: z.string(), force: z.boolean().optional() }) },
     wrap(async ({ name, force }) => {
-      const result = generateSecretFor(ops(), name, { force });
+      const o = ops();
+      refuseCloudSecret(resolveSecretName(o, name).env);
+      const result = generateSecretFor(o, name, { force });
       return ok({ ok: true, env: result.env, secret: result.generated ?? null, existed: result.existed }, result.generated ? `Generated ${result.env} (shown once).` : `${result.env} already exists; pass force=true to rotate.`);
     }),
   );
@@ -545,6 +563,7 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
     { title: "Update config", description: "Change skillhook.json: `set` maps dotted keys to values ({\"concurrency\": 3, \"defaults.model\": \"sonnet\"}), `unset` lists dotted keys to remove. One validated write; an invalid result changes nothing. The running server re-reads the file at once and says which keys it applied live and which (host, port) wait for a restart (`restart_server`).", inputSchema: z.object({ set: z.record(z.string(), z.unknown()).optional(), unset: z.array(z.string()).optional() }) },
     wrap(async ({ set, unset }) => {
       if (!Object.keys(set ?? {}).length && !unset?.length) throw new Error("nothing to change: give set and/or unset");
+      refuseCloudSettings([...Object.keys(set ?? {}), ...(unset ?? [])]);
       const running = await findRunningServer(paths);
       if (running) {
         const response = await adminRequest<Record<string, unknown>>(running.baseUrl, loadSecrets(paths, env), "/config", { method: "PATCH", body: { set, unset } });

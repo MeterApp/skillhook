@@ -11,7 +11,7 @@ import { loadConfig } from "../config.js";
 import type { Paths } from "../paths.js";
 import { errorMessage } from "../util.js";
 import { VERSION } from "../version.js";
-import { CloudApiError, fleetClient, storedApiKey, type FleetClient } from "./api.js";
+import { CloudApiError, fleetClient, storedApiCredentials, type FleetClient } from "./api.js";
 import { generateRemoteSecret, secretNameFor } from "./remote-secret.js";
 import { callTool, fetchCatalog, type Catalog } from "./tools.js";
 
@@ -34,6 +34,9 @@ const ANNOTATIONS: Record<string, { readOnlyHint: boolean; destructiveHint?: boo
   destructive: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
 };
 
+/** Tools this server makes itself: a catalogue tool of the same name never replaces them (generate_secret must stay sealed end to end). */
+const LOCAL_TOOLS = new Set(["generate_secret", "skillhook_cloud_setup"]);
+
 const LOGIN_HINT = "The person logs in once, in a terminal: `skillhook cloud login --url https://<their Skillhook Cloud>`, pasting an organisation API key from the dashboard (Settings → API keys; fleet:read to look, fleet:run to also answer agents and run skills, fleet:admin to also change skills and settings). Never ask them to paste the key into this conversation.";
 
 export type CloudConnection = { client: FleetClient; catalog: Catalog } | { problem: string };
@@ -44,7 +47,7 @@ const CATALOG_TIMEOUT_MS = 8_000;
 /** The key and URL this home keeps, and the catalogue the cloud offers that key; or why there is none. */
 export async function connectCloud(paths: Paths, env: NodeJS.ProcessEnv): Promise<CloudConnection> {
   try {
-    const client = fleetClient(env, loadConfig(paths).cloud, storedApiKey(paths, env));
+    const client = fleetClient(env, loadConfig(paths).cloud, storedApiCredentials(paths, env));
     return { client, catalog: await fetchCatalog(client, { timeoutMs: CATALOG_TIMEOUT_MS }) };
   } catch (error) {
     return { problem: errorMessage(error) };
@@ -76,7 +79,7 @@ export function buildCloudMcpServer(paths: Paths, env: NodeJS.ProcessEnv, connec
 
   const install = (client: FleetClient, catalog: Catalog) => {
     for (const tool of catalog.tools) {
-      if (tool.allowed === false) continue;
+      if (tool.allowed === false || LOCAL_TOOLS.has(tool.name)) continue;
       server.registerTool(tool.name, { title: tool.title ?? undefined, description: tool.description, inputSchema: fromJsonSchema(tool.input_schema as JsonSchemaType, SHOWN_ONLY), annotations: ANNOTATIONS[tool.kind ?? ""] ?? ANNOTATIONS.write }, async (input: unknown) => {
         try {
           return ok(await callTool(client, tool.name, (input ?? {}) as Record<string, unknown>));
@@ -85,7 +88,7 @@ export function buildCloudMcpServer(paths: Paths, env: NodeJS.ProcessEnv, connec
         }
       });
     }
-    if (generatesSecrets(catalog) && !catalog.tools.some((tool) => tool.name === "generate_secret")) {
+    if (generatesSecrets(catalog)) {
       server.registerTool(
         "generate_secret",
         {

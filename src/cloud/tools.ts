@@ -23,28 +23,51 @@ export const CatalogToolSchema = z
   .loose();
 export type CatalogTool = z.infer<typeof CatalogToolSchema>;
 
-export const CatalogSchema = z
+/** The shape of the catalogue this version reads; a cloud that changes the shape (not the tools) raises it. */
+export const CATALOG_VERSION = 1;
+
+const ListingSchema = z
   .object({
     version: z.number().nullish(),
     /** What the cloud tells an agent about using its tools (the hosted MCP server's instructions). */
     instructions: text,
     organisation: z.object({ name: z.string(), slug: text }).loose().nullish(),
     key: z.object({ name: text, scopes: z.array(z.string()).nullish(), role: text }).loose().nullish(),
-    tools: z.array(CatalogToolSchema),
+    tools: z.array(z.unknown()),
   })
   .loose();
-export type Catalog = z.infer<typeof CatalogSchema>;
+type Listing = z.infer<typeof ListingSchema>;
+export interface Catalog {
+  version?: Listing["version"];
+  instructions?: Listing["instructions"];
+  organisation?: Listing["organisation"];
+  key?: Listing["key"];
+  tools: CatalogTool[];
+}
 
 const ResultSchema = z.record(z.string(), z.unknown());
 
-/** The catalogue as this key sees it; a cloud from before the catalogue says so. */
+/**
+ * The catalogue as this key sees it: the tools this version can read (one it cannot is skipped, not fatal; a name
+ * listed twice counts once). A cloud from before the catalogue, or with a newer shape of it, says so.
+ */
 export async function fetchCatalog(client: FleetClient, options: { timeoutMs?: number } = {}): Promise<Catalog> {
+  let listing: z.infer<typeof ListingSchema>;
   try {
-    return (await client.get("/tools", CatalogSchema, options)).data;
+    listing = (await client.get("/tools", ListingSchema, options)).data;
   } catch (error) {
     if (error instanceof CloudApiError && error.status === 404) throw new CloudApiError(`${client.url} has no tool catalogue (GET /api/v1/tools): it runs an older Skillhook Cloud. skillhook cloud machines, jobs and job still work.`, 404, error.code);
     throw error;
   }
+  if (typeof listing.version === "number" && listing.version > CATALOG_VERSION) throw new CloudApiError(`${client.url} lists its tools in version ${listing.version} of the catalogue; this skillhook reads version ${CATALOG_VERSION}: update it (skillhook update --install)`, undefined, "catalog_version");
+  const seen = new Set<string>();
+  const tools = listing.tools.flatMap((entry) => {
+    const parsed = CatalogToolSchema.safeParse(entry);
+    if (!parsed.success || seen.has(parsed.data.name)) return [];
+    seen.add(parsed.data.name);
+    return [parsed.data];
+  });
+  return { version: listing.version, instructions: listing.instructions, organisation: listing.organisation, key: listing.key, tools };
 }
 
 /** How long a call may take: what it waits for a machine (`wait_seconds`) plus the cloud's own wait for a command. */
@@ -113,22 +136,23 @@ export class ToolInputError extends Error {
   }
 }
 
-type FlagValue = string | boolean | string[];
-
 export interface InputSources {
   stdin: () => Promise<string>;
   file: (path: string) => string;
 }
 
-/** Flags every command has, never a tool's parameter. */
-const GLOBAL_FLAGS = new Set(["dir", "home", "json", "help", "h", "input"]);
+/** Options every command takes, never a tool's parameter: these take a value, the others are switches. */
+const GLOBAL_VALUE_FLAGS = new Set(["dir", "home"]);
+const GLOBAL_SWITCHES = new Set(["json", "help", "h"]);
 
 /**
- * A tool's input from the command line: `--param value` flags (booleans as switches, `--no-param` for false, numbers
- * checked, JSON for objects and payloads as a literal, `@file` or `-`), `--param-file PATH` for a long string, `--input`
- * for the whole object, and the required parameters still missing from the arguments, in order.
+ * A tool's input from the command line after its name, read with its schema: `--param value` or `--param=value` (a text
+ * parameter always takes the next word, even one that starts with a dash), booleans as switches (`--param`,
+ * `--no-param`, `--param=false`), numbers checked, JSON parameters (objects, payloads) as a literal, `@file` or `-`,
+ * `--param-file PATH` for a long text, `--input JSON|@file|-` for the whole input (flags win over it), and the required
+ * parameters not given as flags from the remaining arguments, in order. `--` ends the flags.
  */
-export async function toolInput(tool: CatalogTool, args: string[], flags: Record<string, FlagValue>, sources: InputSources): Promise<Record<string, unknown>> {
+export async function toolInput(tool: CatalogTool, tokens: string[], sources: InputSources): Promise<Record<string, unknown>> {
   const parameters = toolParameters(tool);
   const byFlag = new Map<string, ToolParameter>();
   for (const parameter of parameters) {
@@ -136,30 +160,68 @@ export async function toolInput(tool: CatalogTool, args: string[], flags: Record
     byFlag.set(parameter.name, parameter);
   }
   const input: Record<string, unknown> = {};
-  const whole = flags.input;
-  if (whole !== undefined) {
-    if (typeof whole !== "string") throw new ToolInputError("--input needs a JSON object, @file or - (stdin)");
-    const value = await jsonValue(whole, sources);
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new ToolInputError("--input must be a JSON object");
-    Object.assign(input, value);
-  }
-  const positionals = [...args];
-  for (const [flag, raw] of Object.entries(flags)) {
-    if (GLOBAL_FLAGS.has(flag)) continue;
-    const fileOf = flag.endsWith("-file") || flag.endsWith("_file") ? byFlag.get(flag.slice(0, -5)) : undefined;
-    if (fileOf && !byFlag.has(flag)) {
-      if (typeof raw !== "string") throw new ToolInputError(`--${flag} needs a path`);
-      input[fileOf.name] = fileOf.kind === "string" ? sources.file(raw) : parseJson(sources.file(raw), `--${flag}`);
+  const positionals: string[] = [];
+  let whole: string | undefined;
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i] as string;
+    if (token === "--") {
+      positionals.push(...tokens.slice(i + 1));
+      break;
+    }
+    if (!token.startsWith("--")) {
+      positionals.push(token);
       continue;
     }
-    const parameter = byFlag.get(flag);
-    if (!parameter) throw new ToolInputError(`${tool.name} has no --${flag}; its parameters: ${parameters.map((p) => `--${p.flag}`).join(", ") || "none"}`);
-    input[parameter.name] = await coerce(parameter, raw, sources, positionals);
+    const eq = token.indexOf("=");
+    const name = eq > 2 ? token.slice(2, eq) : token.slice(2);
+    const inline = eq > 2 ? token.slice(eq + 1) : undefined;
+    const value = () => {
+      if (inline !== undefined) return inline;
+      const next = tokens[i + 1];
+      if (next === undefined) throw new ToolInputError(`--${name} needs a value`);
+      i++;
+      return next;
+    };
+    if (GLOBAL_VALUE_FLAGS.has(name)) {
+      value();
+      continue;
+    }
+    if (GLOBAL_SWITCHES.has(name)) continue;
+    if (name === "input") {
+      whole = value();
+      continue;
+    }
+    const parameter = byFlag.get(name);
+    if (parameter?.kind === "boolean") {
+      input[parameter.name] = inline === undefined ? true : booleanOf(inline, name);
+      continue;
+    }
+    if (parameter) {
+      input[parameter.name] = await coerce(parameter, value(), sources);
+      continue;
+    }
+    const negated = name.startsWith("no-") || name.startsWith("no_") ? byFlag.get(name.slice(3)) : undefined;
+    if (negated?.kind === "boolean" && inline === undefined) {
+      input[negated.name] = false;
+      continue;
+    }
+    const fileOf = name.endsWith("-file") || name.endsWith("_file") ? byFlag.get(name.slice(0, -5)) : undefined;
+    if (fileOf) {
+      const path = value();
+      input[fileOf.name] = fileOf.kind === "json" ? parseJson(sources.file(path), `--${name}`) : sources.file(path);
+      continue;
+    }
+    throw new ToolInputError(`${tool.name} has no --${name}; its parameters: ${parameters.map((p) => `--${p.flag}`).join(", ") || "none"}`);
+  }
+  if (whole !== undefined) {
+    const given = await jsonValue(whole, sources);
+    if (!given || typeof given !== "object" || Array.isArray(given)) throw new ToolInputError("--input must be a JSON object");
+    for (const [key, item] of Object.entries(given)) if (!(key in input)) input[key] = item;
   }
   for (const parameter of parameters.filter((p) => p.required && !(p.name in input))) {
-    const value = positionals.shift();
-    if (value === undefined) break;
-    input[parameter.name] = await coerce(parameter, value, sources, []);
+    const next = positionals.shift();
+    if (next === undefined) break;
+    input[parameter.name] = await coerce(parameter, next, sources);
   }
   if (positionals.length) throw new ToolInputError(`${tool.name} takes no more arguments (got ${positionals.map((p) => JSON.stringify(p)).join(" ")}); flags name the optional ones`);
   const missing = parameters.filter((p) => p.required && !(p.name in input));
@@ -167,17 +229,15 @@ export async function toolInput(tool: CatalogTool, args: string[], flags: Record
   return input;
 }
 
-async function coerce(parameter: ToolParameter, raw: FlagValue, sources: InputSources, positionals: string[]): Promise<unknown> {
-  const value = Array.isArray(raw) ? raw[raw.length - 1] : raw;
+function booleanOf(value: string, name: string): boolean {
+  if (value === "true" || value === "1") return true;
+  if (value === "false" || value === "0") return false;
+  throw new ToolInputError(`--${name} is a switch: --${name}, --no-${name}, or --${name}=true|false`);
+}
+
+async function coerce(parameter: ToolParameter, value: string, sources: InputSources): Promise<unknown> {
   const flag = `--${parameter.flag}`;
-  if (parameter.kind === "boolean") {
-    if (typeof value === "boolean") return value;
-    if (value === "true" || value === "false") return value === "true";
-    // `--include-body <id>`: the switch took the next argument; it is an argument.
-    if (value !== undefined) positionals.unshift(value);
-    return true;
-  }
-  if (typeof value !== "string") throw new ToolInputError(`${flag} needs a value`);
+  if (parameter.kind === "boolean") return booleanOf(value, parameter.flag);
   if (parameter.kind === "integer" || parameter.kind === "number") {
     const number = Number(value);
     if (!value.trim() || !Number.isFinite(number) || (parameter.kind === "integer" && !Number.isInteger(number))) throw new ToolInputError(`${flag} must be ${parameter.kind === "integer" ? "a whole number" : "a number"}, got ${JSON.stringify(value)}`);
@@ -228,7 +288,7 @@ export function toolUsage(tool: CatalogTool): string {
 }
 
 /** Control characters (but newlines and tabs) out of text from machines and senders, so a terminal shows it as text. */
-function printable(value: string): string {
+export function printable(value: string): string {
   let out = "";
   for (const char of value) {
     const code = char.charCodeAt(0);
@@ -278,10 +338,11 @@ export function renderResult(value: unknown): string {
     if (v && typeof v === "object") {
       for (const [key, child] of Object.entries(v)) {
         const short = inline(child);
-        if (short !== undefined) lines.push(`${pad(depth)}${key}: ${short}`);
-        else if (typeof child === "string") block(`${pad(depth)}${key}: `, child, depth);
+        const label = printable(key);
+        if (short !== undefined) lines.push(`${pad(depth)}${label}: ${short}`);
+        else if (typeof child === "string") block(`${pad(depth)}${label}: `, child, depth);
         else {
-          lines.push(`${pad(depth)}${key}:`);
+          lines.push(`${pad(depth)}${label}:`);
           walk(child, depth + 1);
         }
       }

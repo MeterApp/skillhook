@@ -15,7 +15,7 @@ export const SECRET_ENV_RE = /^[A-Z_][A-Z0-9_]{0,99}$/;
 const RequestedSchema = z.object({ command_id: z.string().min(1), machine: z.string().nullish() }).loose();
 const ClaimSchema = z
   .object({
-    state: z.enum(["pending", "sealed", "exists", "failed"]),
+    state: z.enum(["pending", "sealed", "exists", "claimed", "expired", "failed"]),
     sealed: z.object({ ephemeral_public_key: z.string(), nonce: z.string(), ciphertext: z.string() }).loose().nullish(),
     error: z.string().nullish(),
   })
@@ -23,10 +23,21 @@ const ClaimSchema = z
 
 type SkillSecret = { name?: string; secret_env?: string | null };
 
-/** The variable to generate: `given` when it is one, else the secret of the machine's skill named `given` (as it reported it). */
+/** Skills' own secrets look like this; any other variable must be one a skill on the machine names as its secret. */
+const SKILL_SECRET_PREFIX = "SKILLHOOK_SECRET_";
+
+/**
+ * The variable to generate: the secret of the machine's skill named `given` (as the machine reports it), or `given`
+ * itself when it is a skill's secret (`SKILLHOOK_SECRET_*`, or a variable a skill there names). Never another variable
+ * of the machine (its admin token, a runner's API key): those are set on the machine itself.
+ */
 export async function secretNameFor(client: FleetClient, machine: string, given: string): Promise<string> {
-  if (SECRET_ENV_RE.test(given)) return given;
+  if (SECRET_ENV_RE.test(given) && given.startsWith(SKILL_SECRET_PREFIX)) return given;
   const { skills } = (await callTool(client, "list_skills", { machine })) as { skills?: SkillSecret[] };
+  if (SECRET_ENV_RE.test(given)) {
+    if (skills?.some((s) => s.secret_env === given)) return given;
+    throw new CloudApiError(`${given} is not a skill's secret on ${machine}: name the skill (or its SKILLHOOK_SECRET_… variable); other variables are set on the machine itself (skillhook secret set)`);
+  }
   // A skill saved a moment ago is in no snapshot yet: the machine itself describes it.
   const skill = skills?.find((s) => s.name === given) ?? ((await callTool(client, "get_skill", { machine, skill: given })) as { skill?: SkillSecret | null }).skill;
   if (!skill) throw new CloudApiError(`${machine} has no skill named ${given} (skillhook cloud list_skills --machine ${machine} lists them)`);
@@ -52,6 +63,8 @@ export async function generateRemoteSecret(client: FleetClient, input: { machine
     if (claim.state === "sealed" && claim.sealed) return { machine, name: input.name, secret: openSealed(claim.sealed, keys.privateKey), existed: false };
     if (claim.state === "exists") return { machine, name: input.name, secret: null, existed: true };
     if (claim.state === "failed") throw new CloudApiError(`${machine} did not generate ${input.name}: ${claim.error ?? "the command failed"}`);
+    // This request's value went elsewhere or is gone; the machine has a new secret nobody here saw.
+    if (claim.state === "claimed" || claim.state === "expired") throw new CloudApiError(`The sealed ${input.name} from ${machine} was ${claim.state === "claimed" ? "already collected" : "not collected within two minutes"}; generate it again with force (the sender then needs the new value)`);
     if (Date.now() >= deadline) throw new CloudApiError(`${machine} did not answer within ${Math.round((options.timeoutMs ?? 90_000) / 1000)} s (is it online? skillhook cloud machines); the request expires two minutes after it was made`);
     await new Promise((resolve) => setTimeout(resolve, options.pollMs ?? 1_000));
   }

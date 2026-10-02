@@ -26,7 +26,8 @@ reconnect the MCP server) and the tools appear.
 
 The key's scope decides which tools exist: `fleet:read` looks, `fleet:run` also answers agents, runs, tests, replays and
 cancels, `fleet:admin` also changes skills, configuration, hosted URLs, machines and settings and generates secrets.
-API keys, members, invitations and new alert channels are only ever managed by a person on the dashboard.
+Pairing machines, API keys, members, invitations and new alert channels are only ever managed by a person on the
+dashboard.
 
 ## 2. Find out what needs attention
 
@@ -76,8 +77,9 @@ Ask the person before anything destructive or that they did not ask for: `cancel
 
 ## 5. Set things up (admin key)
 
-- **A new machine**: `create_pairing_code {mode, name}` returns a command; the person runs it on that machine (with
-  skillhook installed) within ten minutes. `control` lets the cloud act there; `observe` only lets it look.
+- **A new machine**: an admin opens Pair a machine on the dashboard (pairing is never done with an API key) and runs
+  the command it shows on that machine, which needs skillhook installed (the skillhook-setup skill). `control` lets the
+  cloud act there; `observe` only lets it look.
 - **A new skill on a machine**: write the SKILL.md (the skillhook-authoring skill), try it with
   `test_skill {machine, skill_md, payload, wait_seconds}`, install it with `save_skill {machine, skill, content}`.
 - **Its secret**: `generate_secret {machine, skill}` (or `skillhook cloud secret <machine> <skill>`) creates it on the
