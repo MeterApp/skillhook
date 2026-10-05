@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFile
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createServer } from "node:http";
+import { DEFAULT_CLOUD_URL } from "./cloud/config.js";
 import { COMMANDS, main, nodeVersionProblem, usageOf } from "./commands/main.js";
 import { VERSION } from "./version.js";
 import type { CliIO } from "./commands/shared.js";
@@ -28,6 +29,22 @@ function io(env: NodeJS.ProcessEnv = {}) {
   const err: string[] = [];
   const cli: CliIO = { stdout: (t) => out.push(t), stderr: (t) => err.push(t), env, isTTY: false };
   return { cli, out: () => out.join(""), err: () => err.join(""), json: () => JSON.parse(out.join("")) as Record<string, unknown> };
+}
+
+/**
+ * Skillhook Cloud itself, played by `fake`: a request addressed to the default cloud is answered by the fake one and
+ * recorded, so a test of a machine that names no cloud never reaches the real service. `restore` puts fetch back.
+ */
+function playProduction(fake: { url: string }): { requests: string[]; restore: () => void } {
+  const requests: string[] = [];
+  const real = globalThis.fetch;
+  vi.stubGlobal("fetch", (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.origin !== DEFAULT_CLOUD_URL) return real(input, init);
+    requests.push(`${init?.method ?? "GET"} ${url.href}`);
+    return real(`${fake.url}${url.pathname}${url.search}`, init);
+  });
+  return { requests, restore: () => vi.unstubAllGlobals() };
 }
 
 /** Every entry under `dir` with its mtime and each file's content: an equal snapshot means nothing was written, created or removed. */
@@ -730,9 +747,6 @@ describe("cli", () => {
       pasted.cli.stdin = async () => `${fake.apiKey}\nshc_placeholder-second-line\n`;
       expect(await main(["cloud", "login", "--key", "-", ...at, "--json"], pasted.cli)).toBe(2);
       expect(pasted.out() + pasted.err()).not.toContain("shc_placeholder");
-      const nowhere = io({ SKILLHOOK_NO_UPDATE_CHECK: "1" });
-      expect(await main(["cloud", "login", "--key", fake.apiKey, ...at, "--json"], nowhere.cli)).toBe(1);
-      expect(String(nowhere.json().error)).toContain("no cloud URL");
       expect(fake.apiRequests).toEqual([]);
       const wrong = io(env);
       expect(await main(["cloud", "login", "--key", "shc_placeholder-unknown-key", ...at, "--json"], wrong.cli)).toBe(1);
@@ -837,6 +851,39 @@ describe("cli", () => {
     }
   });
 
+  it("logs in to Skillhook Cloud itself on a machine that names no cloud, and keeps the key with it", async () => {
+    const { FakeCloud } = await import("./test-support/fake-cloud.js");
+    const fake = await FakeCloud.start();
+    const home = tempHome("skillhook-cli-production-");
+    const at = ["--dir", home.home];
+    const production = playProduction(fake);
+    try {
+      const env = { SKILLHOOK_NO_UPDATE_CHECK: "1" };
+      // Without a key: the command that keeps one, nothing to fill in.
+      const none = io(env);
+      expect(await main(["cloud", "overview", ...at, "--json"], none.cli)).toBe(1);
+      expect(none.json().error).toBe("No organisation API key. Create one on https://skillhook.dev (Settings → API keys), then: skillhook cloud login   (or set SKILLHOOK_CLOUD_API_KEY)");
+      const login = io(env);
+      expect(await main(["cloud", "login", "--key", fake.apiKey, ...at], login.cli)).toBe(0);
+      expect(login.out()).toContain(`Logged in to https://skillhook.dev as Fake Org: key "laptop" (fleet:read), kept in ${home.envFile} with its cloud`);
+      expect(readFileSync(home.envFile, "utf8")).toContain("SKILLHOOK_CLOUD_API_URL=https://skillhook.dev\n");
+      const overview = io(env);
+      expect(await main(["cloud", "overview", ...at], overview.cli)).toBe(0);
+      expect(overview.out()).toContain('Fake Org · key "laptop" (fleet:read)');
+      // Pairing with another cloud later moves neither the key nor where it goes; a new login asks which cloud it is for.
+      writeConfigFile(home, { cloud: { url: fake.url } });
+      expect(await main(["cloud", "machines", ...at], io(env).cli)).toBe(0);
+      const ambiguous = io(env);
+      expect(await main(["cloud", "login", "--key", fake.apiKey, ...at], ambiguous.cli)).toBe(2);
+      expect(ambiguous.err()).toContain(`The key kept here was for https://skillhook.dev, and this machine's cloud is ${fake.url}: name the one this key belongs to`);
+      expect(production.requests).toEqual(["GET https://skillhook.dev/api/v1/me", "POST https://skillhook.dev/api/v1/tools/describe_cloud", "GET https://skillhook.dev/api/v1/machines"]);
+      expect(fake.requests).toEqual([]);
+    } finally {
+      production.restore();
+      await fake.close();
+    }
+  });
+
   it("does what the cloud's catalogue offers: login with --url, the overview, every tool by name, a sealed secret", async () => {
     const { FakeCloud } = await import("./test-support/fake-cloud.js");
     const fake = await FakeCloud.start();
@@ -881,8 +928,14 @@ describe("cli", () => {
       expect(await main(["cloud", "login", "--url", " ", "--key", fake.apiKey, ...at], blank.cli)).toBe(2);
       expect(blank.err()).toContain("--url needs the cloud's address");
       expect(fake.apiRequests.length).toBe(before);
-      // With one cloud to go by (the key's), that is the one.
+      // A machine that names no cloud has Skillhook Cloud's own: a second cloud the new key could be for.
       writeConfigFile(home, {});
+      const unnamed = io(env);
+      expect(await main(["cloud", "login", "--key", fake.apiKey, ...at], unnamed.cli)).toBe(2);
+      expect(unnamed.err()).toContain(`The key kept here was for ${fake.url}, and this machine's cloud is https://skillhook.dev: name the one this key belongs to`);
+      expect(fake.apiRequests.length).toBe(before);
+      // With one cloud to go by (the key's is the machine's), that is the one.
+      writeConfigFile(home, { cloud: { url: fake.url } });
       const relogin = io(env);
       expect(await main(["cloud", "login", "--key", fake.apiKey, ...at], relogin.cli)).toBe(0);
       expect(relogin.out()).toContain(`Logged in to ${fake.url} as Fake Org`);

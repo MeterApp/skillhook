@@ -118,7 +118,7 @@ describe("skillhook mcp --cloud", () => {
     expect(await client.tools()).toEqual(["skillhook_cloud_setup"]);
     const instructions = String((client.init.result as { instructions: string }).instructions);
     expect(instructions).toContain("Skillhook Cloud is not connected on this computer: No organisation API key.");
-    expect(instructions).toContain("skillhook cloud login --url");
+    expect(instructions).toContain(`then: skillhook cloud login --url ${fake.url}   (or set SKILLHOOK_CLOUD_API_KEY)`);
     expect(instructions).toContain("Never ask them to paste the key into this conversation");
 
     const still = await client.call("skillhook_cloud_setup");
@@ -133,11 +133,26 @@ describe("skillhook mcp --cloud", () => {
     expect((await client.call("describe_cloud")).data).toMatchObject({ organisation: { name: "Fake Org" } });
   });
 
-  it("says what is wrong when the cloud cannot be used: no URL, the kill switch, an older cloud", async () => {
+  it("without a key on a machine that names no cloud, gives the person the command for Skillhook Cloud itself", async () => {
+    const paths = tempHome("skillhook-cloud-mcp-");
+    const env = { SKILLHOOK_NO_UPDATE_CHECK: "1" };
+    const connection = await connectCloud(paths, env);
+    expect(connection).toEqual({ problem: "No organisation API key. Create one on https://skillhook.dev (Settings → API keys), then: skillhook cloud login   (or set SKILLHOOK_CLOUD_API_KEY)" });
+    const client = await connectMcp(buildCloudMcpServer(paths, env, connection));
+    clients.push(client);
+    const instructions = String((client.init.result as { instructions: string }).instructions);
+    expect(instructions).toContain("The person logs in once, in a terminal: `skillhook cloud login` (with `--url https://…` for a Skillhook Cloud other than https://skillhook.dev)");
+    expect(instructions).not.toContain("https://<");
+    const listed = ((await client.request("tools/list")).result as { tools: { name: string; description: string }[] }).tools;
+    expect(listed).toEqual([expect.objectContaining({ name: "skillhook_cloud_setup", description: expect.stringContaining("`skillhook cloud login`") })]);
+  });
+
+  it("says what is wrong when the cloud cannot be used: the kill switch, plain http, an older cloud", async () => {
     const paths = tempHome("skillhook-cloud-mcp-");
     writeEnv(paths, { SKILLHOOK_CLOUD_API_KEY: "shc_placeholder-organisation-key-0123456789abc" });
-    expect(await connectCloud(paths, {})).toEqual({ problem: expect.stringContaining("This machine has no cloud URL") });
     expect(await connectCloud(paths, { SKILLHOOK_NO_CLOUD: "1" })).toEqual({ problem: expect.stringContaining("SKILLHOOK_NO_CLOUD is set") });
+    writeConfigFile(paths, { cloud: { url: "http://cloud.example.invalid" } });
+    expect(await connectCloud(paths, {})).toEqual({ problem: expect.stringContaining("must use https") });
     const fake = await FakeCloud.start();
     clouds.push(fake);
     fake.catalogMode = "missing";
