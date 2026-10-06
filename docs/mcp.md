@@ -135,8 +135,9 @@ claude mcp add skillhook-cloud -- skillhook mcp --cloud
 codex mcp add skillhook-cloud -- skillhook mcp --cloud
 ```
 
-It needs an organisation API key, which the person keeps here once with `skillhook cloud login --url https://<cloud>`
-([cloud.md](cloud.md#the-whole-organisation-with-an-api-key)). When it starts it reads the cloud's catalogue of tools
+It needs an organisation API key, which the person keeps here once with `skillhook cloud login` (with `--url` for a
+deployment other than Skillhook Cloud itself, `https://skillhook.dev`;
+[cloud.md](cloud.md#the-whole-organisation-with-an-api-key)). When it starts it reads the cloud's catalogue of tools
 (`GET /api/v1/tools`, waiting at most 8 s) and offers each one the key's scope allows, with the cloud's own name,
 description and input schema; a call goes to `POST /api/v1/tools/<name>` with the key (only to the cloud the key was
 checked against at login), and the cloud validates, authorises and audits it. So the tools are the cloud's as of the

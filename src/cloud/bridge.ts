@@ -12,6 +12,7 @@ import type { Paths } from "../paths.js";
 import { errorMessage } from "../util.js";
 import { VERSION } from "../version.js";
 import { CloudApiError, fleetClient, storedApiCredentials, type FleetClient } from "./api.js";
+import { DEFAULT_CLOUD_URL } from "./config.js";
 import { generateRemoteSecret, secretNameFor } from "./remote-secret.js";
 import { callTool, fetchCatalog, type Catalog } from "./tools.js";
 
@@ -37,7 +38,7 @@ const ANNOTATIONS: Record<string, { readOnlyHint: boolean; destructiveHint?: boo
 /** Tools this server makes itself: a catalogue tool of the same name never replaces them (generate_secret must stay sealed end to end). */
 const LOCAL_TOOLS = new Set(["generate_secret", "skillhook_cloud_setup"]);
 
-const LOGIN_HINT = "The person logs in once, in a terminal: `skillhook cloud login --url https://<their Skillhook Cloud>`, pasting an organisation API key from the dashboard (Settings → API keys; fleet:read to look, fleet:run to also answer agents and run skills, fleet:admin to also change skills and settings). Never ask them to paste the key into this conversation.";
+const LOGIN_HINT = `The person logs in once, in a terminal: \`skillhook cloud login\` (with \`--url https://…\` for a Skillhook Cloud other than ${DEFAULT_CLOUD_URL}), pasting an organisation API key from that cloud's dashboard (Settings → API keys; fleet:read to look, fleet:run to also answer agents and run skills, fleet:admin to also change skills and settings). Never ask them to paste the key into this conversation.`;
 
 export type CloudConnection = { client: FleetClient; catalog: Catalog } | { problem: string };
 

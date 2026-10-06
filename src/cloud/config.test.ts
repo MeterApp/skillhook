@@ -18,6 +18,9 @@ describe("cloud config", () => {
   });
 
   it("resolves the URL and insists on https except for loopback", () => {
+    // A machine that names no cloud talks to Skillhook Cloud's production deployment.
+    expect(DEFAULT_CLOUD_URL).toBe("https://skillhook.dev");
+    expect(isSecureCloudUrl(DEFAULT_CLOUD_URL)).toBe(true);
     expect(resolveCloudUrl({}, {})).toBe(DEFAULT_CLOUD_URL);
     expect(resolveCloudUrl({}, { url: "https://a.example/" })).toBe("https://a.example");
     expect(resolveCloudUrl({ SKILLHOOK_CLOUD_URL: "https://env.example" }, { url: "https://a.example" })).toBe("https://env.example");

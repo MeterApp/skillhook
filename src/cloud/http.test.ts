@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
+import { CloudApiError, fleetClient, MeSchema } from "./api.js";
 import { CloudHttpError, cloudRequest } from "./http.js";
 
 // Placeholder values: nothing here is a real credential.
@@ -55,5 +56,45 @@ describe("cloudRequest", () => {
     };
     const quoted = await failure(cloudRequest("http://127.0.0.1:1", "/api/v1/me", { method: "GET", token: KEY, fetchImpl: quoting }));
     expect(quoted.message).toBe("invalid header value: Bearer [redacted]");
+  });
+});
+
+describe("fleetClient", () => {
+  function refusal(make: () => unknown): CloudApiError {
+    try {
+      make();
+    } catch (error) {
+      expect(error).toBeInstanceOf(CloudApiError);
+      return error as CloudApiError;
+    }
+    throw new Error("the client was not refused");
+  }
+
+  it("sends a key without a cloud of its own to the machine's, Skillhook Cloud itself unless one is named", async () => {
+    // Answered here: no test reaches the real cloud.
+    const sent: string[] = [];
+    const production: typeof fetch = async (input, init) => {
+      sent.push(`${init?.method} ${String(input)} ${(init?.headers as Record<string, string>).authorization}`);
+      return Response.json({ organisation: { id: "o_1", name: "Fake Org" }, key: { id: "k_1", name: "laptop", scopes: ["fleet:read"] }, role: "viewer" });
+    };
+    const client = fleetClient({}, {}, { key: KEY, url: undefined }, { fetchImpl: production });
+    expect(client.url).toBe("https://skillhook.dev");
+    expect((await client.get("/me", MeSchema)).data.organisation.name).toBe("Fake Org");
+    expect(sent).toEqual([`GET https://skillhook.dev/api/v1/me Bearer ${KEY}`]);
+    expect(fleetClient({}, { url: "https://cloud.example/" }, { key: KEY, url: undefined }).url).toBe("https://cloud.example");
+    expect(fleetClient({ SKILLHOOK_CLOUD_URL: "https://env.example" }, { url: "https://cloud.example" }, { key: KEY, url: undefined }).url).toBe("https://env.example");
+    // The cloud named at login, and from then on the cloud kept with the key, whatever the machine's says.
+    expect(fleetClient({}, {}, { key: KEY, url: undefined }, { url: "https://named.example" }).url).toBe("https://named.example");
+    expect(fleetClient({ SKILLHOOK_CLOUD_URL: "https://env.example" }, { url: "https://cloud.example" }, { key: KEY, url: "https://kept.example" }).url).toBe("https://kept.example");
+  });
+
+  it("refuses without a key, with what looks like no key, under the kill switch and to plain http", () => {
+    // Without a key, the command that keeps one: --url only for a cloud other than Skillhook Cloud's own.
+    expect(refusal(() => fleetClient({}, {}, { key: undefined, url: undefined }))).toMatchObject({ code: "no_key", message: "No organisation API key. Create one on https://skillhook.dev (Settings → API keys), then: skillhook cloud login   (or set SKILLHOOK_CLOUD_API_KEY)" });
+    expect(refusal(() => fleetClient({}, { url: "https://cloud.example" }, { key: undefined, url: undefined })).message).toContain("Create one on https://cloud.example (Settings → API keys), then: skillhook cloud login --url https://cloud.example   (or set");
+    expect(refusal(() => fleetClient({}, {}, { key: "shm_machine-token", url: undefined }))).toMatchObject({ code: "invalid_key" });
+    expect(refusal(() => fleetClient({}, {}, { key: `${KEY}\nshc_placeholder-second-line`, url: undefined }))).toMatchObject({ code: "invalid_key" });
+    expect(refusal(() => fleetClient({ SKILLHOOK_NO_CLOUD: "1" }, {}, { key: KEY, url: undefined }))).toMatchObject({ code: "disabled" });
+    expect(refusal(() => fleetClient({ SKILLHOOK_CLOUD_URL: "http://cloud.example" }, {}, { key: KEY, url: undefined }))).toMatchObject({ code: "insecure_url" });
   });
 });

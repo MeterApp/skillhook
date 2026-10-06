@@ -327,7 +327,7 @@
           "type": "boolean"
         },
         "url": {
-          "default": "https://cloud.skillhook.dev",
+          "default": "https://skillhook.dev",
           "type": "string",
           "format": "uri"
         },

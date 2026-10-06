@@ -4,6 +4,22 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- Skillhook Cloud's production deployment is the default cloud: `cloud.url` (and so `skillhook cloud
+  connect`, `cloud login`, the fleet commands and `skillhook mcp --cloud`) defaults to
+  `https://skillhook.dev` instead of the placeholder `https://cloud.skillhook.dev`, where no cloud ever
+  answered. A plain `skillhook cloud login` on a machine that names no other cloud logs in there instead
+  of refusing without `--url`, and an API key without a cloud of its own (set in the environment alone,
+  or kept by 0.6) goes there too. `--url`, `SKILLHOOK_CLOUD_URL` and `cloud.url` still name another
+  deployment, and a paired machine keeps the `cloud.url` written at pairing. A key kept at login still
+  goes only to the cloud it was checked against, whatever `cloud.url` says later, only over HTTPS, only
+  when it looks like an organisation key (`shc_…`) and never under `SKILLHOOK_NO_CLOUD=1`. Since the
+  default is now a cloud like any other, a login without `--url` asks which cloud the key is for when
+  the one kept here differs from this machine's, Skillhook Cloud's own included.
+- Without an API key, the fleet commands, the instructions of `skillhook mcp --cloud` and its
+  `skillhook_cloud_setup` tool say where to create one and the command to run, `skillhook cloud login`
+  (with `--url` only for a cloud other than Skillhook Cloud's own), instead of
+  `--url https://<your cloud>`.
+
 ## 0.7.0 (2026-10-02)
 
 - Everything Skillhook Cloud's dashboard shows and does, from the terminal and for an agent, with an
