@@ -4,6 +4,8 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.7.1 (2026-10-06)
+
 - Skillhook Cloud's production deployment is the default cloud: `cloud.url` (and so `skillhook cloud
   connect`, `cloud login`, the fleet commands and `skillhook mcp --cloud`) defaults to
   `https://skillhook.dev` instead of the placeholder `https://cloud.skillhook.dev`, where no cloud ever
