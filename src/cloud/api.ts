@@ -96,17 +96,16 @@ export interface FleetClient {
 
 /**
  * A client with the key for the cloud it was checked against (`credentials.url`; `options.url` at login), else the
- * machine's cloud for a key that has none; refused under `SKILLHOOK_NO_CLOUD`, without a well-formed key, to the
- * placeholder URL, or to a URL that is not https. A key login kept never follows a `cloud.url` changed after it.
+ * machine's cloud (`SKILLHOOK_CLOUD_URL`, `cloud.url`, else Skillhook Cloud's own) for a key that has none; refused under
+ * `SKILLHOOK_NO_CLOUD`, without a well-formed key, or to a URL that is not https. A key login kept never follows a
+ * `cloud.url` changed after it.
  */
 export function fleetClient(env: NodeJS.ProcessEnv, cloud: { url?: string }, credentials: ApiCredentials, options: { fetchImpl?: typeof fetch; url?: string } = {}): FleetClient {
   const { key } = credentials;
   if (cloudDisabledByEnv(env)) throw new CloudApiError("SKILLHOOK_NO_CLOUD is set: nothing goes to Skillhook Cloud from this environment. Unset it to use the fleet.", undefined, "disabled");
-  if (!key) throw new CloudApiError(`No organisation API key. Create one on the dashboard (Settings → API keys), then: skillhook cloud login --url https://<your cloud>   (or set ${CLOUD_API_KEY_ENV})`, undefined, "no_key");
-  if (!API_KEY_RE.test(key)) throw new CloudApiError(`${CLOUD_API_KEY_ENV} does not hold an organisation API key (shc_ followed by letters, digits, - and _); run: skillhook cloud login`, undefined, "invalid_key");
   const url = resolveCloudUrl(env, cloud, options.url ?? credentials.url);
-  // While the built-in URL is a placeholder (src/cloud/config.ts), a key only goes to a cloud someone named.
-  if (url === DEFAULT_CLOUD_URL) throw new CloudApiError("This machine has no cloud URL, and an API key only goes to a cloud you named: skillhook cloud login --url https://…", undefined, "no_url");
+  if (!key) throw new CloudApiError(`No organisation API key. Create one on ${url} (Settings → API keys), then: ${loginCommand(url)}   (or set ${CLOUD_API_KEY_ENV})`, undefined, "no_key");
+  if (!API_KEY_RE.test(key)) throw new CloudApiError(`${CLOUD_API_KEY_ENV} does not hold an organisation API key (shc_ followed by letters, digits, - and _); run: skillhook cloud login`, undefined, "invalid_key");
   if (!isSecureCloudUrl(url, env)) throw new CloudApiError(new InsecureCloudUrlError(url).message, undefined, "insecure_url");
   const send = async <T,>(method: "GET" | "POST", path: string, schema: z.ZodType<T>, body: unknown, timeoutMs: number) => {
     let response;
@@ -125,6 +124,11 @@ export function fleetClient(env: NodeJS.ProcessEnv, cloud: { url?: string }, cre
     get: (path, schema, getOptions = {}) => send("GET", path, schema, undefined, getOptions.timeoutMs ?? 20_000),
     post: (path, body, schema, postOptions = {}) => send("POST", path, schema, body ?? {}, postOptions.timeoutMs ?? 20_000),
   };
+}
+
+/** What a person runs to keep a key for `url`: `--url` only for a cloud other than Skillhook Cloud's own. */
+export function loginCommand(url: string): string {
+  return url === DEFAULT_CLOUD_URL ? "skillhook cloud login" : `skillhook cloud login --url ${url}`;
 }
 
 /** A refused key says to log in again, a missing scope says which, an unreachable cloud where it was looked for. */

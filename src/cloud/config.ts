@@ -10,8 +10,8 @@ export const CLOUD_PRIVATE_KEY_ENV = "SKILLHOOK_CLOUD_PRIVATE_KEY";
 export const CLOUD_API_KEY_ENV = "SKILLHOOK_CLOUD_API_KEY";
 /** The cloud that key was checked against at login: its requests go there and nowhere else, whatever `cloud.url` says later. */
 export const CLOUD_API_URL_ENV = "SKILLHOOK_CLOUD_API_URL";
-/** Placeholder until the product domain is decided; `cloud.url` and `SKILLHOOK_CLOUD_URL` override it. */
-export const DEFAULT_CLOUD_URL = "https://cloud.skillhook.dev";
+/** Skillhook Cloud's production deployment (MeterApp/skillhook-cloud); `--url`, `SKILLHOOK_CLOUD_URL` and `cloud.url` name another one. */
+export const DEFAULT_CLOUD_URL = "https://skillhook.dev";
 /** Every variable of this family stays on the machine: never in a run's environment, even when a skill lists it. */
 export const CLOUD_ENV_PREFIX = "SKILLHOOK_CLOUD_";
 

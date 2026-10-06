@@ -17,10 +17,12 @@ If the `skillhook-cloud` tools include `describe_cloud`, you are connected. If t
 call it: it says what is missing. Logging in is for the person, in a terminal, once:
 
 ```bash
-skillhook cloud login --url https://<their Skillhook Cloud>    # asks for an organisation API key, keeps it in ~/.skillhook/.env
+skillhook cloud login    # asks for an organisation API key, keeps it in ~/.skillhook/.env
 ```
 
-The key comes from the dashboard: Settings → API keys (admins create them). Never ask the person to paste a key into the
+That is Skillhook Cloud at https://skillhook.dev; only a person on another deployment adds `--url https://…` (the
+setup tool's message names it when this machine uses one). The key comes from the dashboard: Settings → API keys
+(admins create them). Never ask the person to paste a key into the
 conversation, and never put one in a command line, a file or a commit. Then call `skillhook_cloud_setup` again (or
 reconnect the MCP server) and the tools appear.
 

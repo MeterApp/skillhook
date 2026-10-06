@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { adminRequest, findRunningServer, readServerState } from "../client.js";
 import { API_KEY_RE, CloudApiError, fleetClient, JobDetailSchema, JobListSchema, machineNames, MachineListSchema, MeSchema, storedApiCredentials, type FleetClient, type FleetJob } from "../cloud/api.js";
-import { assertSecureCloudUrl, CLOUD_API_KEY_ENV, CLOUD_API_URL_ENV, CLOUD_PRIVATE_KEY_ENV, CLOUD_TOKEN_ENV, cloudDisabledByEnv, DEFAULT_CLOUD_URL, resolveCloudUrl, trimTrailingSlashes } from "../cloud/config.js";
+import { assertSecureCloudUrl, CLOUD_API_KEY_ENV, CLOUD_API_URL_ENV, CLOUD_PRIVATE_KEY_ENV, CLOUD_TOKEN_ENV, cloudDisabledByEnv, resolveCloudUrl, trimTrailingSlashes } from "../cloud/config.js";
 import { CloudHttpError } from "../cloud/http.js";
 import { cloudStatus, disconnectCloud, machineInfo, pairMachine, writeLinkCredentials } from "../cloud/pair.js";
 import { ISSUE_KINDS, ISSUE_SEVERITIES, JOB_OUTCOMES, JOB_STATUSES, type IssueKind, type IssueSeverity } from "../cloud/protocol.js";
@@ -147,10 +147,11 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
       if (ctx.flags.url === true || (ctx.flags.url !== undefined && !url)) throw new UsageError("--url needs the cloud's address, like https://cloud.example.com", CLOUD_USAGE);
       // The cloud named here (else the one logged in to before, else the machine's) is the one the key is checked against,
       // kept with it, and the only one it is ever sent to: changing cloud.url later moves neither the key nor this
-      // machine's link. With two to choose from the key could be for either, and it must not be sent to the other.
+      // machine's link. With two to choose from the key could be for either, and it must not be sent to the other; a
+      // machine that names no cloud has Skillhook Cloud's own, which is one of the two like any other.
       const before = env[CLOUD_API_URL_ENV]?.trim() || readEnvFile(ctx.paths.envFile)[CLOUD_API_URL_ENV] || undefined;
       const machineCloud = resolveCloudUrl(env, config.cloud);
-      if (!url && before && machineCloud !== DEFAULT_CLOUD_URL && trimTrailingSlashes(before) !== machineCloud) throw new UsageError(`The key kept here was for ${before}, and this machine's cloud is ${machineCloud}: name the one this key belongs to, skillhook cloud login --url https://…`, CLOUD_USAGE);
+      if (!url && before && trimTrailingSlashes(before) !== machineCloud) throw new UsageError(`The key kept here was for ${before}, and this machine's cloud is ${machineCloud}: name the one this key belongs to, skillhook cloud login --url https://…`, CLOUD_USAGE);
       let given = str(ctx.flags, "key");
       if (!given && ctx.io.isTTY) given = await promptHidden("Organisation API key (dashboard → Settings → API keys): ");
       if (!given) throw new UsageError("Give the organisation API key: --key shc_…, or --key - to read it from stdin (Settings → API keys on the dashboard); at a terminal, skillhook cloud login asks for it", CLOUD_USAGE);

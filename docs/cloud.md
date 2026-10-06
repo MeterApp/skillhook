@@ -16,7 +16,7 @@ Skillhook Cloud is the hosted control plane for machines running skillhook: ever
 | Key | Default | Meaning |
 |---|---|---|
 | `cloud.enabled` | `false` | Whether the running server keeps a link open. Written by `skillhook cloud connect` / `disconnect`; the server follows it within seconds, without a restart. |
-| `cloud.url` | `https://cloud.skillhook.dev` (placeholder) | The service. `SKILLHOOK_CLOUD_URL` overrides it; plain `http` is accepted only for loopback addresses or with `SKILLHOOK_CLOUD_ALLOW_INSECURE=1`. |
+| `cloud.url` | `https://skillhook.dev` | The service: Skillhook Cloud itself unless this names another deployment. `SKILLHOOK_CLOUD_URL` overrides it; plain `http` is accepted only for loopback addresses or with `SKILLHOOK_CLOUD_ALLOW_INSECURE=1`. |
 | `cloud.machine_id` | unset | Assigned at pairing. |
 | `cloud.mode` | `observe` | `observe` or `control`. |
 | `cloud.allow_commands`, `cloud.deny_commands` | `[]` | Command types (`skill.run`, patterns like `job.*`, `*`) allowed regardless of mode, or refused regardless of anything. `secret.set` is never allowed without an explicit allow entry. |
@@ -34,10 +34,10 @@ The machine token lives in `.env` as `SKILLHOOK_CLOUD_TOKEN` (an optional X25519
 On the dashboard's pairing page choose *Control* or *Observe* and copy the command it prints:
 
 ```bash
-skillhook cloud connect --code ABCD-EFGH --control
+skillhook cloud connect --code ABCD-EFGH --control --url https://skillhook.dev
 ```
 
-`connect` sends the code with a description of the machine (hostname, OS, architecture, skillhook and Node versions, public URL), receives a machine id and a machine token, stores the token in `.env` as `SKILLHOOK_CLOUD_TOKEN` (mode 600, never printed), writes `cloud.url`, `cloud.machine_id`, `cloud.mode` and finally `cloud.enabled: true` to `skillhook.json`, and tells a running server to re-read its configuration; the link is up within seconds. Without `--control` the machine is paired in `observe` mode. `--url` (or `SKILLHOOK_CLOUD_URL`) points at another deployment; `--token` pairs with a machine token instead of a code; `--force` pairs a machine that is already connected again.
+`connect` sends the code with a description of the machine (hostname, OS, architecture, skillhook and Node versions, public URL), receives a machine id and a machine token, stores the token in `.env` as `SKILLHOOK_CLOUD_TOKEN` (mode 600, never printed), writes `cloud.url`, `cloud.machine_id`, `cloud.mode` and finally `cloud.enabled: true` to `skillhook.json`, and tells a running server to re-read its configuration; the link is up within seconds. Without `--control` the machine is paired in `observe` mode. `--url` (or `SKILLHOOK_CLOUD_URL`) names the deployment: the dashboard's command always does, and without it the machine pairs with Skillhook Cloud itself, `https://skillhook.dev`. `--token` pairs with a machine token instead of a code; `--force` pairs a machine that is already connected again.
 
 ```bash
 skillhook cloud status        # enabled, URL, machine id, mode, token present, and the running server's link state
@@ -83,7 +83,7 @@ rest of its organisation, only someone holding a key can. Its scope decides what
 hosted URLs, machines and settings and generates secrets.
 
 ```bash
-skillhook cloud login --url https://cloud.example.com   # asks for the key at a terminal (or --key shc_…, --key - for stdin)
+skillhook cloud login                                   # asks for the key at a terminal (or --key shc_…, --key - for stdin); --url for another deployment
 skillhook cloud overview                                # what needs a person: waiting agents, alerts, failing checks, failures, the day's numbers
 skillhook cloud tools                                   # every tool this key has (and which a wider key would add)
 skillhook cloud tools answer_job                        # one tool's parameters
@@ -99,16 +99,17 @@ skillhook cloud logout                                  # forget the key here; r
 ```
 
 `login` checks the key with `GET /api/v1/me` against the cloud `--url` names (else the one logged in to before, else
-this machine's cloud, `cloud.url` or `SKILLHOOK_CLOUD_URL`; when those two differ it asks for `--url` rather than send a
-key to the wrong one) and keeps both in `.env`, as `SKILLHOOK_CLOUD_API_KEY` and
+this machine's cloud: `SKILLHOOK_CLOUD_URL` or `cloud.url`, which is Skillhook Cloud itself, `https://skillhook.dev`,
+unless it names another; when those two differ it asks for `--url` rather than send a key to the wrong one) and keeps
+both in `.env`, as `SKILLHOOK_CLOUD_API_KEY` and
 `SKILLHOOK_CLOUD_API_URL` (mode 600, the key never printed); `logout` removes them. From then on the key goes to that
 cloud and nowhere else: a `cloud.url` changed later moves neither the key nor, since login never touches it, this
 machine's link. In CI, `SKILLHOOK_CLOUD_API_KEY` in the environment takes precedence, with `SKILLHOOK_CLOUD_API_URL`
 there, else the cloud kept with the same key at login, else the machine's cloud. A key kept by skillhook 0.6 has no cloud
 of its own either: it goes to the machine's cloud until the next `skillhook cloud login` (`cloud status` says so). A key
-never goes to the built-in placeholder URL, and it must look like one (`shc_` and then letters, digits, `-` and `_`), so
-a pasted second line or the machine token is refused before anything is sent. HTTPS only (plain http only to a loopback
-address); they refuse under `SKILLHOOK_NO_CLOUD=1`.
+must look like one (`shc_` and then letters, digits, `-` and `_`), so a pasted second line or the machine token is
+refused before anything is sent. HTTPS only (plain http only to a loopback address); they refuse under
+`SKILLHOOK_NO_CLOUD=1`.
 
 skillhook's own tools do not move the key or the link for an agent: the local MCP server refuses `cloud.*` settings in
 `update_config` and `SKILLHOOK_CLOUD_*` names in `set_secret` and `generate_secret`, and no skill may name one of
