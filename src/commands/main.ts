@@ -24,7 +24,7 @@ import { mcpCommand, MCP_USAGE } from "./mcp.js";
 import { updateCommand, UPDATE_USAGE } from "./update.js";
 import { linkCommand, projectsCommand, PROJECTS_USAGE, unlinkCommand } from "./projects.js";
 import { schedulesCommand, SCHEDULES_USAGE } from "./schedules.js";
-import { planUpdateNotice, spawnBackgroundRefresh } from "../update.js";
+import { markInstallAnnounced, planUpdateNotice, spawnBackgroundRefresh, type UpdateNoticePlan } from "../update.js";
 import { readJsonFileOr } from "../util.js";
 
 export const HELP = `skillhook ${VERSION} — webhook in, agent out.
@@ -131,6 +131,8 @@ export function usageOf(command: Command, args: string[]): string {
 
 /** Commands whose output must stay clean, or that handle update checks themselves. */
 const NO_UPDATE_NOTICE = new Set(["serve", "mcp", "update", "upgrade", "version", "help"]);
+/** Commands that never start the background update: `serve` runs its own, `update` is it, `job` runs inside a job. */
+const NO_BACKGROUND_UPDATE = new Set(["serve", "update", "upgrade", "version", "help", "job"]);
 
 export function nodeVersionProblem(version: string = process.versions.node): string | undefined {
   const major = Number(version.split(".")[0]);
@@ -139,18 +141,35 @@ export function nodeVersionProblem(version: string = process.versions.node): str
 }
 
 /**
- * Once a day, in the background, ask npm whether a newer skillhook exists; when one is already known, say so on stderr
- * after the command's own output. Only for humans at a terminal: never with --json, never in CI, never for scripts.
+ * Before a command: start the background update (the registry check and, with `auto_update`, the install) when the
+ * cached answer is stale or a newer version waits to be installed. That holds for people, scripts, agents and MCP
+ * hosts alike, since none of them waits for it; the next command runs the new version. Never fails the command.
  */
-function noticeUpdate(ctx: Ctx, command: string): void {
-  if (!ctx.io.isTTY || ctx.json || NO_UPDATE_NOTICE.has(command)) return;
+function beginUpdate(ctx: Ctx, command: string): UpdateNoticePlan | undefined {
+  if (NO_BACKGROUND_UPDATE.has(command) || (command === "mcp" && bool(ctx.flags, "job"))) return undefined;
   try {
-    const rawConfig = readJsonFileOr<{ update_check?: boolean }>(ctx.paths.configFile, {});
+    const rawConfig = readJsonFileOr<{ update_check?: boolean; auto_update?: boolean }>(ctx.paths.configFile, {});
     const plan = planUpdateNotice(ctx.paths, { env: ctx.io.env, config: rawConfig });
-    if (plan.notice) ctx.io.stderr(`\n${plan.notice}\n`);
-    if (plan.stale) spawnBackgroundRefresh(ctx.paths, ctx.io.env);
+    if (plan.refresh) spawnBackgroundRefresh(ctx.paths, ctx.io.env);
+    return plan;
   } catch {
-    /* a failed update check never fails the command */
+    return undefined;
+  }
+}
+
+/**
+ * After a command, on stderr, for a person at a terminal only (never with --json, never for scripts): once, that the
+ * background update installed the version now running; otherwise a newer version it will not install by itself.
+ */
+function noticeUpdate(ctx: Ctx, command: string, plan: UpdateNoticePlan | undefined): void {
+  if (!plan || !ctx.io.isTTY || ctx.json || NO_UPDATE_NOTICE.has(command)) return;
+  try {
+    if (plan.announce) {
+      ctx.io.stderr(`\n${plan.announce}\n`);
+      markInstallAnnounced(ctx.paths);
+    } else if (plan.notice) ctx.io.stderr(`\n${plan.notice}\n`);
+  } catch {
+    /* a failed update notice never fails the command */
   }
 }
 
@@ -195,9 +214,10 @@ export async function main(argv: string[], io: CliIO = defaultIO()): Promise<num
     ctx.print(usage, { ok: true, command: name, usage });
     return 0;
   }
+  const update = beginUpdate(ctx, name);
   try {
     const code = await command.run(ctx);
-    noticeUpdate(ctx, name);
+    noticeUpdate(ctx, name, update);
     return typeof code === "number" ? code : 0;
   } catch (error) {
     // Messages can carry text from the cloud, machines and senders: a terminal gets it without control characters.

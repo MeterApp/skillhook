@@ -13,7 +13,7 @@ Related: [exposure.md](exposure.md) (public URL), [security.md](security.md) (se
 ├── skillhook.json          server configuration (JSON Schema: schema/skillhook.schema.json in the package)
 ├── .env                    secrets, mode 600: SKILLHOOK_ADMIN_TOKEN, SKILLHOOK_SECRET_<NAME>, provider secrets, API keys, SKILLHOOK_CLOUD_* (docs/cloud.md)
 ├── server.json             present while a server runs: pid, host, port, started_at, version, public_url
-├── update-check.json       what npm said at the last daily update check: checked_at, latest, current
+├── update-check.json       what npm said at the last update check (checked_at, latest, current) and the last install skillhook ran (last_install)
 ├── skills/
 │   └── <name>/SKILL.md     one directory per skill, plus any files the skill needs
 ├── jobs/
@@ -24,7 +24,8 @@ Related: [exposure.md](exposure.md) (public URL), [security.md](security.md) (se
 │   ├── .removed-skills/    skills removed from the Skillhook Cloud dashboard (skill.delete), kept for restoring
 │   └── <job id>/           one directory per job (see Jobs)
 └── logs/
-    └── service.log         server output when run by launchd / systemd
+    ├── service.log         server output when run by launchd / systemd
+    └── update.log          the package manager's output from the last background update
 ```
 
 `init` flags: `--runner claude|codex` (default runner), `--model M` (default model), `--port N`, `--force` (rewrite `skillhook.json`). It generates `SKILLHOOK_ADMIN_TOKEN` and `SKILLHOOK_SECRET_HELLO` when missing and copies the `hello` example skill. Running it again is safe: existing files are kept unless `--force`.
@@ -224,7 +225,8 @@ Once the cause is fixed (a secret pasted, a filter corrected, a skill installed)
 | `projects` | `[]` | Linked repositories (absolute paths, `~` allowed; a directory holding `skillhook.yaml`, or the file itself). Written by `skillhook link` / `unlink`; re-read without a restart. See [projects.md](projects.md). |
 | `cloud.*` | `enabled: false`, `mode: observe`, … | The opt-in link to Skillhook Cloud, written by `skillhook cloud connect`: [cloud.md](cloud.md). Nothing leaves the machine while `cloud.enabled` is false. |
 | `log_level` | `"info"` | `debug`, `info`, `warn`, `error`. |
-| `update_check` | `true` | Daily check of the npm registry for a newer skillhook (`SKILLHOOK_NO_UPDATE_CHECK=1` and `CI` disable it as well). |
+| `update_check` | `true` | Hourly background check of the npm registry for a newer skillhook (`SKILLHOOK_NO_UPDATE_CHECK=1` and `CI` disable it as well, and with it `auto_update`). |
+| `auto_update` | `true` | Install a newer skillhook in the background with the package manager that installed it; the service restarts itself onto it once no job is running. `false`: only report it. |
 
 ### Changing it while the server runs
 
@@ -303,21 +305,25 @@ Jobs run only while the machine is awake. On a desktop Mac disable sleep (`sudo 
 
 ## Upgrading and removing
 
-skillhook asks the npm registry once a day whether a newer version exists (in a detached background process after an interactive command, every 24 hours inside `skillhook serve`, and on demand in `skillhook doctor`) and caches the answer in `<home>/update-check.json`. A newer version is mentioned on stderr after the next interactive command (never with `--json`, never in CI), as a `version` warning in `doctor`, as an `update available` line in the server log, and in the MCP `skillhook_status` tool.
+skillhook keeps itself current. At most once an hour it asks the npm registry whether a newer version exists, in a detached process that a command starts (any command, from a person, a script, an agent or an MCP host; none of them waits) or that `skillhook serve` starts on its hourly check, and caches the answer in `<home>/update-check.json`. With `auto_update` on (the default), the same process installs the newer version with the package manager that installed skillhook (npm into the same global prefix, pnpm, bun, yarn or Volta), one install at a time, the output in `<home>/logs/update.log`; a version that fails is tried again after a day. The next command runs the new version, and the background service restarts itself onto it once no job is queued or running (it is started again by launchd or systemd; a `skillhook serve` run by hand only logs that a restart would pick it up). At a terminal skillhook says once that it updated itself.
+
+With `"auto_update": false`, or for a copy skillhook cannot replace itself (a source checkout, an `npx` cache, a project's dependency, a global directory your user cannot write), a newer version is mentioned on stderr after the next interactive command (never with `--json`, never in CI), as a `version` warning in `doctor`, as an `update available` line in the server log, and in the MCP `skillhook_status` tool.
 
 ```bash
 skillhook update             # ask the registry now and print the upgrade command
 ```
 
 ```bash
-skillhook update --install   # upgrade with npm, pnpm, bun or yarn (whichever installed skillhook), then restart the service when it is idle
+skillhook update --install   # upgrade now with npm, pnpm, bun, yarn or Volta (whichever installed skillhook), restart the service when it is idle, update the plugin
 ```
 
-`--install` refuses to touch a source checkout (`git pull && npm ci && npm run build` there) or an `npx` cache (`npx @meterapp/skillhook@latest`). The background service keeps running the old version until it restarts; `update --install` restarts it unless a job is queued or running, and says so either way (`skillhook service restart` later). A global install that moved to another Node (`nvm`, Homebrew major upgrade) needs `skillhook service install` again so launchd/systemd point at the new `dist/cli.js`. Configuration, skills, secrets and jobs in `~/.skillhook` are untouched by upgrades.
+`--install` also brings the skillhook plugin up to date wherever it is installed: in Claude Code it refreshes that marketplace and runs `claude plugin update` (restart Claude Code or run `/reload-plugins` to load it), in Codex it runs `codex plugin marketplace upgrade`; `--no-plugins` leaves them alone. Claude Code can keep the plugin current by itself once auto-update is on for its marketplace (`/plugin` → Marketplaces → `meterapp-skillhook` → Enable auto-update), which Claude Code leaves off for marketplaces outside Anthropic's.
+
+`--install` refuses to touch a source checkout (`git pull && npm ci && npm run build` there), an `npx` cache (`npx @meterapp/skillhook@latest`) or a project's `node_modules`. The background service keeps running the old version until it restarts; `update --install` restarts it unless a job is queued or running, and says so either way (with `auto_update` on it then restarts itself once they finish; otherwise `skillhook service restart` later). A global install that moved to another Node (`nvm`, Homebrew major upgrade) needs `skillhook service install` again so launchd/systemd point at the new `dist/cli.js`. Configuration, skills, secrets and jobs in `~/.skillhook` are untouched by upgrades.
 
 skillhook 0.1.0 was published as the unscoped `skillhook` package; 0.1.1 and later are `@meterapp/skillhook`, which the old package's update check never sees. Move with `npm uninstall -g skillhook && npm install -g @meterapp/skillhook` (npm refuses the new package while the old one owns the `skillhook` command), then run `skillhook service install` again if the service ran from the old global install. `~/.skillhook` stays as it is.
 
-Opt out of the check with `SKILLHOOK_NO_UPDATE_CHECK=1` (the conventional `NO_UPDATE_NOTIFIER=1` works too), `CI=1`, or `"update_check": false` in `skillhook.json`; `SKILLHOOK_NPM_REGISTRY=https://…` points it at a mirror. Release notes: https://github.com/MeterApp/skillhook/releases.
+Keep the check but install by hand with `"auto_update": false` in `skillhook.json`. Opt out of the check, and so of automatic updates, with `SKILLHOOK_NO_UPDATE_CHECK=1` (the conventional `NO_UPDATE_NOTIFIER=1` works too), `CI=1`, or `"update_check": false`; `SKILLHOOK_NPM_REGISTRY=https://…` points it at a mirror. Release notes: https://github.com/MeterApp/skillhook/releases.
 
 To stop everything:
 

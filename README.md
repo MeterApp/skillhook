@@ -312,6 +312,8 @@ Cursor, Windsurf and other `mcp.json` clients:
 /plugin marketplace add MeterApp/skillhook
 ```
 
+Claude Code updates the plugin by itself once auto-update is on for its marketplace (`/plugin` → Marketplaces → `meterapp-skillhook` → Enable auto-update); `skillhook update --install` also updates it, in Claude Code and Codex.
+
 Agents reading this repository should start with [`AGENTS.md`](AGENTS.md) (layout, hard rules, checks) and [`llms.txt`](llms.txt) (a compact index of the documentation and key facts). Tool reference: [docs/mcp.md](docs/mcp.md).
 
 ## CLI reference
@@ -346,7 +348,7 @@ Agents reading this repository should start with [`AGENTS.md`](AGENTS.md) (layou
 | `skillhook schedules [list]` · `schedules next <name> [--count N]` · `schedules run <name> [--wait S]` | Every skill or hook with a `schedule:`, its next and last runs; preview occurrences; fire one now. |
 | `skillhook update [--install]` | Check npm for a newer skillhook; `--install` upgrades with the package manager that installed it and restarts the background service when it is idle. |
 
-Global options: `--dir <path>` (default `$SKILLHOOK_HOME` or `~/.skillhook`), `--json` (machine-readable output for every command), `--help` (on any command or subcommand, or `skillhook help <command>`: prints its usage and runs nothing), `--version`. Exit codes: 0 success, 1 failure, 2 usage error. Environment: `SKILLHOOK_HOME`, `SKILLHOOK_NO_UPDATE_CHECK=1` (or `CI`) to silence the daily update check, `SKILLHOOK_NPM_REGISTRY` for a mirror, `SKILLHOOK_DEBUG=1` for stack traces. HTTP API: [docs/api.md](docs/api.md). Service, logs, jobs, config and troubleshooting: [docs/operations.md](docs/operations.md).
+Global options: `--dir <path>` (default `$SKILLHOOK_HOME` or `~/.skillhook`), `--json` (machine-readable output for every command), `--help` (on any command or subcommand, or `skillhook help <command>`: prints its usage and runs nothing), `--version`. Exit codes: 0 success, 1 failure, 2 usage error. Environment: `SKILLHOOK_HOME`, `SKILLHOOK_NO_UPDATE_CHECK=1` (or `CI`) to turn off the hourly update check and automatic updates, `SKILLHOOK_NPM_REGISTRY` for a mirror, `SKILLHOOK_DEBUG=1` for stack traces. HTTP API: [docs/api.md](docs/api.md). Service, logs, jobs, config and troubleshooting: [docs/operations.md](docs/operations.md).
 
 ## Project layout of `~/.skillhook`
 
@@ -359,8 +361,8 @@ Global options: `--dir <path>` (default `$SKILLHOOK_HOME` or `~/.skillhook`), `-
 ├── jobs/<id>/                job.json, payload.json, event.json, prompt.md, stdout.log, stderr.log, result.md
 ├── jobs/.deliveries.json     replay-protection index (also the slots the scheduler has fired)
 ├── jobs/.schedules.json      per schedule: last slot handled, last job and its status
-├── update-check.json         what npm said at the last daily update check
-└── logs/service.log          server output when run by launchd / systemd
+├── update-check.json         what npm said at the last update check, and the last install skillhook ran
+└── logs/                     service.log (server output under launchd / systemd), update.log (the last background update)
 ```
 
 Override the location with `SKILLHOOK_HOME=<path>` or `--dir <path>`.
@@ -381,7 +383,7 @@ Override the location with `SKILLHOOK_HOME=<path>` or `--dir <path>`.
 
 **Can several skills run at once?** Two jobs globally by default (`concurrency` in `skillhook.json`) and one per skill (`skillhook.concurrency` in `SKILL.md`); the rest wait in a FIFO queue that survives restarts. The same webhook firing twice with the same payload while the first run is still queued or running does not start a second job; the sender gets the first job's id (`duplicate: true, in_flight: true`).
 
-**How do I update?** skillhook asks npm once a day (in the background, cached in `~/.skillhook/update-check.json`) and mentions a newer version after a command, in `skillhook doctor` and in the server log. `skillhook update` checks right now; `skillhook update --install` upgrades with whatever installed it (npm, pnpm, bun, yarn) and restarts the background service if no job is running. Opt out with `SKILLHOOK_NO_UPDATE_CHECK=1` or `"update_check": false` in `skillhook.json`. Releases and notes: [GitHub releases](https://github.com/MeterApp/skillhook/releases).
+**How do I update?** You don't have to: skillhook updates itself. At most once an hour a command asks npm in the background (cached in `~/.skillhook/update-check.json`) and installs a newer version with whatever installed it (npm, pnpm, bun, yarn, Volta); the next command runs it, and the background service restarts itself onto it as soon as no job is running. No command waits for it, and nothing is printed for scripts or agents; at a terminal skillhook says once that it updated. `skillhook update` checks right now; `skillhook update --install` upgrades right now and also updates the skillhook plugin in Claude Code and Codex. `"auto_update": false` in `skillhook.json` only reports new versions (after a command, in `skillhook doctor`, in the server log); `SKILLHOOK_NO_UPDATE_CHECK=1` or `"update_check": false` turn the check off too. Releases and notes: [GitHub releases](https://github.com/MeterApp/skillhook/releases).
 
 **What happens if the agent needs a decision?** Nothing waits for a human: the guardrails tell the agent to say so in its final message and stop instead of guessing on destructive actions. `skillhook jobs resume <id>` reopens the session interactively.
 

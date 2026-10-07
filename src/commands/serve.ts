@@ -14,7 +14,7 @@ import { Scheduler } from "../scheduler.js";
 import { clearServerState, createServer, writeServerState, type ServerControl } from "../server.js";
 import { serviceStatus } from "../service.js";
 import { errorMessage } from "../util.js";
-import { checkForUpdate, detectInstall, releaseNotesUrl, UPDATE_CHECK_INTERVAL_MS } from "../update.js";
+import { attemptedRecently, autoUpdateEnabled, checkForUpdate, detectInstall, installedVersion, isNewerVersion, lastInstall, releaseNotesUrl, spawnBackgroundRefresh, UPDATE_CHECK_INTERVAL_MS } from "../update.js";
 import { VERSION } from "../version.js";
 import { bool, num, str, type Ctx } from "./shared.js";
 
@@ -108,17 +108,47 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   logger.info("skillhook listening", { url: `http://${host}:${boundPort}`, public_url: config.public_url, skills: loaded.skills.map((s) => s.name), concurrency: config.concurrency, home: ctx.paths.home, version: VERSION });
   if (config.public_url) for (const skill of loaded.skills) logger.info("webhook url", { skill: skill.name, url: `${config.public_url}/hooks/${skill.name}` });
 
-  // A long-running server is the one place a daily update check is free: log it, never act on it.
-  const announceUpdate = async () => {
+  // Updates: the server asks the registry hourly. With auto_update on, a newer version is installed in the background
+  // (`update --refresh`, as for any command) and the server restarts itself onto it once no job is running; launchd or
+  // systemd starts it again. Otherwise it logs the newer version once.
+  const logged = new Set<string>();
+  const checkUpdates = async () => {
     try {
       const status = await checkForUpdate(ctx.paths, { env: ctx.io.env, config });
-      if (status.available) logger.info("update available", { current: status.current, latest: status.latest, command: detectInstall(undefined, status.latest ?? "latest").display, release_notes: releaseNotesUrl(status.latest ?? "") });
+      if (!status.available || !status.latest) return;
+      const install = detectInstall(undefined, status.latest);
+      if (autoUpdateEnabled(config) && install.command && !install.blocked) {
+        if (!attemptedRecently(lastInstall(ctx.paths), status.latest) && spawnBackgroundRefresh(ctx.paths, ctx.io.env)) logger.info("installing update in the background", { current: status.current, latest: status.latest, command: install.display, release_notes: releaseNotesUrl(status.latest) });
+      } else if (!logged.has(status.latest)) {
+        logged.add(status.latest);
+        logger.info("update available", { current: status.current, latest: status.latest, command: install.display, ...(install.blocked ? { blocked: install.blocked } : {}), release_notes: releaseNotesUrl(status.latest) });
+      }
     } catch {
       /* never fatal */
     }
   };
-  void announceUpdate();
-  setInterval(() => void announceUpdate(), UPDATE_CHECK_INTERVAL_MS).unref();
+  void checkUpdates();
+  setInterval(() => void checkUpdates(), UPDATE_CHECK_INTERVAL_MS).unref();
+  // A newer skillhook on disk (installed in the background, by `update --install`, from the cloud or with npm) runs only
+  // after a restart. A source checkout is left to its developer.
+  if (detectInstall().method !== "source") {
+    let waitingFor = "";
+    setInterval(() => {
+      void (async () => {
+        const installed = installedVersion();
+        if (shuttingDown || !installed || !isNewerVersion(installed, VERSION)) return;
+        const { running, queued } = queue.stats();
+        const reason = !autoUpdateEnabled(config) ? "auto_update is off" : running + queued > 0 ? "jobs in progress" : !(await control.supervised()) ? "not run by launchd or systemd" : undefined;
+        if (reason) {
+          if (waitingFor !== `${installed}:${reason}`) logger.info("newer version installed; restart to run it", { running: VERSION, installed, waiting_for: reason });
+          waitingFor = `${installed}:${reason}`;
+          return;
+        }
+        logger.info("restarting to run the newly installed version", { running: VERSION, installed });
+        control.restart({ force: false, waitSeconds: 30 });
+      })();
+    }, 60_000).unref();
+  }
 
   // A manual edit of skillhook.json is picked up within a few seconds (`skillhook config set` also tells the server).
   setInterval(() => {

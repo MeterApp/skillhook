@@ -35,7 +35,7 @@ npm install -g @meterapp/skillhook   # install globally: the background service 
 skillhook init                       # add --runner codex, --model <name>, --port <n> as needed
 ```
 
-`init` creates the directory, `skillhook.json`, `.env` with an admin token, and copies the bundled `hello` skill with a fresh bearer secret. Re-running it keeps existing files (`--force` rewrites the config). `npx -y @meterapp/skillhook <command>` works for one-off commands, but install globally before `service install`. The package is `@meterapp/skillhook`; the command it installs is `skillhook`. Later, `skillhook update --install` upgrades that global install and restarts the service when it is idle; skillhook mentions new versions after commands and in `doctor`, and `SKILLHOOK_NO_UPDATE_CHECK=1` silences that.
+`init` creates the directory, `skillhook.json`, `.env` with an admin token, and copies the bundled `hello` skill with a fresh bearer secret. Re-running it keeps existing files (`--force` rewrites the config). `npx -y @meterapp/skillhook <command>` works for one-off commands, but install globally before `service install`. The package is `@meterapp/skillhook`; the command it installs is `skillhook`. It keeps itself current from then on: new versions install in the background and the service restarts itself onto them when it is idle (`"auto_update": false` in `skillhook.json` only reports them). `skillhook update --install` upgrades right away and updates this plugin in Claude Code and Codex too; it changes what is installed, so run it when the person asks.
 
 ## 3. Read the doctor
 

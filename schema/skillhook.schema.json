@@ -405,6 +405,10 @@
     "update_check": {
       "default": true,
       "type": "boolean"
+    },
+    "auto_update": {
+      "default": true,
+      "type": "boolean"
     }
   },
   "additionalProperties": false

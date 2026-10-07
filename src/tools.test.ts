@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { mergedPath } from "./runners/env.js";
 import { FAKE_CLAUDE, FAKE_CODEX, tempHome } from "./test-support/helpers.js";
-import { parseClaudeAuth, parseClaudeMcpList, parseClaudePlugins, parseCodexDoctor, parseCodexLogin, parseCodexMcpList, parseVersion, probeClaude, probeCodex, resolveCommand } from "./tools.js";
+import { parseClaudeAuth, parseClaudeMcpList, parseClaudePlugins, parseCodexDoctor, parseCodexLogin, parseCodexMcpList, parseCodexPlugins, parseVersion, probeClaude, probeCodex, resolveCommand } from "./tools.js";
 
 // Captured from Claude Code 2.1.270 (URLs replaced).
 const CLAUDE_MCP_LIST = `Checking MCP server health…
@@ -114,6 +114,36 @@ describe("CLI output parsers", () => {
     expect(parseVersion("codex-cli 0.153.4")).toBe("0.153.4");
     expect(parseVersion("v1.2.3-beta.1")).toBe("1.2.3-beta.1");
     expect(parseVersion("no version here")).toBeUndefined();
+  });
+});
+
+// Captured from codex-cli 0.160.1 (paths shortened).
+const CODEX_PLUGIN_LIST = `Marketplace \`meterapp\`
+/Users/me/.codex/.tmp/marketplaces/meterapp/.agents/plugins/marketplace.json
+
+PLUGIN              STATUS              VERSION  SOURCE
+car-image@meterapp  installed, enabled  1.15.0   /Users/me/.codex/.tmp/marketplaces/meterapp
+
+Marketplace \`openai-curated-remote\`
+Remote catalog
+
+PLUGIN                                                      STATUS              VERSION  SOURCE
+gmail@openai-curated-remote                                 installed, enabled  0.1.10   plugin_connector_1p_95d39881713c8191931482a62d6edff9
+app-6a057d268ebc81919918d37eec718425@openai-curated-remote  not installed       1.0.0    plugin_asdk_app_6a057d268ebc81919918d37eec718425
+documents@openai-primary-runtime                            installed, disabled  26.904.11930  /Users/me/plugins/documents
+messages@openai-bundled                                     not installed                     /Users/me/plugins/messages
+`;
+
+describe("codex plugin list", () => {
+  it("reads every row, installed or not", () => {
+    expect(parseCodexPlugins(CODEX_PLUGIN_LIST)).toEqual([
+      { id: "car-image@meterapp", name: "car-image", marketplace: "meterapp", installed: true, enabled: true, version: "1.15.0" },
+      { id: "gmail@openai-curated-remote", name: "gmail", marketplace: "openai-curated-remote", installed: true, enabled: true, version: "0.1.10" },
+      { id: "app-6a057d268ebc81919918d37eec718425@openai-curated-remote", name: "app-6a057d268ebc81919918d37eec718425", marketplace: "openai-curated-remote", installed: false, enabled: false, version: "1.0.0" },
+      { id: "documents@openai-primary-runtime", name: "documents", marketplace: "openai-primary-runtime", installed: true, enabled: false, version: "26.904.11930" },
+      { id: "messages@openai-bundled", name: "messages", marketplace: "openai-bundled", installed: false, enabled: false },
+    ]);
+    expect(parseCodexPlugins("garbage\n\nPLUGIN STATUS")).toEqual([]);
   });
 });
 
