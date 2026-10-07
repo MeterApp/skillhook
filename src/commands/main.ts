@@ -71,7 +71,7 @@ Agents
   job outcome <o> [--headline H] [--summary S] [--link [kind:][title](URL)]... [--option A]... | note "<text>" | context
                                                            Inside a run: report progress, ask a person (waits for the answer), report the outcome
   config show | get <key> | set <key> <value> | unset <key> | reload | path   set/unset tell the running server; most keys apply live, host/port at the next start
-  cloud connect --code XXXX-XXXX [--control] | disconnect | status   Pair this machine with Skillhook Cloud (opt-in; docs/cloud.md)
+  cloud connect --code XXXX-XXXX [--control] | disconnect | status   Pair this machine with Skillhook Cloud (opt-in; https://skillhook.dev, docs/cloud.md)
   cloud report "<title>" [--body T|--body-file F|--body -] [--kind K] [--severity S] [--job ID] [--email E] [--no-diagnostics] [--dry-run]
                                                            Report a problem to the Skillhook team from a paired machine, with its diagnostics (scrubbed)
   cloud login [--url U] [--key shc_…|-] | logout          Keep an organisation API key (asked for at a terminal; never the machine token)
