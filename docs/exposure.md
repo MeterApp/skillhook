@@ -1,6 +1,6 @@
 # Getting a permanent URL
 
-skillhook listens on `127.0.0.1:8787` and never terminates TLS itself. A tunnel on the same machine gives it a stable HTTPS URL that webhook senders can reach. The default is Tailscale Funnel: free, no domain to buy, and the configuration survives reboots. Tailscale Serve (tailnet only), Cloudflare Tunnel and ngrok also work.
+skillhook listens on `127.0.0.1:8787` and never terminates TLS itself. A tunnel on the same machine gives it a stable HTTPS URL that webhook senders can reach. The default is Tailscale Funnel: free, no domain to buy, and the configuration survives reboots. Tailscale Serve (tailnet only), Cloudflare Tunnel and ngrok also work. A machine paired with [Skillhook Cloud](https://skillhook.dev) needs no tunnel to receive webhooks: a hosted webhook URL on the cloud takes the delivery, asleep or awake, behind NAT or not, and the machine collects it over its outbound link and verifies the signature with its own secret ([cloud.md](cloud.md#hosted-urls), https://skillhook.dev/docs/hosted-urls).
 
 Related: [security.md](security.md) (why the server stays on loopback), [operations.md](operations.md) (running the server as a service).
 
