@@ -4,6 +4,29 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.9.0 (2026-10-07)
+
+- skillhook updates itself. At most once an hour any command (from a person, a script, an agent or an MCP host) starts
+  a detached `skillhook update --refresh` when the cached answer is stale; with the new `auto_update` setting (default
+  `true`) it installs a newer version with the package manager that installed skillhook: npm into the same global
+  prefix, through the npm beside the running Node, or pnpm, bun, yarn or Volta. One install runs at a time
+  (`<home>/update.lock`), its output goes to `<home>/logs/update.log`, and a version that failed is tried again after a
+  day. No command waits for it and nothing is printed for scripts or agents; at a terminal skillhook says once that it
+  updated itself, and mentions a newer version only when it will not install it (`auto_update: false`, a source
+  checkout, an npx cache, a project's dependency, a global directory the user cannot write, a failed install).
+  Before, the check ran only after interactive commands and installed nothing, so a skillhook only agents used never
+  moved.
+- `skillhook serve` checks hourly (was daily), starts the background install, and restarts itself onto a newer
+  installed version once no job is queued or running when launchd or systemd runs it, whoever installed it (the
+  background update, `update --install`, the cloud's `update.install` or npm). `skillhook serve` run by hand only logs
+  that a restart would pick it up.
+- `skillhook update --install` also brings the skillhook plugin up to date wherever it is installed: `claude plugin
+  marketplace update` and `claude plugin update` in Claude Code, `codex plugin marketplace upgrade` in Codex.
+  `--no-plugins` skips that.
+- An npm upgrade now targets the global prefix this copy runs from (`npm install -g --prefix …`), so a machine with
+  several Nodes (nvm, Homebrew) upgrades the copy that runs; `doctor`'s version hint says when the background update
+  will install it, or why it did not.
+
 ## 0.8.0 (2026-10-07)
 
 - Reports people can act on: a job says what it is about, how far it got, what came of it in one line

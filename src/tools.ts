@@ -315,6 +315,28 @@ export function parseCodexDoctor(text: string): { version?: string; overall?: st
   return { ...(typeof parsed.codexVersion === "string" ? { version: parsed.codexVersion } : {}), ...(typeof parsed.overallStatus === "string" ? { overall: parsed.overallStatus } : {}), checks };
 }
 
+export interface CodexPlugin {
+  /** `name@marketplace` */
+  id: string;
+  name: string;
+  marketplace: string;
+  installed: boolean;
+  enabled: boolean;
+  version?: string;
+}
+
+/** `codex plugin list`: a table per marketplace, one row per plugin (`name@marketplace  installed, enabled  1.2.3  source`). */
+export function parseCodexPlugins(text: string): CodexPlugin[] {
+  const plugins: CodexPlugin[] = [];
+  for (const line of text.split("\n")) {
+    const match = /^([^\s@]+)@(\S+)\s{2,}(not installed|installed(?:, (?:enabled|disabled))?)(?:\s{2,}(\S+))?/.exec(line.trim());
+    if (!match) continue;
+    const [, name, marketplace, status, next] = match as unknown as [string, string, string, string, string | undefined];
+    plugins.push({ id: `${name}@${marketplace}`, name, marketplace, installed: status.startsWith("installed"), enabled: status === "installed, enabled", ...(next && /^\d+(\.\d+)+/.test(next) ? { version: next } : {}) });
+  }
+  return plugins;
+}
+
 export async function probeCodex(command: string | string[], options: ProbeOptions): Promise<CodexProbe> {
   const resolved = resolveCommand(command, options.env.PATH);
   if (!resolved.path) return { found: false, auth: { loggedIn: false, detail: `${resolved.command} not found on PATH` } };

@@ -767,7 +767,8 @@ export function createServer(deps: ServerDeps): Server {
       if (!isPlainObject(body)) throw new HttpError(400, "bad_request", "expected a JSON object body");
       const install = body.install === true;
       if (install) logger.warn("update install requested through the admin API", { ip });
-      // The server never restarts itself here: a restart is its own request (POST /control/restart).
+      // This request never restarts the server: with auto_update on, `serve` restarts itself onto the new version once
+      // no job is running; otherwise a restart is its own request (POST /control/restart).
       const result = await (deps.applyUpdate ?? ((o: { install: boolean }) => applyUpdate(deps.paths, { install: o.install, restartService: false })))({ install });
       return send(res, 200, result);
     }
