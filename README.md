@@ -97,10 +97,11 @@ Then create your own skill with `skillhook skills new <name>` or copy an example
 [Skillhook Cloud](https://skillhook.dev) is the hosted control plane for every skillhook machine, by the same team. Everything above works without it; it adds what one machine on its own cannot do:
 
 - **Hosted webhook URLs**: a URL on the cloud that takes the delivery while the machine sleeps, is busy or has no public URL at all (no Tailscale needed to receive webhooks) and hands it over on the machine's next sync; the machine still verifies every signature with its own secret. [Hosted URLs](https://skillhook.dev/docs/hosted-urls)
-- **One dashboard** of every machine's deliveries, jobs, health and stats. Every webhook of every machine stays on record with what became of it, rejected and skipped ones included, and can be replayed from the dashboard, the API, the MCP server or the CLI. [Jobs, answers and replay](https://skillhook.dev/docs/jobs)
+- **One dashboard** of every machine's deliveries, jobs, health and stats. Every webhook of every machine stays on record with what became of it, rejected and skipped ones included, searchable by delivery id, machine, reason, path, sender address or time, and can be replayed from the dashboard, the API, the MCP server or the CLI: on the machine it arrived at, on another machine, or through another skill. [Webhook history and replay](https://skillhook.dev/docs/deliveries)
 - **An inbox** of the questions agents ask people, with one-click choices; the pick resumes the agent's session.
 - **Alerts** to Slack, a webhook or email when an agent needs a person, a job fails, a machine goes offline or a health check fails. [Alerts](https://skillhook.dev/docs/alerts)
 - **Teams and roles** (viewer, member, admin, owner) and an organisation API key for the whole fleet: `skillhook cloud login`, then `skillhook cloud <tool>` in a terminal and the plugin's `skillhook-cloud` MCP server for your agent. [CLI](https://skillhook.dev/docs/cli), [MCP](https://skillhook.dev/docs/mcp)
+- **Playbooks**: worked setups for Sentry, Granola, GitHub issues, Intercom, Stripe disputes, leads, and webhook replay and testing, each with the prompt to paste into an agent and the full `SKILL.md`. [Playbooks](https://skillhook.dev/customers)
 
 Pair a machine with the code its dashboard shows (the pairing page prints the command, with `--control` when you choose control):
 
