@@ -24,6 +24,8 @@ export interface JobSource {
 export interface JobRecord {
   id: string;
   skill: string;
+  /** What the job is about, in a few words, as the agent named it (`job_progress` / `job_set_outcome` `title`); a resume job inherits it. */
+  title?: string;
   status: JobStatus;
   trigger: Trigger;
   runner: RunnerName;
@@ -108,6 +110,7 @@ export interface JobPaths {
 export interface CreateJobInput {
   id?: string;
   skill: string;
+  title?: string;
   trigger: Trigger;
   runner: RunnerName;
   model?: string;
@@ -224,6 +227,7 @@ export class JobStore {
     const record: JobRecord = {
       id,
       skill: input.skill,
+      title: input.title,
       status: "queued",
       trigger: input.trigger,
       runner: input.runner,

@@ -49,6 +49,10 @@ describe("buildPrompt", () => {
   it("tells the agent how to report the outcome, per response.mode", () => {
     expect(buildPrompt(input("Go.", {})).guardrails).toContain("write /jobs/j1/response.json as JSON");
     expect(buildPrompt(input("Go.", {})).guardrails).toContain('"needs_human"');
+    // People read the report on a dashboard: a title, a one-line headline, typed links and choices.
+    expect(buildPrompt(input("Go.", {})).guardrails).toContain('"headline": "the result in one line"');
+    expect(buildPrompt(input("Go.", {})).guardrails).toContain('"kind": "source"');
+    expect(buildPrompt(input("Go.", {})).guardrails).toContain('"options" (and the one you "recommended")');
     const structured = parseSkillDocument(`---\nname: demo\ndescription: d\nskillhook:\n  response:\n    mode: structured\n---\nGo.`, "/skills/demo");
     expect(buildPrompt({ ...input("Go.", {}), skill: structured }).guardrails).toContain("must be the JSON object the schema asks for");
     const file = parseSkillDocument(`---\nname: demo\ndescription: d\nskillhook:\n  response:\n    mode: file\n---\nGo.`, "/skills/demo");
@@ -60,6 +64,7 @@ describe("buildPrompt", () => {
     const base = input("Go.", {});
     const mcp = buildPrompt(base).guardrails;
     expect(mcp).toContain("job_progress tool");
+    expect(mcp).toContain("name the job in the first report");
     expect(mcp).toContain("job_ask_human");
     expect(mcp).toContain("waits up to 5 min");
     expect(mcp).toContain("<human_answer>");

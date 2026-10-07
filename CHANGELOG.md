@@ -4,6 +4,34 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.8.0 (2026-10-07)
+
+- Reports people can act on: a job says what it is about, how far it got, what came of it in one line
+  and where to look, and offers choices for a person to pick from. Skillhook Cloud's inbox shows all of
+  it, Markdown included.
+  - **A title** for the job: `job_progress {title}` / `skillhook job progress --title "…"` (it stays
+    until a later report changes it), or `title` in `job_set_outcome` and `response.json`. It becomes
+    `job.title`, is in the `?wait=` response and `GET /jobs/<id>/progress`, and a resume job inherits it.
+  - **A headline**, the result in one line (at most 280 characters), next to the summary:
+    `job_set_outcome {headline}`, `skillhook job outcome --headline`, `headline` in `response.json`.
+    It is the last progress message once the outcome is reported.
+  - **Typed links**: a link is a URL, as before, or `{url, title, kind}` with `kind` one of `source`
+    (what started the run), `pull_request`, `commit`, `issue`, `message`, `document`, `deploy`, `test`
+    (how to check the result), `log`, `result` or `other`. On the command line,
+    `--link "pull_request:[PR #7](https://…)"` (the kind and the title are optional) and `--links JSON`.
+    A misspelled kind is refused instead of ending up inside the URL.
+  - **Choices**: questions take `recommended` (the option the agent suggests) and `multiple` (a person
+    may pick several; the answer lists them one per line and `answer.options` says which they were, and
+    `job_ask_human` / `skillhook job ask` return them as `options`). A `needs_human` outcome can offer
+    `options` (with `recommended` and `multiple`) too: a person picks one and the session resumes with it.
+    `skillhook jobs answer <id> --option A --option B` and the MCP `answer_job {options}` answer with
+    several picks.
+  - The guardrails ask every run for a title, a headline and its links, and tell it about choices; the
+    default `response.schema` of `response.mode: structured` has the new fields (links as objects).
+    `skillhook jobs list|show` print titles, headlines, links and choices.
+  - The cloud protocol names the link kinds (`LINK_KINDS`) and the limits of a report (`REPORT_LIMITS`);
+    records stay loose, so nothing else about the protocol changes.
+
 ## 0.7.1 (2026-10-06)
 
 - Skillhook Cloud's production deployment is the default cloud: `cloud.url` (and so `skillhook cloud
