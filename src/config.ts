@@ -144,8 +144,10 @@ export const ConfigSchema = z
       .strict()
       .prefault({}),
     log_level: z.enum(["debug", "info", "warn", "error"]).default("info"),
-    /** Ask the npm registry once a day whether a newer skillhook exists and say so in CLI output, `doctor` and the server log. `SKILLHOOK_NO_UPDATE_CHECK=1` and `CI` disable it too. */
+    /** Ask the npm registry (in the background, at most once an hour) whether a newer skillhook exists. `SKILLHOOK_NO_UPDATE_CHECK=1` and `CI` disable it too, and with it `auto_update`. */
     update_check: z.boolean().default(true),
+    /** Install a newer skillhook in the background with the package manager that installed this one; the service restarts itself onto it once no job is running. `false`: only say that it exists. */
+    auto_update: z.boolean().default(true),
   })
   .strict();
 

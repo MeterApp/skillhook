@@ -20,7 +20,7 @@ import { nextRun } from "./schedule.js";
 import { serviceStatus } from "./service.js";
 import { currentExposures, findTailscale, run, tailscaleStatus, which } from "./tailscale.js";
 import { probeClaude, probeCodex, type ClaudeProbe, type CodexProbe } from "./tools.js";
-import { checkForUpdate, registryUrl, releaseNotesUrl, updateChecksDisabled, updateStatusFromCache } from "./update.js";
+import { autoUpdateEnabled, checkForUpdate, detectInstall, lastInstall, registryUrl, releaseNotesUrl, updateChecksDisabled, updateStatusFromCache } from "./update.js";
 import { displayPath, errorMessage, isDirectory } from "./util.js";
 import { VERSION } from "./version.js";
 
@@ -128,6 +128,15 @@ export async function macSleepMinutes(): Promise<number | undefined> {
 const DISK_WARN_BYTES = 2 * 1024 ** 3;
 const DISK_FAIL_BYTES = 512 * 1024 ** 2;
 
+/** The doctor's hint for a newer version: that the background update installs it, or what to run (and why it did not). */
+function updateHint(paths: Paths, config: Config | undefined, latest: string): string {
+  const record = lastInstall(paths);
+  const failed = record && !record.ok && record.version === latest ? `; the automatic update failed: ${record.error ?? "see logs/update.log"}` : "";
+  const install = detectInstall(undefined, latest);
+  const automatic = autoUpdateEnabled(config) && Boolean(install.command) && !install.blocked && !failed;
+  return `${automatic ? "skillhook installs it in the background (auto_update); now: " : "run: "}skillhook update --install   (notes: ${releaseNotesUrl(latest)})${failed}`;
+}
+
 export async function runHealth(paths: Paths, options: HealthOptions = {}): Promise<HealthReport> {
   const started = Date.now();
   const env = options.env ?? process.env;
@@ -167,12 +176,12 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
   else if (!network) {
     const cached = updateStatusFromCache(paths);
     if (cached.latest === null) check("skillhook", "version", "skip", `skillhook ${VERSION} (no recent update check)`, undefined, { current: VERSION });
-    else if (cached.available) check("skillhook", "version", "warn", `skillhook ${VERSION}; ${cached.latest} is available`, `run: skillhook update --install   (notes: ${releaseNotesUrl(cached.latest)})`, { current: VERSION, latest: cached.latest, checked_at: cached.checked_at });
+    else if (cached.available) check("skillhook", "version", "warn", `skillhook ${VERSION}; ${cached.latest} is available`, updateHint(paths, config, cached.latest), { current: VERSION, latest: cached.latest, checked_at: cached.checked_at });
     else check("skillhook", "version", "ok", `skillhook ${VERSION} (latest as of ${cached.checked_at ?? "?"})`, undefined, { current: VERSION, latest: cached.latest, checked_at: cached.checked_at });
   } else {
     const update = await checkForUpdate(paths, { env, config, force: true, timeoutMs: 4_000, fetchImpl: options.fetchImpl });
     if (update.latest === null) check("skillhook", "version", "skip", `skillhook ${VERSION} (could not reach ${registryUrl(env)} to check for updates)`, undefined, { current: VERSION });
-    else if (update.available) check("skillhook", "version", "warn", `skillhook ${VERSION}; ${update.latest} is available`, `run: skillhook update --install   (notes: ${releaseNotesUrl(update.latest)})`, { current: VERSION, latest: update.latest, checked_at: update.checked_at });
+    else if (update.available) check("skillhook", "version", "warn", `skillhook ${VERSION}; ${update.latest} is available`, updateHint(paths, config, update.latest), { current: VERSION, latest: update.latest, checked_at: update.checked_at });
     else check("skillhook", "version", "ok", `skillhook ${VERSION} (latest)`, undefined, { current: VERSION, latest: update.latest, checked_at: update.checked_at });
   }
 
