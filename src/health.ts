@@ -376,7 +376,7 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
     const cloud = config.cloud;
     const url = resolveCloudUrl(env, cloud);
     if (cloudDisabledByEnv(env)) check("skillhook", "cloud link", "skip", "SKILLHOOK_NO_CLOUD is set; the link never runs", undefined, { enabled: cloud.enabled, url });
-    else if (!cloud.enabled) check("skillhook", "cloud link", "skip", "not connected to Skillhook Cloud", "skillhook cloud connect --code <code from the dashboard>", { enabled: false, url });
+    else if (!cloud.enabled) check("skillhook", "cloud link", "skip", "not connected to Skillhook Cloud", "optional: skillhook cloud connect --code <code from the dashboard>   (https://skillhook.dev)", { enabled: false, url });
     else if (!fileSecrets[CLOUD_TOKEN_ENV]) check("skillhook", "cloud link", "fail", `cloud.enabled but ${CLOUD_TOKEN_ENV} is not in .env`, "run: skillhook cloud connect --force   (or: skillhook cloud disconnect)", { enabled: true, url, token: false });
     else if (!isSecureCloudUrl(url, env)) check("skillhook", "cloud link", "fail", `${url} is not https`, "set cloud.url to an https URL", { enabled: true, url });
     else if (!serverRunning) check("skillhook", "cloud link", "warn", `configured for ${url} (machine ${cloud.machine_id ?? "unpaired"}, mode ${cloud.mode}); no running server keeps the link`, "run: skillhook serve   (or: skillhook service install)", { enabled: true, url, machine_id: cloud.machine_id ?? null, mode: cloud.mode });

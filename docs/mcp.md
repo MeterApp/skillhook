@@ -157,6 +157,16 @@ Without a key (or while the cloud cannot be reached, or under `SKILLHOOK_NO_CLOU
 `tools/list_changed` notification; reconnect the server if the client ignores it). Logging in stays with the person in
 a terminal, so a key never passes through a conversation.
 
+## The hosted MCP server of Skillhook Cloud
+
+Skillhook Cloud serves the same organisation tools itself, at `https://skillhook.dev/api/mcp` (Streamable HTTP, stateless), for clients that connect to a URL instead of starting a process: the claude.ai and ChatGPT connectors sign in with OAuth in the browser; Claude Code, Codex, Cursor and other HTTP clients sign in the same way where the client offers it, or send an organisation API key as the bearer token; the person's role or the key's scope decides which tools are listed, and the cloud validates, authorises and audits each call as it does for the plugin. The plugin's `skillhook-cloud` server is `skillhook mcp --cloud` (above): the same catalogue through skillhook on this computer, with the key `skillhook cloud login` keeps. Without the plugin, the hosted server is added under that name directly:
+
+```bash
+claude mcp add --transport http skillhook-cloud https://skillhook.dev/api/mcp
+```
+
+Setup per client, the OAuth flow and the tools: https://skillhook.dev/docs/mcp; the plugin: https://skillhook.dev/install.
+
 ## The job API: `skillhook mcp --job`
 
 A second, much smaller MCP server exists for the agent *inside* a run. The Claude and Codex runners start it for every job (`claude --mcp-config …`, `codex -c mcp_servers.skillhook_job.…`) with `SKILLHOOK_JOB_ID` and `SKILLHOOK_JOB_DIR` in its environment, so the agent sees these tools without any setup (`agent_api: none` in the skill turns it off; `agent_api: cli` keeps only `skillhook job …`):

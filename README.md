@@ -40,7 +40,7 @@ Give everything that has a trigger a webhook. Anything that can call a URL can s
 - Any skill or hook can also carry a `schedule:` (a cron expression, a time zone, and what to do about missed slots); the server fires it without a webhook. See [Scheduled hooks](#scheduled-hooks).
 - The runner is the real `claude` or `codex` CLI on the machine, so subscriptions, MCP servers, `CLAUDE.md`/`AGENTS.md` files and tool permissions apply as usual.
 - Responses are immediate (`202` with a job id) or synchronous with `?wait=N` (or `Prefer: wait=N`); the agent's final message becomes the job result, and what it reports in `response.json` (`completed`, `partial`, `needs_human`, `nothing_to_do`, `failed`) becomes the job's `outcome`, so `skillhook jobs list --outcome needs_human` shows what is waiting for a person.
-- Optional: `skillhook cloud connect` pairs the machine with [Skillhook Cloud](https://skillhook.dev), a hosted dashboard for every machine's webhooks, jobs, questions waiting for a person, health and stats, with hosted webhook URLs that keep deliveries while the machine sleeps. Opt-in, outbound only, observe mode unless you choose control. With an organisation API key (`skillhook cloud login`), everything the dashboard shows and does works from the terminal (`skillhook cloud overview`, `skillhook cloud <tool>`) and for your agent (the plugin's `skillhook-cloud` MCP server). `skillhook cloud report` sends the Skillhook team a problem report from a paired machine. See [docs/cloud.md](docs/cloud.md).
+- Optional: `skillhook cloud connect` pairs the machine with [Skillhook Cloud](https://skillhook.dev), a hosted dashboard for every machine's webhooks, jobs, questions waiting for a person, health and stats, with hosted webhook URLs that keep deliveries while the machine sleeps. Opt-in, outbound only, observe mode unless you choose control. With an organisation API key (`skillhook cloud login`), everything the dashboard shows and does works from the terminal (`skillhook cloud overview`, `skillhook cloud <tool>`) and for your agent (the plugin's `skillhook-cloud` MCP server). `skillhook cloud report` sends the Skillhook team a problem report from a paired machine. See [Skillhook Cloud](#skillhook-cloud) and [docs/cloud.md](docs/cloud.md).
 - The agent is not cut off while it runs: a per-run job API (MCP tools injected into the run, or `skillhook job …`) lets it report progress and ask a person a question; `skillhook jobs answer <id> "…"` delivers the answer to the waiting agent or, when the run already ended, starts a new job that resumes the Claude or Codex session with it. See [Reporting progress and asking a person](docs/skills.md#reporting-progress-and-asking-a-person).
 - Developed against Claude Code 2.1.270, Codex CLI 0.153.4 and Tailscale 1.102.3. skillhook drives the CLIs through their headless flags (`claude -p --output-format stream-json …`, `codex exec --json …`; `response: { mode: structured }` adds `claude --json-schema` / `codex --output-schema`); `skillhook run <skill> --dry-run` shows the exact command line.
 
@@ -91,6 +91,25 @@ skillhook send hello --wait 60
 Signs a test payload the way the skill's auth expects, POSTs it to `/hooks/hello` on the running server and prints the job result. Add `--public` to go through the public URL.
 
 Then create your own skill with `skillhook skills new <name>` or copy an example with `skillhook skills add sentry-triage`, and give the URL from `skillhook url <name>` plus the secret to the sender.
+
+## Skillhook Cloud
+
+[Skillhook Cloud](https://skillhook.dev) is the hosted control plane for every skillhook machine, by the same team. Everything above works without it; it adds what one machine on its own cannot do:
+
+- **Hosted webhook URLs**: a URL on the cloud that takes the delivery while the machine sleeps, is busy or has no public URL at all (no Tailscale needed to receive webhooks) and hands it over on the machine's next sync; the machine still verifies every signature with its own secret. [Hosted URLs](https://skillhook.dev/docs/hosted-urls)
+- **One dashboard** of every machine's deliveries, jobs, health and stats. Every webhook of every machine stays on record with what became of it, rejected and skipped ones included, searchable by delivery id, machine, reason, path, sender address or time, and can be replayed from the dashboard, the API, the MCP server or the CLI: on the machine it arrived at, on another machine, or through another skill. [Webhook history and replay](https://skillhook.dev/docs/deliveries)
+- **An inbox** of the questions agents ask people, with one-click choices; the pick resumes the agent's session.
+- **Alerts** to Slack, a webhook or email when an agent needs a person, a job fails, a machine goes offline or a health check fails. [Alerts](https://skillhook.dev/docs/alerts)
+- **Teams and roles** (viewer, member, admin, owner) and an organisation API key for the whole fleet: `skillhook cloud login`, then `skillhook cloud <tool>` in a terminal and the plugin's `skillhook-cloud` MCP server for your agent. [CLI](https://skillhook.dev/docs/cli), [MCP](https://skillhook.dev/docs/mcp)
+- **Playbooks**: worked setups for Sentry, Granola, GitHub issues, Intercom, Stripe disputes, leads, and webhook replay and testing, each with the prompt to paste into an agent and the full `SKILL.md`. [Playbooks](https://skillhook.dev/customers)
+
+Pair a machine with the code its dashboard shows (the pairing page prints the command, with `--control` when you choose control):
+
+```bash
+skillhook cloud connect --code XXXX-XXXX --url https://skillhook.dev
+```
+
+The link is opt-in and outbound only, in observe mode unless you choose control, and `skillhook cloud disconnect` ends it. The Free plan covers two machines; plans and limits: [skillhook.dev/pricing](https://skillhook.dev/pricing). Docs: [skillhook.dev/docs](https://skillhook.dev/docs); the machine side (what leaves it, the commands the cloud may send, the kill switches) is [docs/cloud.md](docs/cloud.md).
 
 ## Write a skill
 
@@ -264,6 +283,7 @@ All types accept `allow_ips` (addresses, `localhost`, IPv4 CIDR). Threat model, 
 - **Tailscale Funnel** (default): `skillhook expose tailscale`. Free, no domain, the URL is your node name (`https://<machine>.<tailnet>.ts.net`), the mapping is stored by tailscaled and survives reboots. Needs a one-time approval (HTTPS certificates and the `funnel` node attribute); the CLI prints the link.
 - **Tailscale Serve** (tailnet only): `skillhook expose tailscale --serve`. Same URL, reachable only from your tailnet; pair with `allow_ips: ["100.64.0.0/10"]`.
 - **Cloudflare Tunnel** or **ngrok**: `skillhook expose cloudflare` / `skillhook expose ngrok` print the recipe; then `skillhook config set public_url https://…`.
+- **A hosted URL on Skillhook Cloud** (no tunnel): the cloud takes the delivery and the paired machine collects it over its outbound link, so a machine behind NAT without Tailscale receives webhooks too, asleep or awake; an admin turns one on per skill on the dashboard, and the machine verifies the signature as usual. See [Skillhook Cloud](#skillhook-cloud) and [docs/cloud.md](docs/cloud.md#hosted-urls).
 - `skillhook expose status` shows the current mapping, `skillhook expose off` removes it, `skillhook url` prints webhook URLs.
 
 Details and troubleshooting: [docs/exposure.md](docs/exposure.md).
@@ -314,6 +334,8 @@ Cursor, Windsurf and other `mcp.json` clients:
 
 Claude Code updates the plugin by itself once auto-update is on for its marketplace (`/plugin` → Marketplaces → `meterapp-skillhook` → Enable auto-update); `skillhook update --install` also updates it, in Claude Code and Codex.
 
+Skillhook Cloud also serves the organisation's tools as a hosted MCP server at `https://skillhook.dev/api/mcp` (Streamable HTTP; the claude.ai and ChatGPT connectors sign in with OAuth, other clients send an organisation API key as the bearer token), for clients that connect to a URL rather than run the plugin: [skillhook.dev/docs/mcp](https://skillhook.dev/docs/mcp).
+
 Agents reading this repository should start with [`AGENTS.md`](AGENTS.md) (layout, hard rules, checks) and [`llms.txt`](llms.txt) (a compact index of the documentation and key facts). Tool reference: [docs/mcp.md](docs/mcp.md).
 
 ## CLI reference
@@ -337,7 +359,7 @@ Agents reading this repository should start with [`AGENTS.md`](AGENTS.md) (layou
 | `skillhook stats [--since 24h\|7d\|ISO] [--until ISO] [--skill S]` | Jobs by status, outcome, runner and failure kind; durations, cost, tokens; deliveries by outcome; per skill. |
 | `skillhook deliveries list [--skill S] [--outcome O] [--since ISO] [--after ID] [--limit N]` · `deliveries show <id> [--body]` · `deliveries replay <id> [--force] [--skip-filters] [--wait S]` | Every webhook the server received, whatever became of it: accepted, duplicate, in flight, skipped by a filter, rejected (with the status and reason), Slack challenge; replay one through the skill as it is now. |
 | `skillhook mcp [--print-config]` · `mcp --job` | MCP server over stdio; `--print-config` prints client configuration; `--job` serves one run's job API (the runners start it). |
-| `skillhook cloud connect --code XXXX-XXXX [--control] [--url U]` · `cloud status` · `cloud disconnect [--keep-token]` | Pair this machine with Skillhook Cloud (opt-in, outbound only; observe mode unless `--control`): webhooks, jobs, health and stats of every machine in one place, hosted webhook URLs. See [docs/cloud.md](docs/cloud.md). |
+| `skillhook cloud connect --code XXXX-XXXX [--control] [--url U]` · `cloud status` · `cloud disconnect [--keep-token]` | Pair this machine with [Skillhook Cloud](https://skillhook.dev) (opt-in, outbound only; observe mode unless `--control`): webhooks, jobs, health and stats of every machine in one place, hosted webhook URLs. See [Skillhook Cloud](#skillhook-cloud) and [docs/cloud.md](docs/cloud.md). |
 | `skillhook cloud report "<title>" [--body T\|--body-file F\|--body -] [--kind bug\|question\|feature\|other] [--severity low\|normal\|high\|urgent] [--job ID] [--delivery ID] [--skill S] [--email E] [--no-diagnostics] [--dry-run]` | Report a problem to the Skillhook team from a paired machine, with the diagnostics it already has (versions, link state, runner readiness, failing checks; scrubbed of every `.env` value, never payloads or logs; `--dry-run` shows the JSON). See [docs/cloud.md](docs/cloud.md#reporting-a-problem). |
 | `skillhook cloud login [--url U] [--key shc_…\|-]` · `cloud logout` | Keep an organisation API key (Settings → API keys on the dashboard; asked for at a terminal) in `.env` as `SKILLHOOK_CLOUD_API_KEY`, never printed, never the machine token; the cloud is Skillhook Cloud (`https://skillhook.dev`) unless `--url` names another deployment. |
 | `skillhook cloud overview` · `cloud machines` · `cloud jobs [--machine M] [--skill S] [--status ST] [--outcome O] [--waiting] [--limit N] [--before C]` · `cloud job <id>` | With the key: what needs a person across the organisation (waiting agents, alerts, failing checks, failures, the day's numbers); its machines and jobs. |
@@ -369,7 +391,7 @@ Override the location with `SKILLHOOK_HOME=<path>` or `--dir <path>`.
 
 ## FAQ
 
-**Does the Mac need to stay awake?** Yes. Jobs run only while the machine is awake. On a desktop disable sleep (`sudo pmset -a sleep 0`, or System Settings → Energy → Prevent automatic sleeping when the display is off); on a plugged-in laptop `caffeinate -s` also works. Providers such as Granola retry failed deliveries for days, so a short sleep loses nothing.
+**Does the Mac need to stay awake?** Yes. Jobs run only while the machine is awake. On a desktop disable sleep (`sudo pmset -a sleep 0`, or System Settings → Energy → Prevent automatic sleeping when the display is off); on a plugged-in laptop `caffeinate -s` also works. Providers such as Granola retry failed deliveries for days, so a short sleep loses nothing. A hosted webhook URL on [Skillhook Cloud](#skillhook-cloud) takes the delivery while the machine sleeps and hands it over at wake ([hosted URLs](https://skillhook.dev/docs/hosted-urls)).
 
 **What if `claude` or `codex` is not logged in?** Run `claude login` or `codex login` in a terminal as the user that runs the server; `skillhook doctor` shows the login state. Alternatively put `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` in `~/.skillhook/.env`; they pass through to the runner automatically.
 

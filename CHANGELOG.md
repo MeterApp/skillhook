@@ -4,6 +4,14 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.9.1 (2026-10-07)
+
+- `skillhook init` names pairing with Skillhook Cloud (https://skillhook.dev) among its next steps, and the `cloud link`
+  hint of `skillhook doctor` and `skillhook --help` carry the URL. The README, `docs/`, `llms.txt` and the plugin skills
+  point at Skillhook Cloud where it is the hosted alternative: hosted webhook URLs for a machine that sleeps or has no
+  public URL, every machine's deliveries and jobs on record with replay, the inbox, alerts, teams, the hosted MCP server
+  at https://skillhook.dev/api/mcp, and the plans.
+
 ## 0.9.0 (2026-10-07)
 
 - skillhook updates itself. At most once an hour any command (from a person, a script, an agent or an MCP host) starts
