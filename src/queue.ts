@@ -250,18 +250,18 @@ export class JobQueue extends EventEmitter {
     const id = running.job.id;
     switch (entry.type) {
       case "progress":
-        running.job = store.update(id, { progress: { state: entry.state, message: entry.message, ...(entry.percent !== undefined ? { percent: entry.percent } : {}), ...(entry.step ? { step: entry.step } : {}), updated_at: entry.at } });
+        running.job = store.update(id, { ...(entry.title ? { title: entry.title } : {}), progress: { state: entry.state, message: entry.message, ...(entry.percent !== undefined ? { percent: entry.percent } : {}), ...(entry.step ? { step: entry.step } : {}), updated_at: entry.at } });
         this.events.emit("job.progress", { job: running.job, entry });
         break;
       case "note":
         this.events.emit("job.progress", { job: running.job, entry });
         break;
       case "outcome":
-        running.job = store.update(id, { progress: { state: "done", message: entry.summary, updated_at: entry.at } });
+        running.job = store.update(id, { ...(entry.title ? { title: entry.title } : {}), progress: { state: "done", message: entry.headline ?? entry.summary, updated_at: entry.at } });
         this.events.emit("job.progress", { job: running.job, entry });
         break;
       case "question": {
-        const question: JobQuestion = { id: entry.id, text: entry.text, ...(entry.options ? { options: entry.options } : {}), ...(entry.context ? { context: entry.context } : {}), asked_at: entry.at, ...(entry.wait_until ? { wait_until: entry.wait_until } : {}) };
+        const question: JobQuestion = { id: entry.id, text: entry.text, ...(entry.options ? { options: entry.options } : {}), ...(entry.recommended ? { recommended: entry.recommended } : {}), ...(entry.multiple ? { multiple: true } : {}), ...(entry.context ? { context: entry.context } : {}), asked_at: entry.at, ...(entry.wait_until ? { wait_until: entry.wait_until } : {}) };
         running.job = store.update(id, { question, answer: undefined, progress: { state: "waiting_human", message: entry.text, updated_at: entry.at } });
         running.clock?.pause(entry.wait_until);
         logger.info("job waiting for a person", { job: id, skill: running.job.skill, question: truncate(entry.text, 200) });
@@ -271,7 +271,7 @@ export class JobQueue extends EventEmitter {
       case "answer": {
         const known = running.job.answer;
         if (known && known.at === entry.at && known.question_id === entry.question_id) break; // recorded by answer() already
-        const answer: JobAnswer = { ...(entry.question_id ? { question_id: entry.question_id } : {}), text: entry.text, ...(entry.option ? { option: entry.option } : {}), ...(entry.by ? { by: entry.by } : {}), at: entry.at };
+        const answer: JobAnswer = { ...(entry.question_id ? { question_id: entry.question_id } : {}), text: entry.text, ...(entry.option ? { option: entry.option } : {}), ...(entry.options?.length ? { options: entry.options } : {}), ...(entry.by ? { by: entry.by } : {}), at: entry.at };
         this.recordAnswer(running, answer);
         this.events.emit("job.answered", { job: running.job, answer, delivered: "live" });
         break;
@@ -582,6 +582,8 @@ export class JobQueue extends EventEmitter {
         result: outcome.result,
         error,
         response,
+        // A title in the response (structured output, response.json) names the job like one reported with progress.
+        ...(response?.title ? { title: response.title } : {}),
         ...(failure ? { failure } : {}),
       },
     };

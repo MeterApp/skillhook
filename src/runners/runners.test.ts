@@ -100,7 +100,7 @@ describe("claude runner", () => {
     const inv = claudeRunner.build(c);
     const schema = JSON.parse(inv.args[inv.args.indexOf("--json-schema") + 1] as string) as { required: string[]; properties: Record<string, unknown> };
     expect(schema.required).toEqual(["outcome", "summary"]);
-    expect(Object.keys(schema.properties)).toEqual(["outcome", "summary", "links", "data"]);
+    expect(Object.keys(schema.properties)).toEqual(["outcome", "title", "headline", "summary", "links", "options", "recommended", "multiple", "data"]);
     const state: StreamState = {};
     const line = JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "", session_id: "s", structured_output: { outcome: "needs_human", summary: "Ask Bob", links: ["https://x"] } });
     claudeRunner.onLine?.(line, state);

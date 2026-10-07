@@ -37,14 +37,16 @@ Always start with `describe_cloud`. It returns the machines, `needs_attention` a
 
 | In `needs_attention` | Look closer with | Typical action |
 |---|---|---|
-| `waiting_jobs`: agents that asked a person something, or finished needing one | `get_job` (the question, its options, the agent's progress and response) | Ask the person, then `answer_job {job, answer, option}`; never answer on their behalf unless they told you what to say |
+| `waiting_jobs`: agents that asked a person something, or finished needing one | `get_job` (the question, its options and the one the agent recommends, the agent's progress and response) | Ask the person, then `answer_job {job, answer, option}` (`options` for the picks of a multiple-choice question); never answer on their behalf unless they told you what to say |
 | `failed_jobs_24h` | `get_job` (`failure.kind`, `result`, `timeline`), `get_job_artifact {name: stderr}` or `stdout` | Fix the cause (below), then `replay_job` |
 | `rejected_deliveries_24h` | `get_delivery` (`code`, `reason`, headers) | Fix the sender or the secret, then `replay_delivery {force: true}` if the delivery was genuine |
 | `failing_checks` | `get_machine` (each check with `hint`, the fix) | Tell the person the fix on that machine; `send_command health.get {deep: true, refresh: true}` checks again |
 | `open_alerts` | `list_alerts` | Alerts close themselves when the condition clears; `dismiss_alert` once handled |
 | an offline machine | `get_machine` (`last_seen_at`, `link`) | Nothing runs there until it is back: tell the person to look at the machine (`skillhook doctor`, `skillhook service status`) |
 
-For trends use `get_stats {days}` (success rate, cost, p95 per skill); for everything that happened use `list_jobs`,
+For what the agents are doing and what they did, as a person reads it, use `list_inbox {view, sort}` (each job's title,
+progress, one-line result, summary and links: the event's source, pull requests, messages, how to test, the webhook
+delivery that started it). For trends use `get_stats {days}` (success rate, cost, p95 per skill); for everything that happened use `list_jobs`,
 `list_deliveries`, `list_commands` and, with an admin key, `list_audit_log`.
 
 ## 3. Why a job failed

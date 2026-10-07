@@ -61,8 +61,9 @@ type AnswerOps = { config: Config; store: JobStore; registry: SkillRegistry };
 export function createResumeJob(ops: { config: Config; store: JobStore }, input: { original: JobRecord; skill: Skill; answer: JobAnswer }): JobRecord {
   const { original, skill, answer } = input;
   const event = ops.store.readEvent(original.id);
-  // What the person answered: the question the agent asked, or what it said it needed when it finished with needs_human.
-  const question: JobQuestion | undefined = original.question ?? (original.response?.outcome === "needs_human" ? { id: "outcome", text: original.response.summary, asked_at: original.finished_at ?? original.created_at } : undefined);
+  // What the person answered: the question the agent asked, or what it said it needed (and offered) when it finished with needs_human.
+  const response = original.response;
+  const question: JobQuestion | undefined = original.question ?? (response?.outcome === "needs_human" ? { id: "outcome", text: response.summary, ...(response.options ? { options: response.options } : {}), ...(response.recommended ? { recommended: response.recommended } : {}), ...(response.multiple ? { multiple: true } : {}), asked_at: original.finished_at ?? original.created_at } : undefined);
   const session = original.session_id && original.runner !== "shell" ? { session_id: original.session_id, runner: original.runner } : undefined;
   const runnerReason = session ? undefined : original.runner === "shell" ? "a shell run has no session to resume: the command runs again with the answer" : `job ${original.id} has no session id to resume: the skill runs again with the answer`;
   const id = newJobId();
@@ -78,7 +79,7 @@ export function createResumeJob(ops: { config: Config; store: JobStore }, input:
     body: { kind: event.body_kind, contentType: event.content_type },
     jobId: id,
     adhoc: original.adhoc,
-    resume: { of: original.id, session, question, answer, runnerReason },
+    resume: { of: original.id, session, question, answer, runnerReason, title: original.title ?? response?.title },
   });
   if (original.adhoc) {
     // The ad-hoc SKILL.md travels with its job: the resume job needs its own copy for the queue to load.
@@ -131,7 +132,8 @@ export function answerJob(ops: AnswerOps, input: AnswerJobInput, options: { queu
     return { job: ops.store.update(job.id, { answer, question: { ...job.question, answered_at: answer.at } }), answer, delivered: "live" };
   }
   if (!isTerminal(job.status) || !isWaitingForHuman(job)) throw notWaiting(job);
-  const answer = answerQuestion(dir, { ...details, questionId: job.question?.id });
+  // Without a question, the choices are the ones the needs_human outcome offered.
+  const answer = answerQuestion(dir, { ...details, questionId: job.question?.id, choices: job.question ? undefined : job.response });
   let updated = ops.store.update(job.id, { answer, question: job.question ? { ...job.question, answered_at: answer.at } : undefined });
   if (input.resume === "never") {
     options.events?.emit("job.answered", { job: updated, answer, delivered: "recorded" });

@@ -43,6 +43,11 @@ export const DELIVERY_OUTCOMES = ["accepted", "duplicate", "in_flight", "skipped
 export const FAILURE_KINDS = ["auth", "usage_limit", "rate_limit", "budget", "max_turns", "not_found", "timeout", "crash", "unknown"] as const;
 export const CHECK_STATUSES = ["ok", "warn", "fail", "skip"] as const;
 export const PROGRESS_STATES = ["working", "blocked", "waiting_human", "done"] as const;
+/** What a link in a job's response points at (`response.links[].kind`); the records stay loose, so a newer kind reads as unknown, not as an error. */
+export const LINK_KINDS = ["source", "pull_request", "commit", "issue", "message", "document", "deploy", "test", "log", "result", "other"] as const;
+export type LinkKind = (typeof LINK_KINDS)[number];
+/** Most links a response keeps, and the longest job title and one-line headline. */
+export const REPORT_LIMITS = { max_links: 50, max_title: 200, max_headline: 280, max_options: 20, max_option: 200 } as const;
 
 export const MACHINE_MODES = ["observe", "control"] as const;
 export type MachineMode = (typeof MACHINE_MODES)[number];
