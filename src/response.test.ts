@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_RESPONSE_SCHEMA, deriveOutcome, jobOutcome, parseResponseObject, readResponseFile, resolveJobResponse, responseSchemaFor } from "./response.js";
+import { buildResponse, DEFAULT_RESPONSE_SCHEMA, deriveOutcome, jobOutcome, parseResponseObject, readResponseFile, resolveJobResponse, responseSchemaFor } from "./response.js";
 import { parseSkillDocument } from "./skills.js";
 import { tempHome } from "./test-support/helpers.js";
 
@@ -14,6 +14,31 @@ describe("parseResponseObject", () => {
     expect(parseResponseObject({ outcome: "completed", summary: "x", links: [] }, { ok: true })).toEqual({ outcome: "completed", summary: "x" });
     const big = parseResponseObject({ outcome: "completed", summary: "s", data: { blob: "x".repeat(70_000) } }, { ok: true });
     expect(big?.data).toMatchObject({ truncated: true });
+  });
+
+  it("reads a title, a headline, typed links and choices", () => {
+    const response = parseResponseObject(
+      {
+        outcome: "needs_human",
+        title: "  Fix the sync 500\n",
+        headline: "PR #7 is ready; merge it?",
+        summary: "**Found** the null org.",
+        links: [{ url: "https://sentry.io/issues/1/", title: "SYNC-500", kind: "source" }, "https://github.com/acme/api/pull/7", { url: "https://x.test", kind: "tweet" }, { title: "no url" }],
+        options: ["Merge", "Close", "Merge"],
+        recommended: "Merge",
+        multiple: false,
+      },
+      { ok: true },
+    );
+    expect(response).toEqual({ outcome: "needs_human", title: "Fix the sync 500", headline: "PR #7 is ready; merge it?", summary: "**Found** the null org.", links: [{ url: "https://sentry.io/issues/1/", title: "SYNC-500", kind: "source" }, "https://github.com/acme/api/pull/7", "https://x.test"], options: ["Merge", "Close"], recommended: "Merge" });
+    // A custom schema's own fields are data, never a title or links.
+    expect(parseResponseObject({ title: "Ticket title", links: ["https://x.test"] }, { ok: true, result: "done" })).toEqual({ outcome: "completed", summary: "done", data: { title: "Ticket title", links: ["https://x.test"] } });
+  });
+
+  it("builds what job_set_outcome writes, keeping data whole", () => {
+    const blob = "x".repeat(70_000);
+    const response = buildResponse({ outcome: "completed", summary: "s", headline: "  done  ", links: ["https://a.test", "https://a.test"], options: [], data: { blob } });
+    expect(response).toEqual({ outcome: "completed", headline: "done", summary: "s", links: ["https://a.test"], data: { blob } });
   });
 
   it("falls back to how the run ended for unknown outcomes and custom shapes", () => {
@@ -61,6 +86,7 @@ describe("response files and outcomes", () => {
     const plain = parseSkillDocument("---\nname: d\ndescription: d\nskillhook:\n  response:\n    mode: structured\n---\nb", "/tmp/d");
     expect(responseSchemaFor(plain)).toBe(DEFAULT_RESPONSE_SCHEMA);
     expect((DEFAULT_RESPONSE_SCHEMA.required as string[]).sort()).toEqual(["outcome", "summary"]);
+    expect(Object.keys(DEFAULT_RESPONSE_SCHEMA.properties as object)).toEqual(["outcome", "title", "headline", "summary", "links", "options", "recommended", "multiple", "data"]);
     const custom = parseSkillDocument("---\nname: d\ndescription: d\nskillhook:\n  response:\n    mode: structured\n    schema:\n      type: object\n      properties:\n        ticket: { type: string }\n---\nb", "/tmp/d");
     expect(responseSchemaFor(custom)).toEqual({ type: "object", properties: { ticket: { type: "string" } } });
   });

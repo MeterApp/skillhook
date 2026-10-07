@@ -33,8 +33,8 @@ export interface ManualRunInput {
   jobId?: string;
   /** The SKILL.md came with the request and lives in the job directory. */
   adhoc?: true;
-  /** For `trigger: resume`: the job a person answered, the session to continue (when it has one), what was asked and answered, and why it cannot be resumed when it cannot. */
-  resume?: { of: string; session?: { session_id: string; runner: RunnerName }; question?: JobQuestion; answer: JobAnswer; runnerReason?: string };
+  /** For `trigger: resume`: the job a person answered, the session to continue (when it has one), what was asked and answered, why it cannot be resumed when it cannot, and the title the job had. */
+  resume?: { of: string; session?: { session_id: string; runner: RunnerName }; question?: JobQuestion; answer: JobAnswer; runnerReason?: string; title?: string };
 }
 
 export function buildManualEvent(input: ManualRunInput, id = newJobId()): WebhookEvent {
@@ -66,6 +66,7 @@ export function createManualJob(ops: { config: Config; store: JobStore }, input:
   return store.create({
     id,
     skill: input.skill.name,
+    title: input.resume?.title,
     trigger: input.trigger,
     runner: settings.runner,
     model: settings.model,

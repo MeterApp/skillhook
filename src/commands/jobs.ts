@@ -6,19 +6,20 @@ import { isTerminal, isWaitingForHuman, JOB_STATUSES, type JobArtifact, type Job
 import { createOps, runJobLocally } from "../ops.js";
 import { TRIGGERS, type Trigger } from "../payload.js";
 import { readProgress, type ProgressEntry } from "../progress.js";
+import { formatChoices, formatLink } from "../reporting.js";
 import { JOB_OUTCOMES, jobOutcome, type JobOutcome } from "../response.js";
 import { FAILURE_KINDS, type FailureKind } from "../runners/failure.js";
 import { resolveRunSettings } from "../run.js";
 import { publicJob } from "../server.js";
 import { sleep } from "../util.js";
 import { replayCommand } from "./replay.js";
-import { bool, CommandError, formatDuration, num, relativeTime, str, table, UsageError, type Ctx } from "./shared.js";
+import { bool, CommandError, formatDuration, list, num, relativeTime, str, table, UsageError, type Ctx } from "./shared.js";
 
 export const JOBS_USAGE = `Usage:
   skillhook jobs list [--skill NAME] [--status ${JOB_STATUSES.join("|")}] [--outcome ${JOB_OUTCOMES.join("|")}] [--failure ${FAILURE_KINDS.join("|")}] [--trigger ${TRIGGERS.join("|")}] [--waiting] [--since ISO] [--after ID] [--limit N]
   skillhook jobs show <id> [--result] [--response] [--prompt] [--stdout] [--stderr]
   skillhook jobs logs <id> [--follow|-f] [--stderr]
-  skillhook jobs answer <id> "<answer>" [--option X] [--by NAME] [--no-resume] [--wait S]   answer the question a job asked, or a job that ended needs_human (a new job then continues its session)
+  skillhook jobs answer <id> ["<answer>"] [--option X]... [--by NAME] [--no-resume] [--wait S]   answer the question a job asked, or a job that ended needs_human (a new job then continues its session); --option once per pick of a multiple-choice question, the picks are the answer when no text is given
   skillhook jobs cancel <id>
   skillhook jobs replay <id> [--skip-filters] [--runner R] [--model M] [--effort E] [--wait S]   run the same request again as a new job
   skillhook jobs resume <id> [--exec]      print (or run) the command that reopens the agent session
@@ -44,7 +45,7 @@ export async function jobsCommand(ctx: Ctx): Promise<number> {
       const waiting = bool(ctx.flags, "waiting") || undefined;
       const page = store.listPage({ skill: str(ctx.flags, "skill"), status, trigger, outcome, failure, waiting, since, after: str(ctx.flags, "after"), limit: num(ctx.flags, "limit") ?? 30 });
       const jobs = page.jobs;
-      const rows = jobs.map((j) => [j.id, j.skill, `${j.status}${j.failure ? ` (${j.failure.kind})` : ""}`, jobOutcome(j) ?? "", isWaitingForHuman(j) ? "waiting" : (j.progress?.state ?? ""), j.runner + (j.model ? `/${j.model}` : ""), formatDuration(j.duration_ms), relativeTime(j.created_at), (isWaitingForHuman(j) && j.question ? `? ${j.question.text}` : (j.response?.summary ?? j.error ?? j.result ?? "")).split("\n")[0]?.slice(0, 60) ?? ""]);
+      const rows = jobs.map((j) => [j.id, j.skill, `${j.status}${j.failure ? ` (${j.failure.kind})` : ""}`, jobOutcome(j) ?? "", isWaitingForHuman(j) ? "waiting" : (j.progress?.state ?? ""), j.runner + (j.model ? `/${j.model}` : ""), formatDuration(j.duration_ms), relativeTime(j.created_at), (isWaitingForHuman(j) && j.question ? `? ${j.question.text}` : (j.response?.headline ?? j.title ?? j.response?.summary ?? j.error ?? j.result ?? "")).split("\n")[0]?.slice(0, 60) ?? ""]);
       const human = rows.length ? `${table(rows, ["job", "skill", "status", "outcome", "human", "runner", "took", "when", "summary"])}${page.next_after ? `\n(more: --after ${page.next_after})` : ""}` : waiting ? "No job is waiting for a person" : `No jobs in ${store.jobsDir}`;
       ctx.print(human, { jobs: jobs.map(publicJob), next_after: page.next_after });
       return 0;
@@ -60,10 +61,17 @@ export async function jobsCommand(ctx: Ctx): Promise<number> {
       const progress = readProgress(store.pathsFor(job.id).dir, { timelineLimit: 20 });
       const lines = [
         `${job.id}  ${job.skill}  ${job.status}${outcome ? `  (${outcome})` : ""}${isWaitingForHuman(job) ? "  WAITING FOR A PERSON" : ""}`,
-        ...(job.response ? [`  outcome:  ${job.response.outcome}: ${job.response.summary.split("\n")[0] ?? ""}`, ...(job.response.links?.length ? [`  links:    ${job.response.links.join(", ")}`] : [])] : []),
+        ...(job.title ? [`  title:    ${job.title}`] : []),
+        ...(job.response
+          ? [
+              `  outcome:  ${job.response.outcome}: ${(job.response.headline ?? job.response.summary).split("\n")[0] ?? ""}`,
+              ...(job.response.options?.length ? [`  choices: ${formatChoices(job.response)}`] : []),
+              ...(job.response.links ?? []).map((link, index) => `  ${index ? "         " : "links:   "} ${formatLink(link)}`),
+            ]
+          : []),
         ...(job.progress ? [`  progress: ${job.progress.state}: ${job.progress.message.split("\n")[0] ?? ""}${job.progress.percent !== undefined ? ` (${job.progress.percent}%)` : ""}`] : []),
-        ...(job.question ? [`  question: ${job.question.text.split("\n")[0] ?? ""}${job.question.options?.length ? ` [${job.question.options.join(" | ")}]` : ""}${job.question.answered_at ? "" : "  (unanswered: skillhook jobs answer " + job.id + ' "…")'}`] : []),
-        ...(job.answer ? [`  answer:   ${job.answer.option ? `${job.answer.option}: ` : ""}${job.answer.text.split("\n")[0] ?? ""}${job.answer.by ? ` (${job.answer.by})` : ""}`] : []),
+        ...(job.question ? [`  question: ${job.question.text.split("\n")[0] ?? ""}${formatChoices(job.question)}${job.question.answered_at ? "" : "  (unanswered: skillhook jobs answer " + job.id + ' "…")'}`] : []),
+        ...(job.answer ? [`  answer:   ${job.answer.option && job.answer.option !== job.answer.text ? `${job.answer.option}: ` : ""}${job.answer.options?.length ? job.answer.options.join(", ") : (job.answer.text.split("\n")[0] ?? "")}${job.answer.by ? ` (${job.answer.by})` : ""}`] : []),
         ...(job.resume_of ? [`  resumes:  job ${job.resume_of}${job.resume ? ` (session ${job.resume.session_id})` : job.runner_reason ? ` (${job.runner_reason})` : ""}`] : []),
         ...(job.resolved_by ? [`  resolved: by job ${job.resolved_by}`] : []),
         `  runner:   ${job.runner}${job.model ? ` (${job.model})` : ""}${job.effort ? ` effort=${job.effort}` : ""}${job.runner_requested ? `  (asked for ${job.runner_requested}: ${job.runner_reason ?? "fallback"})` : ""}`,
@@ -88,9 +96,11 @@ export async function jobsCommand(ctx: Ctx): Promise<number> {
     case "answer": {
       const job = store.get(requireId(id));
       if (!job) throw new CommandError(`Unknown job ${id}`);
-      const text = ctx.args[2];
+      // A multiple-choice question takes --option once per pick; the picks are the answer when no text is given.
+      const picks = list(ctx.flags, "option");
+      const text = ctx.args[2] ?? (picks.length ? picks.join("\n") : undefined);
       if (!text?.trim()) throw new UsageError("Missing the answer text", JOBS_USAGE);
-      const option = str(ctx.flags, "option");
+      const option = picks.length === 1 ? picks[0] : undefined;
       const by = str(ctx.flags, "by") ?? ctx.io.env.USER;
       const resume: "auto" | "never" = ctx.flags.resume === false ? "never" : "auto";
       const wait = num(ctx.flags, "wait");
@@ -231,15 +241,15 @@ function describeEntry(entry: ProgressEntry): string {
   const at = entry.at.slice(11, 19);
   switch (entry.type) {
     case "progress":
-      return `  ${at}  ${entry.state}${entry.percent !== undefined ? ` ${entry.percent}%` : ""}${entry.step ? ` [${entry.step}]` : ""}: ${entry.message.split("\n")[0] ?? ""}`;
+      return `  ${at}  ${entry.state}${entry.percent !== undefined ? ` ${entry.percent}%` : ""}${entry.step ? ` [${entry.step}]` : ""}: ${entry.message.split("\n")[0] ?? ""}${entry.title ? `  (title: ${entry.title})` : ""}`;
     case "note":
       return `  ${at}  note: ${entry.message.split("\n")[0] ?? ""}`;
     case "question":
-      return `  ${at}  asked: ${entry.text.split("\n")[0] ?? ""}${entry.options?.length ? ` [${entry.options.join(" | ")}]` : ""}`;
+      return `  ${at}  asked: ${entry.text.split("\n")[0] ?? ""}${formatChoices(entry)}`;
     case "answer":
       return `  ${at}  answered${entry.by ? ` by ${entry.by}` : ""}: ${entry.option ? `${entry.option}: ` : ""}${entry.text.split("\n")[0] ?? ""}`;
     case "outcome":
-      return `  ${at}  outcome ${entry.outcome}: ${entry.summary.split("\n")[0] ?? ""}`;
+      return `  ${at}  outcome ${entry.outcome}: ${(entry.headline ?? entry.summary).split("\n")[0] ?? ""}`;
     default:
       return `  ${at}  ${JSON.stringify(entry)}`;
   }

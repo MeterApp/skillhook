@@ -56,6 +56,38 @@ describe("skillhook mcp --job", () => {
     await client.close();
   });
 
+  it("names the job, offers choices and reports a headline with typed links", async () => {
+    const paths = tempHome("skillhook-mcpjob-");
+    const jobId = "20260928T120000Z-report";
+    const jobDir = path.join(paths.jobsDir, jobId);
+    mkdirSync(jobDir, { recursive: true });
+    writeFileSync(path.join(jobDir, "job.json"), JSON.stringify({ id: jobId, skill: "triage", trigger: "webhook", runner: "claude", title: "Fix the sync 500" }));
+    const client = await connect(jobId, jobDir);
+
+    const named = await client.call("job_progress", { message: "Reading the **Sentry** event", title: "Fix the sync 500" });
+    expect(named.data).toMatchObject({ ok: true, title: "Fix the sync 500" });
+    expect(readProgress(jobDir).timeline.at(-1)).toMatchObject({ type: "progress", title: "Fix the sync 500" });
+
+    const asking = client.call("job_ask_human", { question: "Which do I close?", options: ["#48", "#51", "#52"], recommended: "#51", multiple: true, wait_seconds: 5 });
+    await new Promise((r) => setTimeout(r, 150));
+    expect(readQuestion(jobDir)).toMatchObject({ options: ["#48", "#51", "#52"], recommended: "#51", multiple: true });
+    answerQuestion(jobDir, { text: "#51\n#48", by: "ada" });
+    expect((await asking).data).toMatchObject({ answered: true, answer: "#51\n#48", options: ["#51", "#48"], option: null });
+
+    const links = [{ url: "https://sentry.io/organizations/acme/issues/1/", title: "SYNC-500", kind: "source" }, "https://github.com/acme/api/pull/7", { url: "https://github.com/acme/api/actions/runs/9", kind: "test" }];
+    const outcome = await client.call("job_set_outcome", { outcome: "needs_human", headline: "PR #7 fixes the 500; merge it?", summary: "Found the null org.\n\n- added a guard\n- added a test", links, options: ["Merge", "Close"], recommended: "Merge", data: { pr: 7 } });
+    expect(outcome.isError).toBeFalsy();
+    expect(JSON.parse(readFileSync(path.join(jobDir, "response.json"), "utf8"))).toEqual({ outcome: "needs_human", headline: "PR #7 fixes the 500; merge it?", summary: "Found the null org.\n\n- added a guard\n- added a test", links, options: ["Merge", "Close"], recommended: "Merge", data: { pr: 7 } });
+    expect(readProgress(jobDir).progress).toMatchObject({ state: "done", message: "PR #7 fixes the 500; merge it?" });
+    expect(readProgress(jobDir).timeline.at(-1)).toMatchObject({ type: "outcome", outcome: "needs_human", headline: "PR #7 fixes the 500; merge it?" });
+    const badKind = await client.call("job_set_outcome", { outcome: "completed", summary: "x", links: [{ url: "https://x.test", kind: "tweet" }] });
+    expect(badKind.isError).toBe(true);
+
+    const context = await client.call("job_context");
+    expect(context.data).toMatchObject({ title: "Fix the sync 500" });
+    await client.close();
+  });
+
   it("finds the job it serves in the runner's environment or by id under the home", () => {
     const paths = tempHome("skillhook-mcpjob-");
     const jobId = "20260928T120000Z-envjob";

@@ -91,12 +91,12 @@ if (process.env.FAKE_CLAUDE_ASK && process.env.SKILLHOOK_JOB_DIR && !args.includ
   const { appendFileSync, existsSync } = await import("node:fs");
   const now = () => new Date().toISOString();
   const line = (entry) => appendFileSync(`${dir}/progress.jsonl`, `${JSON.stringify(entry)}\n`);
-  line({ at: now(), type: "progress", state: "working", message: "looking at the payload", percent: 10 });
+  line({ at: now(), type: "progress", state: "working", message: "looking at the payload", percent: 10, title: "Fake task" });
   writeFileSync(`${dir}/progress.json`, JSON.stringify({ state: "working", message: "looking at the payload", percent: 10, updated_at: now() }));
   const waitMs = Number(process.env.FAKE_CLAUDE_ASK_WAIT_MS ?? 8000);
-  const question = { id: "fakeq", text: process.env.FAKE_CLAUDE_ASK, options: ["A", "B"], asked_at: now(), wait_until: new Date(Date.now() + waitMs).toISOString() };
+  const question = { id: "fakeq", text: process.env.FAKE_CLAUDE_ASK, options: ["A", "B"], recommended: "B", asked_at: now(), wait_until: new Date(Date.now() + waitMs).toISOString() };
   writeFileSync(`${dir}/question.json`, JSON.stringify(question));
-  line({ at: now(), type: "question", id: question.id, text: question.text, options: question.options, wait_until: question.wait_until });
+  line({ at: now(), type: "question", id: question.id, text: question.text, options: question.options, recommended: question.recommended, wait_until: question.wait_until });
   writeFileSync(`${dir}/progress.json`, JSON.stringify({ state: "waiting_human", message: question.text, updated_at: now() }));
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {

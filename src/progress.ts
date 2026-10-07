@@ -10,6 +10,7 @@
 import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { randomToken } from "./ids.js";
+import { cleanLine, HEADLINE_MAX, normalizeChoices, pickedOptions, TITLE_MAX, type Choices } from "./reporting.js";
 import { isPlainObject, nowIso, sleep, truncate, writeJsonFile } from "./util.js";
 
 export type ProgressState = "working" | "blocked" | "waiting_human" | "done";
@@ -27,6 +28,10 @@ export interface JobQuestion {
   id: string;
   text: string;
   options?: string[];
+  /** The option the agent suggests (one of `options`). */
+  recommended?: string;
+  /** The person may pick several options; the answer then lists them one per line. */
+  multiple?: boolean;
   /** What the person needs to know to answer (a diff, a URL, the alternatives). */
   context?: string;
   asked_at: string;
@@ -41,16 +46,18 @@ export interface JobAnswer {
   text: string;
   /** One of the question's options, when the person picked one. */
   option?: string;
+  /** For a multiple-choice question: the options the person picked (the lines of `text` that are options). */
+  options?: string[];
   by?: string;
   at: string;
 }
 
 export type ProgressEntry = { at: string } & (
-  | { type: "progress"; state: "working" | "blocked"; message: string; percent?: number; step?: string }
+  | { type: "progress"; state: "working" | "blocked"; message: string; percent?: number; step?: string; title?: string }
   | { type: "note"; message: string }
-  | { type: "question"; id: string; text: string; options?: string[]; context?: string; wait_until?: string }
-  | { type: "answer"; question_id?: string; text: string; option?: string; by?: string }
-  | { type: "outcome"; outcome: string; summary: string }
+  | { type: "question"; id: string; text: string; options?: string[]; recommended?: string; multiple?: boolean; context?: string; wait_until?: string }
+  | { type: "answer"; question_id?: string; text: string; option?: string; options?: string[]; by?: string }
+  | { type: "outcome"; outcome: string; summary: string; title?: string; headline?: string }
 );
 
 export const PROGRESS_LOG = "progress.jsonl";
@@ -62,7 +69,6 @@ export const DEFAULT_HUMAN_WAIT_SECONDS = 300;
 export const MAX_HUMAN_WAIT_SECONDS = 86_400;
 const MESSAGE_MAX = 2000;
 const CONTEXT_MAX = 20_000;
-const OPTIONS_MAX = 20;
 
 export function progressPaths(jobDir: string): { log: string; current: string; question: string; answer: string } {
   return { log: path.join(jobDir, PROGRESS_LOG), current: path.join(jobDir, PROGRESS_FILE), question: path.join(jobDir, QUESTION_FILE), answer: path.join(jobDir, ANSWER_FILE) };
@@ -84,14 +90,18 @@ function clean(text: string, max: number): string {
   return truncate(text.trim(), max);
 }
 
-/** `working` or `blocked` with a message: what the agent is doing right now. */
-export function reportProgress(jobDir: string, input: { message: string; state?: "working" | "blocked"; percent?: number; step?: string }): JobProgress {
+/**
+ * `working` or `blocked` with a message: what the agent is doing right now. `title` names the whole job ("Fix the 500
+ * on /api/sync") and stays until another report changes it; it becomes `job.title`.
+ */
+export function reportProgress(jobDir: string, input: { message: string; state?: "working" | "blocked"; percent?: number; step?: string; title?: string }): JobProgress {
   const at = nowIso();
   const state = input.state ?? "working";
   const message = clean(input.message, MESSAGE_MAX);
   const percent = typeof input.percent === "number" && Number.isFinite(input.percent) ? Math.max(0, Math.min(100, Math.round(input.percent))) : undefined;
   const step = input.step ? clean(input.step, 200) : undefined;
-  append(jobDir, { at, type: "progress", state, message, ...(percent !== undefined ? { percent } : {}), ...(step ? { step } : {}) });
+  const title = cleanLine(input.title, TITLE_MAX);
+  append(jobDir, { at, type: "progress", state, message, ...(percent !== undefined ? { percent } : {}), ...(step ? { step } : {}), ...(title ? { title } : {}) });
   return setCurrent(jobDir, { state, message, ...(percent !== undefined ? { percent } : {}), ...(step ? { step } : {}), updated_at: at });
 }
 
@@ -100,11 +110,13 @@ export function addNote(jobDir: string, message: string): ProgressEntry {
   return append(jobDir, { at: nowIso(), type: "note", message: clean(message, MESSAGE_MAX) });
 }
 
-/** Records that the agent reported an outcome (the `response.json` it wrote), for the timeline. */
-export function recordOutcome(jobDir: string, outcome: string, summary: string): ProgressEntry {
+/** Records that the agent reported an outcome (the `response.json` it wrote), for the timeline; its headline, when it has one, is the last progress message. */
+export function recordOutcome(jobDir: string, outcome: string, summary: string, extra: { title?: string; headline?: string } = {}): ProgressEntry {
   const at = nowIso();
-  setCurrent(jobDir, { state: "done", message: clean(summary, MESSAGE_MAX), updated_at: at });
-  return append(jobDir, { at, type: "outcome", outcome, summary: clean(summary, MESSAGE_MAX) });
+  const title = cleanLine(extra.title, TITLE_MAX);
+  const headline = cleanLine(extra.headline, HEADLINE_MAX);
+  setCurrent(jobDir, { state: "done", message: headline ?? clean(summary, MESSAGE_MAX), updated_at: at });
+  return append(jobDir, { at, type: "outcome", outcome, summary: clean(summary, MESSAGE_MAX), ...(title ? { title } : {}), ...(headline ? { headline } : {}) });
 }
 
 export function readQuestion(jobDir: string): JobQuestion | undefined {
@@ -136,15 +148,19 @@ export function readCurrent(jobDir: string): JobProgress | undefined {
   }
 }
 
-/** Asks a person something: the question is written, the state becomes `waiting_human`, and any earlier answer is discarded. */
-export function askQuestion(jobDir: string, input: { text: string; options?: string[]; context?: string; waitSeconds?: number }): JobQuestion {
+/**
+ * Asks a person something: the question is written, the state becomes `waiting_human`, and any earlier answer is
+ * discarded. `options` become buttons on Skillhook Cloud's inbox; `recommended` marks the one the agent suggests and
+ * `multiple` lets the person pick several.
+ */
+export function askQuestion(jobDir: string, input: { text: string; options?: string[]; recommended?: string; multiple?: boolean; context?: string; waitSeconds?: number }): JobQuestion {
   const at = nowIso();
   const waitSeconds = Math.min(MAX_HUMAN_WAIT_SECONDS, Math.max(0, Math.floor(input.waitSeconds ?? DEFAULT_HUMAN_WAIT_SECONDS)));
-  const options = input.options?.map((option) => clean(String(option), 200)).filter(Boolean).slice(0, OPTIONS_MAX);
+  const choices = normalizeChoices(input);
   const question: JobQuestion = {
     id: randomToken(8),
     text: clean(input.text, CONTEXT_MAX),
-    ...(options?.length ? { options } : {}),
+    ...choices,
     ...(input.context ? { context: clean(input.context, CONTEXT_MAX) } : {}),
     asked_at: at,
     wait_until: new Date(Date.parse(at) + waitSeconds * 1000).toISOString(),
@@ -156,7 +172,7 @@ export function askQuestion(jobDir: string, input: { text: string; options?: str
   } catch {
     /* nothing to clear */
   }
-  append(jobDir, { at, type: "question", id: question.id, text: question.text, ...(question.options ? { options: question.options } : {}), ...(question.context ? { context: question.context } : {}), wait_until: question.wait_until });
+  append(jobDir, { at, type: "question", id: question.id, text: question.text, ...choices, ...(question.context ? { context: question.context } : {}), wait_until: question.wait_until });
   setCurrent(jobDir, { state: "waiting_human", message: truncate(question.text, MESSAGE_MAX), updated_at: at });
   return question;
 }
@@ -171,19 +187,25 @@ export class NoQuestionError extends Error {
 /**
  * A person answers the pending question (or, with `questionId`, a specific one). With `requireQuestion` an unanswered
  * question must exist (the live path: a waiting `ask` call picks the answer up); otherwise the answer may stand alone,
- * for a job that finished with outcome `needs_human` without asking anything. The state goes back to `working`.
+ * for a job that finished with outcome `needs_human` without asking anything (`choices` are then the ones that outcome
+ * offered). For a multiple-choice question the lines of the answer that are options become `options`. The state goes
+ * back to `working`.
  */
-export function answerQuestion(jobDir: string, input: { text: string; option?: string; by?: string; questionId?: string; requireQuestion?: boolean }): JobAnswer {
+export function answerQuestion(jobDir: string, input: { text: string; option?: string; by?: string; questionId?: string; requireQuestion?: boolean; choices?: Choices }): JobAnswer {
   const question = readQuestion(jobDir);
   const pending = question && !question.answered_at ? question : undefined;
   const questionId = input.questionId ?? pending?.id;
   if (input.requireQuestion && !questionId) throw new NoQuestionError(jobDir);
   const at = nowIso();
-  const answer: JobAnswer = { ...(questionId ? { question_id: questionId } : {}), text: clean(input.text, CONTEXT_MAX), ...(input.option ? { option: clean(input.option, 200) } : {}), ...(input.by ? { by: clean(input.by, 200) } : {}), at };
+  const text = clean(input.text, CONTEXT_MAX);
+  const asked = question && questionId && question.id === questionId ? question : undefined;
+  const choices = asked ?? input.choices;
+  const picked = choices?.multiple && choices.options ? pickedOptions(text, choices.options) : [];
+  const answer: JobAnswer = { ...(questionId ? { question_id: questionId } : {}), text, ...(input.option ? { option: clean(input.option, 200) } : {}), ...(picked.length ? { options: picked } : {}), ...(input.by ? { by: clean(input.by, 200) } : {}), at };
   const paths = progressPaths(jobDir);
   writeJsonFile(paths.answer, answer);
-  if (question && questionId && question.id === questionId) writeJsonFile(paths.question, { ...question, answered_at: at });
-  append(jobDir, { at, type: "answer", ...(questionId ? { question_id: questionId } : {}), text: answer.text, ...(answer.option ? { option: answer.option } : {}), ...(answer.by ? { by: answer.by } : {}) });
+  if (asked) writeJsonFile(paths.question, { ...asked, answered_at: at });
+  append(jobDir, { at, type: "answer", ...(questionId ? { question_id: questionId } : {}), text: answer.text, ...(answer.option ? { option: answer.option } : {}), ...(answer.options ? { options: answer.options } : {}), ...(answer.by ? { by: answer.by } : {}) });
   setCurrent(jobDir, { state: "working", message: `answered: ${truncate(answer.text, 200)}`, updated_at: at });
   return answer;
 }

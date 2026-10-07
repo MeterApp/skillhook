@@ -346,10 +346,13 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
 
   server.registerTool(
     "answer_job",
-    { title: "Answer a job", description: "A person's answer to a job that is waiting: delivered live to the agent's pending job_ask_human call when the job is still running (`delivered: live`); otherwise recorded and, unless resume is `never`, a new job with trigger `resume` continues the agent's session with it (`claude --resume` / `codex exec resume`; `delivered: resumed`, `resume_job_id`). Use list_jobs with waiting: true to find such jobs; pass `option` when the question had options, `by` to say who answered.", inputSchema: z.object({ id: z.string(), answer: z.string().min(1), option: z.string().optional(), by: z.string().optional(), resume: z.enum(["auto", "never"]).optional(), wait_seconds: z.number().int().min(0).max(1800).optional().describe("how long to wait for the resume job (default 120; 0 returns at once)") }) },
-    wrap(async ({ id, answer, option, by, resume, wait_seconds }) => {
+    { title: "Answer a job", description: "A person's answer to a job that is waiting: delivered live to the agent's pending job_ask_human call when the job is still running (`delivered: live`); otherwise recorded and, unless resume is `never`, a new job with trigger `resume` continues the agent's session with it (`claude --resume` / `codex exec resume`; `delivered: resumed`, `resume_job_id`). Use list_jobs with waiting: true to find such jobs; pass `option` when the person picked one of the question's options, `options` for the picks of a multiple-choice question (the answer then lists them one per line), `by` to say who answered.", inputSchema: z.object({ id: z.string(), answer: z.string().min(1).optional().describe("The answer; may be left out when option or options say it all"), option: z.string().optional(), options: z.array(z.string().min(1)).max(20).optional(), by: z.string().optional(), resume: z.enum(["auto", "never"]).optional(), wait_seconds: z.number().int().min(0).max(1800).optional().describe("how long to wait for the resume job (default 120; 0 returns at once)") }) },
+    wrap(async ({ id, answer: text, option: picked, options, by, resume, wait_seconds }) => {
       const o = ops();
       const wait = wait_seconds ?? 120;
+      const answer = text ?? (options?.length ? options.join("\n") : picked);
+      const option = picked ?? (options?.length === 1 ? options[0] : undefined);
+      if (!answer?.trim()) throw new Error("an answer, an option or options is needed");
       const viaServer = await postToServer(o, `/jobs/${id}/answer`, { answer, option, by, resume, wait });
       if (viaServer) {
         const body = viaServer.body as Record<string, unknown>;

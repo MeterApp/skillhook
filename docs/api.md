@@ -79,12 +79,13 @@ Asynchronous (default): `202 Accepted`
 }
 ```
 
-Synchronous: add `?wait=<seconds>` or send a `Prefer: wait=<seconds>` header (clamped to `max_wait_seconds`, default 120). When the job finishes in time the answer is `200`; `ok` reflects the job status, and the body also carries `outcome` and `response` (whether the task was done and what the agent reported, `null` when it reported nothing; see [skills.md](skills.md#reporting-the-outcome)):
+Synchronous: add `?wait=<seconds>` or send a `Prefer: wait=<seconds>` header (clamped to `max_wait_seconds`, default 120). When the job finishes in time the answer is `200`; `ok` reflects the job status, and the body also carries `title`, `outcome` and `response` (what the job was about, whether the task was done and what the agent reported, `null` when it reported nothing; see [skills.md](skills.md#reporting-the-outcome)):
 
 ```json
 {
   "ok": true,
   "job_id": "20260916T025442Z-e634on",
+  "title": null,
   "status": "succeeded",
   "result": "Summarized the payload and wrote hello.md.",
   "error": null,
@@ -328,7 +329,7 @@ Ids that do not exist (or do not look like `YYYYMMDDTHHMMSSZ-xxxxxx`) are `404 u
 
 ## `GET /jobs/<id>/progress`
 
-What the running (or finished) agent reported through the job API ([skills.md](skills.md#reporting-progress-and-asking-a-person)): `{job_id, status, outcome, waiting, progress?, question?, answer?, timeline}`. `progress` is the current state (`{state: working|blocked|waiting_human|done, message, percent?, step?, updated_at}`), `question` the pending or last question (`{id, text, options?, context?, asked_at, wait_until?, answered_at?}`), `answer` the person's answer (`{question_id?, text, option?, by?, at}`) and `timeline` the entries of `progress.jsonl`, oldest first (`?limit=` keeps the last N, default 200). All of it is also on the job record.
+What the running (or finished) agent reported through the job API ([skills.md](skills.md#reporting-progress-and-asking-a-person)): `{job_id, title, status, outcome, waiting, progress?, question?, answer?, timeline}`. `progress` is the current state (`{state: working|blocked|waiting_human|done, message, percent?, step?, updated_at}`), `question` the pending or last question (`{id, text, options?, recommended?, multiple?, context?, asked_at, wait_until?, answered_at?}`), `answer` the person's answer (`{question_id?, text, option?, options?, by?, at}`; `options` are the picks of a multiple-choice question) and `timeline` the entries of `progress.jsonl`, oldest first (`?limit=` keeps the last N, default 200). All of it is also on the job record.
 
 ## `POST /jobs/<id>/answer`
 
@@ -503,6 +504,7 @@ Query: `since=<24h|7d|2w|ISO-8601>` (default: everything on disk, newest 5000 jo
 |---|---|---|
 | `id` | string | `YYYYMMDDTHHMMSSZ-<6 chars>`, UTC, sortable; also the directory name under `jobs/`. |
 | `skill` | string | |
+| `title` | string, optional | What the job is about, as the agent named it (`job_progress` / `job_set_outcome` `title`, `skillhook job progress --title`, a `title` in `response.json`); a resume job inherits it. At most 200 characters. |
 | `status` | string | `queued`, `running`, `succeeded`, `failed`, `timed_out`, `cancelled`, `interrupted`. |
 | `trigger` | string | `webhook`, `api`, `cli`, `mcp`, `schedule` (fired by a `schedule:`), `replay` (an operator replayed a delivery or job), `test` (a SKILL.md supplied with the request), `resume` (a person answered an earlier job; this run continues it). |
 | `runner` | string | `claude`, `codex`, `shell`. |
@@ -517,11 +519,11 @@ Query: `since=<24h|7d|2w|ISO-8601>` (default: everything on disk, newest 5000 jo
 | `result` | string, optional | Final agent message, truncated to 20 000 characters here; complete in `result.md`. |
 | `error` | string, optional | Failure reason. |
 | `outcome` | string, optional | Whether the task was done, set when the job ends: `completed`, `partial`, `needs_human`, `nothing_to_do`, `failed` (also every status other than `succeeded`) or `unknown` (the agent reported nothing). See [skills.md](skills.md#reporting-the-outcome). |
-| `response` | object, optional | What the agent reported: `{"outcome", "summary", "links"?, "data"?}` (`data` is capped at 64 KiB here; complete in `response.json`). |
+| `response` | object, optional | What the agent reported: `{"outcome", "title"?, "headline"?, "summary", "links"?, "options"?, "recommended"?, "multiple"?, "data"?}`. A link is a URL or `{"url", "title"?, "kind"?}`; `options` are the choices a `needs_human` outcome offers a person ([skills.md](skills.md#reporting-the-outcome)). `data` is capped at 64 KiB here; complete in `response.json`. |
 | `replay_of` | object, optional | For `trigger: replay`: `{"delivery"?: "<delivery-log id>", "job"?: "<original job id>"}`. |
 | `progress` | object, optional | What the agent last reported: `{"state": "working"\|"blocked"\|"waiting_human"\|"done", "message", "percent"?, "step"?, "updated_at"}`. |
-| `question` | object, optional | The question the agent asked a person: `{"id", "text", "options"?, "context"?, "asked_at", "wait_until"?, "answered_at"?}`; pending until `answered_at` is set. |
-| `answer` | object, optional | The person's answer: `{"question_id"?, "text", "option"?, "by"?, "at"}`. |
+| `question` | object, optional | The question the agent asked a person: `{"id", "text", "options"?, "recommended"?, "multiple"?, "context"?, "asked_at", "wait_until"?, "answered_at"?}`; pending until `answered_at` is set. |
+| `answer` | object, optional | The person's answer: `{"question_id"?, "text", "option"?, "options"?, "by"?, "at"}` (`options`: the picks of a multiple-choice question, the lines of `text` that are options). |
 | `resume_of`, `resume` | optional | For `trigger: resume`: the job whose answer this run carries, and `{"session_id", "runner"}` when that job's session is continued (absent when the skill had to run afresh; `runner_reason` then says why). |
 | `resolved_by` | string, optional | The resume job an answer to this job started. |
 | `runner_reason` | string, optional | Why the run differs from what was asked: a resume without a session, or a fallback runner (`fallback: claude not logged in`, `fallback: claude failed (rate_limit)`). |

@@ -28,6 +28,34 @@ describe("progress files", () => {
     expect(report.timeline[3]).toMatchObject({ type: "outcome", outcome: "completed", summary: "Merged the fix." });
   });
 
+  it("names the job in progress reports and puts the headline of an outcome on the timeline", () => {
+    const dir = jobDir();
+    reportProgress(dir, { message: "reading", title: "  Fix the\nsync 500 " });
+    reportProgress(dir, { message: "testing" });
+    recordOutcome(dir, "completed", "Long summary.", { title: "Fixed the sync 500", headline: "PR #7 merged" });
+    const report = readProgress(dir);
+    expect(report.timeline.map((e) => ("title" in e ? e.title : undefined))).toEqual(["Fix the sync 500", undefined, "Fixed the sync 500"]);
+    expect(report.timeline[2]).toMatchObject({ type: "outcome", summary: "Long summary.", headline: "PR #7 merged" });
+    expect(report.progress).toMatchObject({ state: "done", message: "PR #7 merged" });
+  });
+
+  it("offers choices: a recommended one, several picks one per line", () => {
+    const dir = jobDir();
+    const question = askQuestion(dir, { text: "Which PRs do I close?", options: ["#48", "#51", "#51", "#52"], recommended: "#52", multiple: true });
+    expect(question).toMatchObject({ options: ["#48", "#51", "#52"], recommended: "#52", multiple: true });
+    expect(readProgress(dir).timeline[0]).toMatchObject({ type: "question", options: ["#48", "#51", "#52"], recommended: "#52", multiple: true });
+    const answer = answerQuestion(dir, { text: "#52\n#48\nand rebase #51" });
+    expect(answer).toMatchObject({ text: "#52\n#48\nand rebase #51", options: ["#52", "#48"] });
+    expect(readProgress(dir).timeline[1]).toMatchObject({ type: "answer", options: ["#52", "#48"] });
+    // A single-choice question picks nothing out of the text.
+    askQuestion(dir, { text: "Merge?", options: ["yes", "no"] });
+    expect(answerQuestion(dir, { text: "yes", option: "yes" }).options).toBeUndefined();
+    // Without a question, a needs_human outcome's choices are the ones to pick from.
+    const standalone = answerQuestion(dir, { text: "A\nB", choices: { options: ["A", "B"], multiple: true } });
+    expect(standalone).toMatchObject({ options: ["A", "B"] });
+    expect(standalone.question_id).toBeUndefined();
+  });
+
   it("asks, answers and waits for the answer through the files", async () => {
     const dir = jobDir();
     expect(() => answerQuestion(dir, { text: "nothing to answer", requireQuestion: true })).toThrow(NoQuestionError);

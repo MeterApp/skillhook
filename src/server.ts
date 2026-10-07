@@ -655,7 +655,7 @@ export function createServer(deps: ServerDeps): Server {
     if (wait > 0) {
       const finished = await queue.waitFor(job.id, wait * 1000);
       if (finished && finished.status !== "queued" && finished.status !== "running") {
-        return send(res, 200, { ok: finished.status === "succeeded", ...extra, job_id: finished.id, status: finished.status, outcome: finished.outcome ?? null, result: finished.result ?? null, error: finished.error ?? null, response: finished.response ?? null, job: publicJob(finished) });
+        return send(res, 200, { ok: finished.status === "succeeded", ...extra, job_id: finished.id, title: finished.title ?? null, status: finished.status, outcome: finished.outcome ?? null, result: finished.result ?? null, error: finished.error ?? null, response: finished.response ?? null, job: publicJob(finished) });
       }
       const current = finished ?? job;
       return send(res, 202, { ok: true, ...extra, job_id: current.id, status: current.status, status_url: `/jobs/${current.id}`, note: `still ${current.status} after ${wait}s` });
@@ -907,7 +907,7 @@ export function createServer(deps: ServerDeps): Server {
       if (segments.length === 3 && segments[2] === "replay" && method === "POST") return replay(req, res, url, headers, "job", id);
       if (segments.length === 3 && segments[2] === "progress" && method === "GET") {
         const limit = Number(url.searchParams.get("limit") ?? 200);
-        return send(res, 200, { job_id: id, status: job.status, outcome: jobOutcome(job) ?? null, waiting: isWaitingForHuman(job), ...readProgress(store.pathsFor(id).dir, { timelineLimit: Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 2000) : 200 }) });
+        return send(res, 200, { job_id: id, title: job.title ?? null, status: job.status, outcome: jobOutcome(job) ?? null, waiting: isWaitingForHuman(job), ...readProgress(store.pathsFor(id).dir, { timelineLimit: Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 2000) : 200 }) });
       }
       if (segments.length === 3 && segments[2] === "answer" && method === "POST") {
         const rawBody = await readBody(req, config.max_body_bytes);

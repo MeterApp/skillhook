@@ -348,6 +348,46 @@ describe("cli", () => {
     expect(await main(["jobs", "answer", job.id, ...dir, "--json"], noText.cli)).toBe(2);
   });
 
+  it("names the job, reports a headline with typed links and offers choices from the terminal", async () => {
+    const run = io();
+    expect(await main(["run", "hello", ...dir, "--payload", '{"name":"report"}', "--json"], run.cli)).toBe(0);
+    const job = run.json().job as { id: string };
+    const jobDir = String(run.json().job_dir);
+    const inside = { SKILLHOOK_JOB_ID: job.id, SKILLHOOK_JOB_DIR: jobDir };
+    const progress = io(inside);
+    expect(await main(["job", "progress", "reading the **Sentry** event", "--title", "Fix the sync 500", "--json"], progress.cli)).toBe(0);
+    expect(progress.json()).toMatchObject({ ok: true, title: "Fix the sync 500", progress: { message: "reading the **Sentry** event" } });
+    // Several picks: one --option per pick, the picks are the answer.
+    const ask = io(inside);
+    expect(await main(["job", "ask", "Which PRs do I close?", "--option", "#48", "--option", "#51", "--option", "#52", "--recommended", "#52", "--multiple", "--wait", "0"], ask.cli)).toBe(3);
+    expect(JSON.parse(readFileSync(path.join(jobDir, "question.json"), "utf8"))).toMatchObject({ options: ["#48", "#51", "#52"], recommended: "#52", multiple: true });
+    const answer = io();
+    expect(await main(["jobs", "answer", job.id, "--option", "#52", "--option", "#48", "--no-resume", ...dir, "--json"], answer.cli)).toBe(0);
+    expect(answer.json()).toMatchObject({ delivered: "recorded", answer: { text: "#52\n#48", options: ["#52", "#48"] } });
+    const outcome = io(inside);
+    const argv = ["job", "outcome", "needs_human", "--headline", "PR #7 fixes the 500; merge it?", "--summary", "Found the null org.", "--link", "source:[SYNC-500](https://sentry.io/issues/1/)", "--link", "https://github.com/acme/api/pull/7", "--links", '[{"url":"https://ci.example.com/runs/9","kind":"test"}]', "--option", "Merge", "--option", "Close", "--recommended", "Merge", "--json"];
+    expect(await main(argv, outcome.cli)).toBe(0);
+    expect(JSON.parse(readFileSync(path.join(jobDir, "response.json"), "utf8"))).toEqual({
+      outcome: "needs_human",
+      headline: "PR #7 fixes the 500; merge it?",
+      summary: "Found the null org.",
+      links: [{ url: "https://sentry.io/issues/1/", title: "SYNC-500", kind: "source" }, "https://github.com/acme/api/pull/7", { url: "https://ci.example.com/runs/9", kind: "test" }],
+      options: ["Merge", "Close"],
+      recommended: "Merge",
+    });
+    const timeline = readFileSync(path.join(jobDir, "progress.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(timeline[0]).toMatchObject({ type: "progress", title: "Fix the sync 500" });
+    expect(timeline.at(-1)).toMatchObject({ type: "outcome", outcome: "needs_human", headline: "PR #7 fixes the 500; merge it?" });
+    // A kind that is not one, a link without a URL and --links that is not a list are refused.
+    for (const bad of [["--link", "pull-request:https://x.example.com"], ["--link", "see the PR"], ["--links", '{"url":"https://x.example.com"}']]) {
+      const refused = io(inside);
+      expect(await main(["job", "outcome", "completed", "--summary", "x", ...bad], refused.cli)).toBe(2);
+    }
+    const misnamed = io(inside);
+    await main(["job", "outcome", "completed", "--summary", "x", "--link", "pull-request:https://x.example.com"], misnamed.cli);
+    expect(misnamed.err()).toContain('"pull-request" is not a kind of link');
+  });
+
   it("resumes a job that ended needs_human with the person's answer, in this process", async () => {
     writeSkill(paths, "needy", "description: n\nskillhook:\n  response:\n    mode: structured\n  env: [FAKE_CLAUDE_OUTCOME]");
     const env = { FAKE_CLAUDE_OUTCOME: "needs_human" };

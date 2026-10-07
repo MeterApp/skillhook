@@ -38,7 +38,7 @@ export class CommandError extends Error {
 }
 
 /** Flags that never take a value. Everything else takes the next token unless it starts with `-`. */
-const BOOLEAN_FLAGS = new Set(["json", "help", "h", "dry-run", "follow", "f", "yes", "y", "force", "pretty", "stdin", "public", "serve", "funnel", "result", "prompt", "stdout", "stderr", "exec", "all", "print-config", "quiet", "q", "version", "v", "overwrite", "no-secret", "print", "watch", "verbose", "local", "install", "check", "refresh", "body", "response", "skip-filters", "waiting", "quick", "control", "observe", "keep-token", "cloud"]);
+const BOOLEAN_FLAGS = new Set(["json", "help", "h", "dry-run", "follow", "f", "yes", "y", "force", "pretty", "stdin", "public", "serve", "funnel", "result", "prompt", "stdout", "stderr", "exec", "all", "print-config", "quiet", "q", "version", "v", "overwrite", "no-secret", "print", "watch", "verbose", "local", "install", "check", "refresh", "body", "response", "skip-filters", "waiting", "quick", "control", "observe", "keep-token", "cloud", "multiple"]);
 /** Switches elsewhere that take a value in one subcommand: `cloud report --body TEXT` (`deliveries show <id> --body` is a switch). */
 const VALUE_FLAGS = new Map([["cloud report", ["body"]]]);
 

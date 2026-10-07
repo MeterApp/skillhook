@@ -319,24 +319,42 @@ A job's `status` says how the runner process ended (`succeeded`, `failed`, `time
 | `failed` | The task could not be done. Also every job whose status is not `succeeded`. |
 | `unknown` | The run succeeded but the agent reported nothing. |
 
-The agent reports it by writing `response.json` in the job directory (`{{response_path}}`, `SKILLHOOK_RESPONSE_PATH`):
+The agent reports it by writing `response.json` in the job directory (`{{response_path}}`, `SKILLHOOK_RESPONSE_PATH`), or with the job API's `job_set_outcome` / `skillhook job outcome`, which write the same file:
 
 ```json
 {
   "outcome": "needs_human",
-  "summary": "Reproduced the crash. The fix touches billing and needs a review before I open the PR.",
-  "links": ["https://github.com/acme/api/issues/42"],
+  "title": "Fix the checkout crash",
+  "headline": "Reproduced the crash; the fix touches billing, so it needs a review first",
+  "summary": "Reproduced the crash with the order from the alert.\n\n- the fix is in `billing/charge.ts`\n- **how to test**: run `npm test -- charge`",
+  "links": [
+    { "url": "https://acme.sentry.io/issues/42/", "title": "CHECKOUT-42", "kind": "source" },
+    { "url": "https://github.com/acme/api/pull/77", "title": "Draft PR #77", "kind": "pull_request" },
+    "https://github.com/acme/api/actions/runs/9"
+  ],
+  "options": ["Open the PR", "Leave it to me"],
+  "recommended": "Open the PR",
   "data": { "branch": "fix/42" }
 }
 ```
 
-`outcome` and `summary` (one paragraph for a person) are what matter; `links` and `data` are optional. The object becomes `job.response`, its outcome `job.outcome`, and both are in the `?wait=` response, in `GET /jobs?outcome=needs_human`, in `skillhook jobs list --outcome needs_human` and in the MCP `list_jobs` tool. A shell command that exits 0 counts as `completed` unless it writes `response.json`.
+| Field | What a person gets |
+|---|---|
+| `outcome` | Required: one of the outcomes above. |
+| `summary` | Required: one paragraph (or a few): what was done, what was found, what remains, how to check it. Markdown: Skillhook Cloud renders it (paragraphs, lists, task lists, `code`, code blocks, links, tables, quotes; never HTML or images). |
+| `title` | What the job was about, in a few words (at most 200 characters); it names the job instead of the skill wherever jobs are listed and becomes `job.title`. Also settable while running (`job_progress`). |
+| `headline` | The result in one line (at most 280 characters): what a list shows first. |
+| `links` | Where to look, at most 50: bare URLs, or `{url, title, kind}` with `kind` one of `source` (what started the run: the Sentry issue, the GitHub issue or pull request, the Granola meeting, the Slack thread), `pull_request`, `commit`, `issue` (an issue, ticket or task it opened or updated), `message` (a Slack message, an email, a comment), `document`, `deploy` (a deployment or preview), `test` (how to check the result: a CI run, a preview to try, a test report), `log` (logs, traces, a dashboard), `result` (the result itself when it lives elsewhere), `other`. Without a kind, Skillhook Cloud guesses one from the URL. |
+| `options`, `recommended`, `multiple` | With `needs_human`: the choices a person can pick from (at most 20 labels of up to 200 characters), the one the agent suggests, and whether several may be picked. Skillhook Cloud shows them as buttons; the pick is the answer that resumes the session (several picks are one per line). |
+| `data` | Structured details for other systems. |
+
+The object becomes `job.response`, its outcome `job.outcome` and its title `job.title`, and all of them are in the `?wait=` response, in `GET /jobs?outcome=needs_human`, in `skillhook jobs list --outcome needs_human` and in the MCP `list_jobs` tool. Fields a custom `response.schema` defines are kept as `data` and never read as a title, links or choices. A shell command that exits 0 counts as `completed` unless it writes `response.json`.
 
 `response.mode` chooses how firmly skillhook asks for it:
 
 - `text` (default): the guardrails mention the file; a skill that never writes it ends with `outcome: unknown`.
 - `file`: the guardrails ask the agent to write it before finishing.
-- `structured`: the runner is made to answer with JSON. Claude Code runs with `--json-schema` and returns the validated object as `structured_output`; Codex runs with `--output-schema <job dir>/response.schema.json` and its final message is the JSON. skillhook writes the answer to `response.json` too. The default schema is `{outcome, summary, links, data}` with `outcome` limited to the five values above; `response.schema` replaces it with your own JSON Schema, in which case the whole object is kept as `response.data` and the outcome is `completed` (or `failed` when the run failed) unless your schema has an `outcome` field.
+- `structured`: the runner is made to answer with JSON. Claude Code runs with `--json-schema` and returns the validated object as `structured_output`; Codex runs with `--output-schema <job dir>/response.schema.json` and its final message is the JSON. skillhook writes the answer to `response.json` too. The default schema is `{outcome, title, headline, summary, links, options, recommended, multiple, data}` (links as `{url, title, kind}`) with `outcome` limited to the five values above; `response.schema` replaces it with your own JSON Schema, in which case the whole object is kept as `response.data` and the outcome is `completed` (or `failed` when the run failed) unless your schema has an `outcome` field.
 
 ```yaml
 skillhook:
@@ -350,17 +368,19 @@ Nobody watches an unattended run, but the agent is not cut off: every job has a 
 
 | What | MCP tool (`agent_api: mcp`, the default for Claude and Codex) | CLI (`agent_api: cli`, the default for `runner: shell`; also works alongside `mcp`) |
 |---|---|---|
-| Progress | `job_progress {message, state?: working\|blocked, percent?, step?}` | `$SKILLHOOK_BIN job progress "<message>" [--state blocked] [--percent N] [--step S]` |
-| Ask a person | `job_ask_human {question, options?, context?, wait_seconds?}` → `{answered, answer, option, by}` | `$SKILLHOOK_BIN job ask "<question>" [--option A]... [--context TEXT] [--wait S]` (prints JSON; exit code 3 when no answer came) |
-| Outcome | `job_set_outcome {outcome, summary, links?, data?}` (same as writing `response.json`) | `$SKILLHOOK_BIN job outcome <outcome> [--summary S] [--link URL]... [--data JSON]` |
+| Progress | `job_progress {message, title?, state?: working\|blocked, percent?, step?}` | `$SKILLHOOK_BIN job progress "<message>" [--title T] [--state blocked] [--percent N] [--step S]` |
+| Ask a person | `job_ask_human {question, options?, recommended?, multiple?, context?, wait_seconds?}` → `{answered, answer, option, options?, by}` | `$SKILLHOOK_BIN job ask "<question>" [--option A]... [--recommended A] [--multiple] [--context TEXT] [--wait S]` (prints JSON; exit code 3 when no answer came) |
+| Outcome | `job_set_outcome {outcome, headline?, summary, title?, links?, options?, recommended?, multiple?, data?}` (same as writing `response.json`) | `$SKILLHOOK_BIN job outcome <outcome> [--headline H] [--summary S] [--title T] [--link LINK]... [--links JSON] [--option A]... [--recommended A] [--multiple] [--data JSON]` |
 | Note | `job_note {text}` | `$SKILLHOOK_BIN job note "<text>"` |
 | Context | `job_context {}`: the job, the files, earlier questions and answers | `$SKILLHOOK_BIN job context` |
+
+Name the job in the first progress report (`title`: "Fix the checkout crash"); the title stays until a report changes it, and a resumed job keeps it. Messages, questions, context and summaries may use Markdown. On the command line a `LINK` is a URL or `[title](URL)`, either one after an optional kind and a colon (`--link "pull_request:[PR #77](https://github.com/acme/api/pull/77)"`, `--link source:https://acme.sentry.io/issues/42/`); `--links` takes a JSON array of the same objects `response.json` uses. A question with `multiple` lets a person pick several options: the answer lists the picks one per line and `options` in the result says which they were.
 
 The MCP server is `skillhook mcp --job`, started by the runner for each job (Claude Code with `--mcp-config`, Codex with `-c mcp_servers.skillhook_job.…`) with `SKILLHOOK_JOB_ID` and `SKILLHOOK_JOB_DIR` in its environment; under a restricted Claude `permission_mode` its tools are allowed automatically (`mcp__skillhook-job`), while the CLI path needs `Bash` to be permitted. Both front ends write the same files in the job directory (`progress.jsonl`, `progress.json`, `question.json`, `answer.json`, mode 600), so a shell script can do the same with a text editor's worth of JSON, and the server watches those files for every running job: they become `job.progress`, `job.waiting_human` and `job.answered` events, the `progress`, `question` and `answer` fields of the job record, `skillhook jobs show <id>` (timeline) and `GET /jobs/<id>/progress`.
 
 Asking blocks the agent for up to `human_wait_seconds` (default 300; `wait_seconds` / `--wait` per call, at most a day). The job's timeout clock stops while it waits and resumes with the remaining time once the answer arrives, so a `timeout_seconds: 600` skill that waits ten minutes for a person still gets its ten minutes of work. A waiting job keeps its concurrency slot: for long waits the guardrails tell the agent to finish instead with outcome `needs_human`, stating exactly what is needed.
 
-A person answers with `skillhook jobs answer <id> "<answer>" [--option X] [--by NAME]`, `POST /jobs/<id>/answer` or the MCP tool `answer_job`; `skillhook jobs list --waiting` (`GET /jobs?waiting=1`, `list_jobs {waiting: true}`) shows what is waiting: jobs with an open question, and finished jobs whose outcome is `needs_human`. Two things can happen:
+A person answers with `skillhook jobs answer <id> "<answer>" [--option X] [--by NAME]` (one `--option` per pick of a multiple-choice question, with or without text), `POST /jobs/<id>/answer`, the MCP tool `answer_job` or the buttons of Skillhook Cloud's inbox; `skillhook jobs list --waiting` (`GET /jobs?waiting=1`, `list_jobs {waiting: true}`) shows what is waiting: jobs with an open question, and finished jobs whose outcome is `needs_human`. Two things can happen:
 
 - **Live**: the job is still running and waiting; the answer reaches the blocked `ask` call and the agent continues in the same session (`delivered: live`).
 - **Resumed**: the job already ended (the wait timed out, or the agent finished with `needs_human` without asking). A new job with `trigger: resume` continues the agent's session: Claude Code runs `claude -p --resume <session_id>`, Codex `codex exec resume <thread_id>`, in the same working directory, with a prompt that is only the question and the answer in a `<human_answer>` block. The original job records `resolved_by`, the new one `resume_of`, `resume` (the session) and the `question`/`answer` (`delivered: resumed`, `resume_job_id`). Without a session to reopen (a shell run, a crash before the id was captured) the skill runs afresh with the answer appended to the normal prompt and `runner_reason` says so. `--no-resume` / `resume: never` only records the answer.
