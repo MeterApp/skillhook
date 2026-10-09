@@ -4,14 +4,16 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.10.0 (2026-10-09)
+
 - `skillhook cloud login` signs in with the browser: it shows a code, opens the cloud's sign-in page, and the person
   approves it there (choosing the organisation, where they are an admin or owner, and the access: read, run or
-  admin); the cloud makes a new organisation API key for this computer,
-  named `skillhook CLI on <hostname>` under Settings → API keys, and hands it to the waiting CLI once. Nobody copies a
-  key out of the dashboard and into a terminal any more. `--no-browser` only prints the link; the link and the code go
-  to stderr, so `--json` still answers on stdout. `--key shc_…`, `--key -` (stdin) and `--key` alone (asked for at a
-  terminal) keep a key made on the dashboard, as before; in CI, where nobody can approve, login says to use them.
-  Needs a Skillhook Cloud with browser sign-in (`/api/auth/device/*`); an older one says to use `--key`.
+  admin); the cloud makes a new organisation API key for this computer, named `skillhook CLI on <hostname>` under
+  Settings → API keys, and hands it to the waiting CLI once. Nobody copies a key out of the dashboard and into a
+  terminal any more. `--no-browser` only prints the link; the link and the code go to stderr, so `--json` still
+  answers on stdout. `--key shc_…`, `--key -` (stdin) and `--key` alone (asked for at a terminal) keep a key made on
+  the dashboard, as before; in CI, where nobody can approve, login says to use them. Needs a Skillhook Cloud with
+  browser sign-in (`/api/auth/device/*`, live on https://skillhook.dev); an older one says to use `--key`.
 - `skillhook_cloud_setup` of `skillhook mcp --cloud` does the same for an agent: without a working key it opens the
   sign-in page in the person's browser and returns the link and the code to show them, keeps the key once they
   approved and loads the cloud's tools; `wait_seconds` waits for the approval. The key never passes through the
