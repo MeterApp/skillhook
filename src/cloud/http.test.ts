@@ -90,8 +90,8 @@ describe("fleetClient", () => {
 
   it("refuses without a key, with what looks like no key, under the kill switch and to plain http", () => {
     // Without a key, the command that keeps one: --url only for a cloud other than Skillhook Cloud's own.
-    expect(refusal(() => fleetClient({}, {}, { key: undefined, url: undefined }))).toMatchObject({ code: "no_key", message: "No organisation API key. Create one on https://skillhook.dev (Settings → API keys), then: skillhook cloud login   (or set SKILLHOOK_CLOUD_API_KEY)" });
-    expect(refusal(() => fleetClient({}, { url: "https://cloud.example" }, { key: undefined, url: undefined })).message).toContain("Create one on https://cloud.example (Settings → API keys), then: skillhook cloud login --url https://cloud.example   (or set");
+    expect(refusal(() => fleetClient({}, {}, { key: undefined, url: undefined }))).toMatchObject({ code: "no_key", message: "No organisation API key. Sign in with the browser: skillhook cloud login   (or set SKILLHOOK_CLOUD_API_KEY)" });
+    expect(refusal(() => fleetClient({}, { url: "https://cloud.example" }, { key: undefined, url: undefined })).message).toContain("Sign in with the browser: skillhook cloud login --url https://cloud.example   (or set");
     expect(refusal(() => fleetClient({}, {}, { key: "shm_machine-token", url: undefined }))).toMatchObject({ code: "invalid_key" });
     expect(refusal(() => fleetClient({}, {}, { key: `${KEY}\nshc_placeholder-second-line`, url: undefined }))).toMatchObject({ code: "invalid_key" });
     expect(refusal(() => fleetClient({ SKILLHOOK_NO_CLOUD: "1" }, {}, { key: KEY, url: undefined }))).toMatchObject({ code: "disabled" });

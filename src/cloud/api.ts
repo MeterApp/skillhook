@@ -5,7 +5,7 @@
 // HTTPS, only when a person runs one of these commands or their agent calls one of those tools. The answers are the
 // cloud's own records, parsed loosely: a newer cloud may say more.
 import { z } from "zod";
-import { readEnvFile } from "../env.js";
+import { ensureSecretFileMode, readEnvFile, upsertEnvVar } from "../env.js";
 import type { Paths } from "../paths.js";
 import { CLOUD_API_KEY_ENV, CLOUD_API_URL_ENV, cloudDisabledByEnv, DEFAULT_CLOUD_URL, InsecureCloudUrlError, isSecureCloudUrl, resolveCloudUrl } from "./config.js";
 import { CloudHttpError, cloudRequest } from "./http.js";
@@ -85,6 +85,16 @@ export function storedApiCredentials(paths: Paths, env: NodeJS.ProcessEnv): ApiC
   return { key: fromEnvironment, url: env[CLOUD_API_URL_ENV]?.trim() || (fromEnvironment === kept.key ? kept.url : undefined) };
 }
 
+/**
+ * Keeps a key in `.env` (mode 600) with the cloud it was checked against, as `skillhook cloud login` does (and the
+ * `skillhook_cloud_setup` tool after a browser sign-in); it goes to that cloud and nowhere else from then on.
+ */
+export function keepApiKey(paths: Paths, key: string, url: string): void {
+  upsertEnvVar(paths.envFile, CLOUD_API_KEY_ENV, key);
+  upsertEnvVar(paths.envFile, CLOUD_API_URL_ENV, url);
+  ensureSecretFileMode(paths.envFile);
+}
+
 export interface FleetClient {
   /** The cloud the requests go to. */
   url: string;
@@ -104,7 +114,7 @@ export function fleetClient(env: NodeJS.ProcessEnv, cloud: { url?: string }, cre
   const { key } = credentials;
   if (cloudDisabledByEnv(env)) throw new CloudApiError("SKILLHOOK_NO_CLOUD is set: nothing goes to Skillhook Cloud from this environment. Unset it to use the fleet.", undefined, "disabled");
   const url = resolveCloudUrl(env, cloud, options.url ?? credentials.url);
-  if (!key) throw new CloudApiError(`No organisation API key. Create one on ${url} (Settings → API keys), then: ${loginCommand(url)}   (or set ${CLOUD_API_KEY_ENV})`, undefined, "no_key");
+  if (!key) throw new CloudApiError(`No organisation API key. Sign in with the browser: ${loginCommand(url)}   (or set ${CLOUD_API_KEY_ENV})`, undefined, "no_key");
   if (!API_KEY_RE.test(key)) throw new CloudApiError(`${CLOUD_API_KEY_ENV} does not hold an organisation API key (shc_ followed by letters, digits, - and _); run: skillhook cloud login`, undefined, "invalid_key");
   if (!isSecureCloudUrl(url, env)) throw new CloudApiError(new InsecureCloudUrlError(url).message, undefined, "insecure_url");
   const send = async <T,>(method: "GET" | "POST", path: string, schema: z.ZodType<T>, body: unknown, timeoutMs: number) => {
@@ -135,10 +145,10 @@ export function loginCommand(url: string): string {
 export function describeApiFailure(error: CloudHttpError, url: string, method: "GET" | "POST" = "GET"): string {
   const said = `${error.code}: ${error.message}${error.requestId ? ` (request ${error.requestId})` : ""}`;
   if (error.status === 0) return `Could not reach ${url} (${error.message}). If the cloud moved: skillhook cloud login --url https://<its address>`;
-  if (error.status === 401) return `${url} refused the API key (${said}). Log in with a valid one: skillhook cloud login --url ${url} --key -   (keys: Settings → API keys on that cloud's dashboard)`;
+  if (error.status === 401) return `${url} refused the API key (${said}). Log in again: ${loginCommand(url)}`;
   // A read needs fleet:read; a tool the cloud refused names the scope it needs (and what the key has).
-  if (error.status === 403 && method === "GET") return `The API key is not allowed to read this (${said}); it needs the fleet:read scope. Create a key with it under Settings → API keys, then: skillhook cloud login --key -`;
-  if (error.status === 403) return `The API key is not allowed to do this (${said}). Reading needs the fleet:read scope, acting fleet:run, changing fleet:admin: create a key with the one it needs under Settings → API keys, then: skillhook cloud login`;
+  if (error.status === 403 && method === "GET") return `The API key is not allowed to read this (${said}); it needs the fleet:read scope. Log in again with read access: ${loginCommand(url)}`;
+  if (error.status === 403) return `The API key is not allowed to do this (${said}). Reading needs the fleet:read scope, acting fleet:run, changing fleet:admin: log in again and choose the access it needs, ${loginCommand(url)}`;
   return `${url}: ${said}`;
 }
 

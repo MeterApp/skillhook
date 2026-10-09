@@ -1,4 +1,4 @@
-// The one HTTP client for Skillhook Cloud (the link, pairing, `cloud report` and the API-key commands): bearer token,
+// The one HTTP client for Skillhook Cloud (the link, pairing, `cloud report`, `cloud login` and the API-key commands): bearer token,
 // protocol header, a timeout, JSON in and out. The token is never logged or included in an error message.
 import { VERSION } from "../version.js";
 import { PROTOCOL_VERSION } from "./protocol.js";
@@ -36,7 +36,8 @@ export interface CloudResponse<T = unknown> {
 
 /**
  * Sends one request; non-2xx answers become `CloudHttpError` with what the body says when it is JSON: `error` / `message`
- * from the agent API, `code` / `detail` / `request_id` from the public API's RFC 9457 problems.
+ * from the agent API, `code` / `detail` / `request_id` from the public API's RFC 9457 problems, `error` /
+ * `error_description` from the OAuth-style answers of a browser sign-in (`cloud login`).
  */
 export async function cloudRequest<T = unknown>(baseUrl: string, path: string, options: CloudRequestOptions = {}): Promise<CloudResponse<T>> {
   // The runtime quotes a header value it refuses in its error; a token that could not be a header never gets that far.
@@ -77,7 +78,7 @@ export async function cloudRequest<T = unknown>(baseUrl: string, path: string, o
     const retryHeader = Number(response.headers.get("retry-after"));
     const retryAfterMs = typeof record.retry_after_ms === "number" ? record.retry_after_ms : Number.isFinite(retryHeader) && retryHeader > 0 ? retryHeader * 1000 : undefined;
     const requestId = field("request_id") ?? response.headers.get("x-request-id") ?? undefined;
-    throw new CloudHttpError(response.status, field("error", "code") ?? `http_${response.status}`, field("message", "detail", "title") ?? `${response.status} ${response.statusText}`.trim(), retryAfterMs, typeof record.min_protocol_version === "number" ? record.min_protocol_version : undefined, requestId);
+    throw new CloudHttpError(response.status, field("error", "code") ?? `http_${response.status}`, field("message", "detail", "error_description", "title") ?? `${response.status} ${response.statusText}`.trim(), retryAfterMs, typeof record.min_protocol_version === "number" ? record.min_protocol_version : undefined, requestId);
   }
   return { status: response.status, body: parsed as T, headers: response.headers };
 }

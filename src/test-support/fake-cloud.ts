@@ -3,7 +3,7 @@
 // protocol schemas and keeps what it received for assertions. The public API (`/api/v1`): answers the reads of the
 // API-key commands for one organisation API key, a small tool catalogue (`/tools`, with the scope each tool needs and
 // what `apiScopes` allows) and its calls, and a secret sealed to the requester's key, with RFC 9457 problems like the
-// real one.
+// real one. Browser sign-ins (`/api/auth/device/*`, RFC 8628): each poll answered from a script, then `apiKey` once.
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { CommandResultSchema, IssueReportRequestSchema, PairRequestSchema, SyncRequestSchema, type Command, type CommandResult, type Hints, type IngressAck, type IngressItem, type IssueReportRequest, type PairRequest, type SyncRequest } from "../cloud/protocol.js";
 import { sealForRecipient } from "../cloud/seal.js";
@@ -92,6 +92,12 @@ export class FakeCloud {
   apiScopes: Scope[] = ["fleet:read"];
   /** `missing` answers `/tools` like a cloud from before the catalogue (404). */
   catalogMode: "ok" | "missing" = "ok";
+  /** Browser sign-ins started (`POST /api/auth/device/code`): the name the CLI gave and the bearer it sent (none). */
+  readonly signIns: { deviceCode: string; userCode: string; clientName: unknown; authorization: string | undefined; polls: number; claimed: boolean }[] = [];
+  /** How the next polls are answered, one each, before the sign-in is approved: then `apiKey` with `apiScopes`. */
+  readonly signInScript: ("pending" | "slow_down" | "500" | "deny" | "expire")[] = [];
+  /** `missing` answers like a cloud from before browser sign-in (404). */
+  signInMode: "ok" | "missing" = "ok";
   /** Every tool call: its name and input. */
   readonly toolCalls: { name: string; input: Record<string, unknown> }[] = [];
   /** Secret requests (`POST /machines/<m>/secrets`): their body; each is sealed on the second claim, then `exists`. */
@@ -232,6 +238,7 @@ export class FakeCloud {
       }
       return this.reply(res, 200, this.fileIssue(parsed.data));
     }
+    if (url.pathname.startsWith("/api/auth/device/")) return await this.handleSignIn(req, res, url);
     if (url.pathname.startsWith("/api/v1/")) return await this.handleApi(req, res, url);
     if (req.method === "POST" && url.pathname === "/api/agent/sync") {
       this.authHeaders.push(req.headers.authorization);
@@ -307,6 +314,41 @@ export class FakeCloud {
     const answer = { ok: true, issue_id: `iss_${number}`, number, url: `${this.url}/o/fake/issues/${number}`, acknowledged: Boolean(report.contact_email) };
     if (report.report_id) this.issueAnswers.set(report.report_id, answer);
     return answer;
+  }
+
+  /** RFC 8628: the codes, then each poll as the script says, then the key once and `invalid_grant` after that. */
+  private async handleSignIn(req: IncomingMessage, res: import("node:http").ServerResponse, url: URL): Promise<void> {
+    if (this.signInMode === "missing" || req.method !== "POST") return this.reply(res, 404, "<!doctype html><title>404</title>" as unknown as Record<string, unknown>);
+    const body = (await readJson(req)) as Record<string, unknown>;
+    const oauth = (error: string, description: string, status = 400) => this.reply(res, status, { error, error_description: description, request_id: `req_signin_${this.signIns.length}` });
+    if (url.pathname === "/api/auth/device/code") {
+      const n = this.signIns.length + 1;
+      const signIn = { deviceCode: `placeholder-device-code-${n}-0123456789abcdef`, userCode: "WXYZ-2345", clientName: body.client_name, authorization: req.headers.authorization, polls: 0, claimed: false };
+      this.signIns.push(signIn);
+      this.notify();
+      return this.reply(res, 200, { device_code: signIn.deviceCode, user_code: signIn.userCode, verification_uri: `${this.url}/activate`, verification_uri_complete: `${this.url}/activate?user_code=${signIn.userCode}`, expires_in: 600, interval: 1 });
+    }
+    if (url.pathname !== "/api/auth/device/token") return this.reply(res, 404, { ok: false, error: "not_found", message: "no such route" });
+    const signIn = this.signIns.find((s) => s.deviceCode === body.device_code);
+    if (!signIn) return oauth("invalid_grant", "No sign-in waits for this device code.");
+    signIn.polls++;
+    this.notify();
+    if (signIn.claimed) return oauth("invalid_grant", "No sign-in waits for this device code: it was already used, or never started.");
+    switch (this.signInScript.shift()) {
+      case "pending":
+        return oauth("authorization_pending", "Waiting for the sign-in to be approved in the browser.");
+      case "slow_down":
+        return oauth("slow_down", "Polling too often from this address; wait five seconds longer between polls.");
+      case "500":
+        return this.reply(res, 500, { ok: false, error: "server_error", message: "try again" });
+      case "deny":
+        return oauth("access_denied", "The sign-in was cancelled in the browser.");
+      case "expire":
+        return oauth("expired_token", "The sign-in expired before it was approved; start a new one.");
+      default:
+        signIn.claimed = true;
+        return this.reply(res, 200, { access_token: this.apiKey, token_type: "Bearer", scope: this.apiScopes.join(" ") });
+    }
   }
 
   /** RFC 9457 problem details, as the public API answers errors. */

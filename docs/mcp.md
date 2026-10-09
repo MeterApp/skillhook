@@ -135,9 +135,9 @@ claude mcp add skillhook-cloud -- skillhook mcp --cloud
 codex mcp add skillhook-cloud -- skillhook mcp --cloud
 ```
 
-It needs an organisation API key, which the person keeps here once with `skillhook cloud login` (with `--url` for a
-deployment other than Skillhook Cloud itself, `https://skillhook.dev`;
-[cloud.md](cloud.md#the-whole-organisation-with-an-api-key)). When it starts it reads the cloud's catalogue of tools
+It needs an organisation API key, which `skillhook cloud login` gets once by signing in with the browser (with `--url`
+for a deployment other than Skillhook Cloud itself, `https://skillhook.dev`;
+[cloud.md](cloud.md#the-whole-organisation-with-an-api-key)), or the setup tool below for the agent. When it starts it reads the cloud's catalogue of tools
 (`GET /api/v1/tools`, waiting at most 8 s) and offers each one the key's scope allows, with the cloud's own name,
 description and input schema; a call goes to `POST /api/v1/tools/<name>` with the key (only to the cloud the key was
 checked against at login), and the cloud validates, authorises and audits it. So the tools are the cloud's as of the
@@ -153,9 +153,15 @@ One tool is local: `generate_secret {machine, skill, force?}` (admin keys) has t
 once; the cloud only forwards the sealed value. A catalogue tool of that name never replaces it.
 
 Without a key (or while the cloud cannot be reached, or under `SKILLHOOK_NO_CLOUD=1`) the server offers only
-`skillhook_cloud_setup`: it says what is missing, and once the person logged in a call loads the cloud's tools (a
-`tools/list_changed` notification; reconnect the server if the client ignores it). Logging in stays with the person in
-a terminal, so a key never passes through a conversation.
+`skillhook_cloud_setup {wait_seconds?}`. It says what is missing; when a sign-in would fix it (no key, or one the cloud
+refused) it signs in with the browser like `skillhook cloud login`: it opens the sign-in page in the person's browser on
+this computer and returns at once with the link, the code they check on it and whether the browser opened, for the
+agent to show them. The person approves on the cloud; the key goes into `.env` and the cloud's tools load (a
+`tools/list_changed` notification; reconnect the server if the client ignores it). Calling it again reports the same
+sign-in (`wait_seconds`, up to 120, waits for the approval), then `connected: true`; after a cancelled or expired one it
+starts another. The key never passes through the conversation, and the sign-in goes only to the cloud the key would
+(the one kept with it, else the machine's). A key in the server's environment (`SKILLHOOK_CLOUD_API_KEY`) wins over a
+kept one, so then it says to fix that instead.
 
 ## The hosted MCP server of Skillhook Cloud
 
