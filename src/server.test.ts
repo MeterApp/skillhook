@@ -77,7 +77,8 @@ beforeAll(async () => {
     FAKE_CLAUDE_FAIL: "simulated failure",
     FAKE_CLAUDE_SLEEP_MS: "4000",
     FAKE_CLAUDE_OUTCOME: "needs_human",
-    FAKE_CLAUDE_WRITE_RESPONSE: '{"outcome":"nothing_to_do","summary":"Nothing to do here","links":["https://example.com/x"]}',
+    FAKE_CLAUDE_WRITE_RESPONSE: '{"outcome":"nothing_to_do","title":"Check the order","headline":"Nothing to do: already shipped","summary":"Nothing to do here","links":["https://example.com/x",{"url":"https://example.com/order/1","title":"Order 1","kind":"source"}]}',
+
     FAKE_CODEX_OUTCOME: "partial",
     SKILLHOOK_SECRET_ASKER: "ask",
     SKILLHOOK_SECRET_ASKALONE: "alone",
@@ -542,7 +543,7 @@ describe("HTTP surface", () => {
     const detail = await json(await fetch(`${base}/jobs/${stJob.id}?include=response`, { headers: auth }));
     expect(JSON.parse(String((detail.artifacts as Record<string, string>).response))).toMatchObject({ outcome: "needs_human" });
     const fi = await json(await fetch(`${base}/hooks/filer?wait=20`, { method: "POST", body: "{}", headers: { authorization: "Bearer fi" } }));
-    expect(fi).toMatchObject({ status: "succeeded", outcome: "nothing_to_do", response: { outcome: "nothing_to_do", summary: "Nothing to do here", links: ["https://example.com/x"] } });
+    expect(fi).toMatchObject({ status: "succeeded", outcome: "nothing_to_do", title: "Check the order", response: { outcome: "nothing_to_do", title: "Check the order", headline: "Nothing to do: already shipped", summary: "Nothing to do here", links: ["https://example.com/x", { url: "https://example.com/order/1", title: "Order 1", kind: "source" }] } });
     const cs = await json(await fetch(`${base}/hooks/codexst?wait=20`, { method: "POST", body: "{}", headers: { authorization: "Bearer cs" } }));
     expect(cs).toMatchObject({ status: "succeeded", outcome: "partial", response: { outcome: "partial" } });
     expect(String(cs.result)).toContain("structured codex");
@@ -655,7 +656,7 @@ describe("HTTP surface", () => {
     const askedAt = Date.now();
     expect(got.some((event) => event.event === "job.progress" && (JSON.parse(event.data) as { data: { entry: { message: string } } }).data.entry.message === "looking at the payload")).toBe(true);
     const asked = JSON.parse(got.at(-1)!.data) as { data: { job: { id: string; status: string; progress: { state: string }; question: { id: string; text: string; options: string[] } }; question: { text: string } } };
-    expect(asked.data.job).toMatchObject({ id, status: "running", progress: { state: "waiting_human" }, question: { id: "fakeq", text: "Deploy A or B?", options: ["A", "B"] } });
+    expect(asked.data.job).toMatchObject({ id, title: "Fake task", status: "running", progress: { state: "waiting_human" }, question: { id: "fakeq", text: "Deploy A or B?", options: ["A", "B"], recommended: "B" } });
     // Meanwhile the job shows up as waiting, with its progress and question.
     const list = (await json(await fetch(`${base}/jobs?waiting=1`, { headers: auth }))) as unknown as { jobs: { id: string }[] };
     expect(list.jobs.map((j) => j.id)).toContain(id);
@@ -710,7 +711,7 @@ describe("HTTP surface", () => {
     const original = store.get(aloneId)!;
     expect(original).toMatchObject({ resolved_by: resumeId, answer: { text: "Go with B" }, question: { answered_at: expect.any(String) } });
     const resumed = store.get(resumeId)!;
-    expect(resumed).toMatchObject({ trigger: "resume", status: "succeeded", skill: "askalone", runner: "claude", resume_of: aloneId, resume: { session_id: original.session_id, runner: "claude" }, question: { id: "fakeq" }, answer: { text: "Go with B", by: "grace" }, source: { method: "RESUME" }, cwd: original.cwd });
+    expect(resumed).toMatchObject({ trigger: "resume", status: "succeeded", skill: "askalone", title: "Fake task", runner: "claude", resume_of: aloneId, resume: { session_id: original.session_id, runner: "claude" }, question: { id: "fakeq" }, answer: { text: "Go with B", by: "grace" }, source: { method: "RESUME" }, cwd: original.cwd });
     expect(resumed.command!.join(" ")).toContain(`--resume ${original.session_id}`);
     expect(resumed.result).toContain(`resumed=${original.session_id}`);
     expect(reply.resume_job).toMatchObject({ id: resumeId, status: "succeeded" });
@@ -718,6 +719,7 @@ describe("HTTP surface", () => {
     expect(prompt).toContain("# Skill: askalone (resumed)");
     expect(prompt).toContain("<human_question>\nDeploy A or B?\nOptions: A | B\n</human_question>");
     expect(prompt).toContain("<human_answer>\nB: Go with B\n(answered by grace)\n</human_answer>");
+    expect(original.title).toBe("Fake task");
     expect(store.readEvent(resumeId)).toMatchObject({ trigger: "resume", payload: { env: "stage" }, headers: { "x-skillhook-resume-of": aloneId } });
     const after = (await json(await fetch(`${base}/jobs?waiting=1`, { headers: auth }))) as unknown as { jobs: { id: string }[] };
     expect(after.jobs.map((j) => j.id)).not.toContain(aloneId);

@@ -4,8 +4,9 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
-- `skillhook cloud login` signs in with the browser: it shows a code, opens the cloud's sign-in page, and the person approves it there (choosing the organisation, where they are an
-  admin or owner, and the access: read, run or admin); the cloud makes a new organisation API key for this computer,
+- `skillhook cloud login` signs in with the browser: it shows a code, opens the cloud's sign-in page, and the person
+  approves it there (choosing the organisation, where they are an admin or owner, and the access: read, run or
+  admin); the cloud makes a new organisation API key for this computer,
   named `skillhook CLI on <hostname>` under Settings → API keys, and hands it to the waiting CLI once. Nobody copies a
   key out of the dashboard and into a terminal any more. `--no-browser` only prints the link; the link and the code go
   to stderr, so `--json` still answers on stdout. `--key shc_…`, `--key -` (stdin) and `--key` alone (asked for at a
@@ -17,6 +18,65 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
   conversation, and the sign-in goes only to the cloud the key would.
 - The messages that sent people to Settings → API keys to make a key first (no key, a refused key, a missing scope)
   say to run `skillhook cloud login` instead.
+
+## 0.9.1 (2026-10-07)
+
+- `skillhook init` names pairing with Skillhook Cloud (https://skillhook.dev) among its next steps, and the `cloud link`
+  hint of `skillhook doctor` and `skillhook --help` carry the URL. The README, `docs/`, `llms.txt` and the plugin skills
+  point at Skillhook Cloud where it is the hosted alternative: hosted webhook URLs for a machine that sleeps or has no
+  public URL, every machine's deliveries and jobs on record with replay, the inbox, alerts, teams, the hosted MCP server
+  at https://skillhook.dev/api/mcp, and the plans.
+
+## 0.9.0 (2026-10-07)
+
+- skillhook updates itself. At most once an hour any command (from a person, a script, an agent or an MCP host) starts
+  a detached `skillhook update --refresh` when the cached answer is stale; with the new `auto_update` setting (default
+  `true`) it installs a newer version with the package manager that installed skillhook: npm into the same global
+  prefix, through the npm beside the running Node, or pnpm, bun, yarn or Volta. One install runs at a time
+  (`<home>/update.lock`), its output goes to `<home>/logs/update.log`, and a version that failed is tried again after a
+  day. No command waits for it and nothing is printed for scripts or agents; at a terminal skillhook says once that it
+  updated itself, and mentions a newer version only when it will not install it (`auto_update: false`, a source
+  checkout, an npx cache, a project's dependency, a global directory the user cannot write, a failed install).
+  Before, the check ran only after interactive commands and installed nothing, so a skillhook only agents used never
+  moved.
+- `skillhook serve` checks hourly (was daily), starts the background install, and restarts itself onto a newer
+  installed version once no job is queued or running when launchd or systemd runs it, whoever installed it (the
+  background update, `update --install`, the cloud's `update.install` or npm). `skillhook serve` run by hand only logs
+  that a restart would pick it up.
+- `skillhook update --install` also brings the skillhook plugin up to date wherever it is installed: `claude plugin
+  marketplace update` and `claude plugin update` in Claude Code, `codex plugin marketplace upgrade` in Codex.
+  `--no-plugins` skips that.
+- An npm upgrade now targets the global prefix this copy runs from (`npm install -g --prefix …`), so a machine with
+  several Nodes (nvm, Homebrew) upgrades the copy that runs; `doctor`'s version hint says when the background update
+  will install it, or why it did not.
+
+## 0.8.0 (2026-10-07)
+
+- Reports people can act on: a job says what it is about, how far it got, what came of it in one line
+  and where to look, and offers choices for a person to pick from. Skillhook Cloud's inbox shows all of
+  it, Markdown included.
+  - **A title** for the job: `job_progress {title}` / `skillhook job progress --title "…"` (it stays
+    until a later report changes it), or `title` in `job_set_outcome` and `response.json`. It becomes
+    `job.title`, is in the `?wait=` response and `GET /jobs/<id>/progress`, and a resume job inherits it.
+  - **A headline**, the result in one line (at most 280 characters), next to the summary:
+    `job_set_outcome {headline}`, `skillhook job outcome --headline`, `headline` in `response.json`.
+    It is the last progress message once the outcome is reported.
+  - **Typed links**: a link is a URL, as before, or `{url, title, kind}` with `kind` one of `source`
+    (what started the run), `pull_request`, `commit`, `issue`, `message`, `document`, `deploy`, `test`
+    (how to check the result), `log`, `result` or `other`. On the command line,
+    `--link "pull_request:[PR #7](https://…)"` (the kind and the title are optional) and `--links JSON`.
+    A misspelled kind is refused instead of ending up inside the URL.
+  - **Choices**: questions take `recommended` (the option the agent suggests) and `multiple` (a person
+    may pick several; the answer lists them one per line and `answer.options` says which they were, and
+    `job_ask_human` / `skillhook job ask` return them as `options`). A `needs_human` outcome can offer
+    `options` (with `recommended` and `multiple`) too: a person picks one and the session resumes with it.
+    `skillhook jobs answer <id> --option A --option B` and the MCP `answer_job {options}` answer with
+    several picks.
+  - The guardrails ask every run for a title, a headline and its links, and tell it about choices; the
+    default `response.schema` of `response.mode: structured` has the new fields (links as objects).
+    `skillhook jobs list|show` print titles, headlines, links and choices.
+  - The cloud protocol names the link kinds (`LINK_KINDS`) and the limits of a report (`REPORT_LIMITS`);
+    records stay loose, so nothing else about the protocol changes.
 
 ## 0.7.1 (2026-10-06)
 

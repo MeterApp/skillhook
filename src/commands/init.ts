@@ -70,6 +70,7 @@ export async function initCommand(ctx: Ctx): Promise<number> {
     "skillhook send hello --wait 60        # POST a signed test webhook to the running server",
     "skillhook skills new my-skill         # add your own skill",
     "skillhook link ~/dev/your-repo        # serve the hooks a repository declares in its skillhook.yaml",
+    "skillhook cloud connect --code XXXX-XXXX   # optional: pair with Skillhook Cloud (https://skillhook.dev); the dashboard shows the code",
   ];
   const human = [
     `Initialized skillhook in ${paths.home}`,

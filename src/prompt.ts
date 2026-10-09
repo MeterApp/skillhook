@@ -83,13 +83,16 @@ function describeTrigger(trigger: WebhookEvent["trigger"]): string {
 
 const OUTCOME_VALUES = '"completed", "partial", "needs_human", "nothing_to_do" or "failed"';
 
+/** What the links and choices of a report are for (one sentence, shared by every response mode). */
+const REPORT_HINT = 'Links point people at what started the run (kind "source"), what you opened or changed (pull_request, issue, message, document, deploy) and how to check the result (test); with "needs_human", "options" (and the one you "recommended") are choices the person can pick with one click.';
+
 /** The guardrail line that tells the agent how to report the task outcome, per the skill's `response.mode`. */
 function describeResponse(input: PromptInput): string {
   const mode = input.skill.config.response?.mode ?? "text";
-  const shape = `{"outcome": ${OUTCOME_VALUES}, "summary": "one paragraph for a person", "links": ["https://…"], "data": {…}}`;
-  if (mode === "structured") return `- Your final answer must be the JSON object the schema asks for (outcome ${OUTCOME_VALUES}, summary, links, data) and nothing else. Use "needs_human" when a person must decide or act before the task is done, "nothing_to_do" when the event needed no action.`;
-  if (mode === "file") return `- Before you finish, write ${input.responsePath} as JSON: ${shape}. That file is how the outcome of this job is read; use "needs_human" when a person must decide or act before the task is done, "nothing_to_do" when the event needed no action.`;
-  return `- To report the outcome of the task, write ${input.responsePath} as JSON: ${shape}; use "needs_human" when a person must decide or act before the task is done, "nothing_to_do" when the event needed no action. Without it the job is recorded as done but with an unknown outcome.`;
+  const shape = `{"outcome": ${OUTCOME_VALUES}, "title": "what this run was about, in a few words", "headline": "the result in one line", "summary": "one paragraph for a person (Markdown)", "links": [{"url": "https://…", "title": "…", "kind": "source"}], "data": {…}}`;
+  if (mode === "structured") return `- Your final answer must be the JSON object the schema asks for (outcome ${OUTCOME_VALUES}, title, headline, summary, links, data) and nothing else. Use "needs_human" when a person must decide or act before the task is done, "nothing_to_do" when the event needed no action. ${REPORT_HINT}`;
+  if (mode === "file") return `- Before you finish, write ${input.responsePath} as JSON: ${shape}. That file is how the outcome of this job is read; use "needs_human" when a person must decide or act before the task is done, "nothing_to_do" when the event needed no action. ${REPORT_HINT}`;
+  return `- To report the outcome of the task, write ${input.responsePath} as JSON: ${shape}; use "needs_human" when a person must decide or act before the task is done, "nothing_to_do" when the event needed no action. ${REPORT_HINT} Without it the job is recorded as done but with an unknown outcome.`;
 }
 
 /** The guardrail lines about the job API: progress reports and asking a person, per `agent_api`. */
@@ -101,10 +104,10 @@ function describeAgentApi(input: PromptInput): string[] {
   if (mode === "cli") {
     const bin = input.bin ?? "skillhook";
     return [
-      `- Report progress at meaningful steps with \`${bin} job progress "<what you are doing>"\` (add --percent N). When you need a decision or information from a person, run \`${bin} job ask "<question>" --option A --option B\`: it waits up to ${minutes} min for an answer and prints it as JSON. ${later}`,
+      `- Report progress at meaningful steps with \`${bin} job progress "<what you are doing>"\` (add --percent N; name the job once with --title "<what this run is about>"). When you need a decision or information from a person, run \`${bin} job ask "<question>" --option A --option B\` (--recommended A for the one you suggest): it waits up to ${minutes} min for an answer and prints it as JSON. ${later}`,
     ];
   }
-  return [`- Report progress at meaningful steps with the job_progress tool. When you need a decision or information from a person, call job_ask_human with a precise question (and options when there are a few); it waits up to ${minutes} min for an answer and returns it. ${later}`];
+  return [`- Report progress at meaningful steps with the job_progress tool, and name the job in the first report (title: what this run is about). When you need a decision or information from a person, call job_ask_human with a precise question (and options when there are a few, recommended for the one you suggest); it waits up to ${minutes} min for an answer and returns it. ${later}`];
 }
 
 function describeResume(input: PromptInput): string[] {
@@ -142,9 +145,9 @@ function resumeSection(resume: NonNullable<PromptInput["resume"]>): string[] {
     "",
     `# A person answered (job ${resume.originalJob})`,
     "",
-    ...(question ? ["<human_question>", question.text, ...(question.options?.length ? [`Options: ${question.options.join(" | ")}`] : []), "</human_question>", ""] : []),
+    ...(question ? ["<human_question>", question.text, ...(question.options?.length ? [`Options${question.multiple ? " (several may be picked)" : ""}: ${question.options.join(" | ")}`] : []), "</human_question>", ""] : []),
     "<human_answer>",
-    resume.answer.option ? `${resume.answer.option}: ${resume.answer.text}` : resume.answer.text,
+    resume.answer.option && resume.answer.option !== resume.answer.text ? `${resume.answer.option}: ${resume.answer.text}` : resume.answer.text,
     ...(resume.answer.by ? [`(answered by ${resume.answer.by})`] : []),
     "</human_answer>",
     "",

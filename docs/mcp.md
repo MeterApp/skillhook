@@ -90,7 +90,7 @@ Every tool returns a text block (a one-line summary followed by JSON) and the sa
 | `send_test_webhook` | `name`; optional `payload`, `public`, `base_url`, `wait_seconds` (max 600) | Prove the HTTP path: signs the payload the way the skill's `auth` expects (bearer, HMAC, Standard Webhooks, Stripe, Slack, …) and POSTs it to `/hooks/<name>` on the local server by default, the public URL with `public: true`, or any `base_url`. Returns the HTTP status, the names of the signed headers and the response body. |
 | `list_jobs` | optional `skill`, `status`, `outcome` (`completed`, `partial`, `needs_human`, `nothing_to_do`, `failed`, `unknown`), `trigger`, `failure` (`auth`, `usage_limit`, `rate_limit`, `budget`, `max_turns`, `not_found`, `timeout`, `crash`, `unknown`), `waiting` (boolean), `since` (ISO-8601), `after` (the previous call's `next_after`), `limit` (default 20, max 200) | Recent jobs, newest first, with `next_after` for the next page. `status` is how the process ended, `outcome` whether the task was done; `waiting: true` lists only the jobs waiting for a person (an open question, or outcome `needs_human` nobody answered yet). |
 | `get_job` | `id`; optional `include` (any of `result`, `response`, `prompt`, `stdout`, `stderr`, `payload`, `event`; default `["result"]`) | One job (with `outcome`, `response` and, when the agent reported any, `progress`: current state, pending question, answer, timeline) plus its directory path and the requested artifacts (each capped at the last 64 KiB). |
-| `answer_job` | `id`, `answer`; optional `option`, `by`, `resume` (`auto` \| `never`), `wait_seconds` (default 120) | A person's answer to a waiting job. Delivered live when the job is still running and waiting (`delivered: live`); otherwise recorded and, unless `resume: never`, a new job with trigger `resume` continues the agent's session with it (`delivered: resumed`, `resume_job`). Through the running server when there is one, otherwise the resume job runs in-process. |
+| `answer_job` | `id`, `answer` (may be left out when `option` or `options` say it all); optional `option`, `options` (the picks of a multiple-choice question), `by`, `resume` (`auto` \| `never`), `wait_seconds` (default 120) | A person's answer to a waiting job. Delivered live when the job is still running and waiting (`delivered: live`); otherwise recorded and, unless `resume: never`, a new job with trigger `resume` continues the agent's session with it (`delivered: resumed`, `resume_job`). Through the running server when there is one, otherwise the resume job runs in-process. |
 | `cancel_job` | `id` | Cancel a queued or running job through the running server's admin API. Fails when no server is running (jobs started by `skillhook run` must be stopped by killing that process). |
 | `list_deliveries` | optional `skill`, `outcome` (`accepted`, `duplicate`, `in_flight`, `skipped`, `rejected`, `challenge`, `error`), `since`, `after`, `limit` (default 20, max 200) | Every webhook the server received, newest first, with what became of it: the answer to "why did that webhook not run". |
 | `get_stats` | optional `since` (`24h`, `7d`, `2w` or ISO-8601), `until`, `skill` | Numbers over jobs and deliveries: by status, outcome, trigger, runner and failure kind; success and completion rates; duration and queue-wait percentiles; cost and tokens; deliveries by outcome and HTTP status; per skill. |
@@ -163,15 +163,25 @@ starts another. The key never passes through the conversation, and the sign-in g
 (the one kept with it, else the machine's). A key in the server's environment (`SKILLHOOK_CLOUD_API_KEY`) wins over a
 kept one, so then it says to fix that instead.
 
+## The hosted MCP server of Skillhook Cloud
+
+Skillhook Cloud serves the same organisation tools itself, at `https://skillhook.dev/api/mcp` (Streamable HTTP, stateless), for clients that connect to a URL instead of starting a process: the claude.ai and ChatGPT connectors sign in with OAuth in the browser; Claude Code, Codex, Cursor and other HTTP clients sign in the same way where the client offers it, or send an organisation API key as the bearer token; the person's role or the key's scope decides which tools are listed, and the cloud validates, authorises and audits each call as it does for the plugin. The plugin's `skillhook-cloud` server is `skillhook mcp --cloud` (above): the same catalogue through skillhook on this computer, with the key `skillhook cloud login` keeps. Without the plugin, the hosted server is added under that name directly:
+
+```bash
+claude mcp add --transport http skillhook-cloud https://skillhook.dev/api/mcp
+```
+
+Setup per client, the OAuth flow and the tools: https://skillhook.dev/docs/mcp; the plugin: https://skillhook.dev/install.
+
 ## The job API: `skillhook mcp --job`
 
 A second, much smaller MCP server exists for the agent *inside* a run. The Claude and Codex runners start it for every job (`claude --mcp-config …`, `codex -c mcp_servers.skillhook_job.…`) with `SKILLHOOK_JOB_ID` and `SKILLHOOK_JOB_DIR` in its environment, so the agent sees these tools without any setup (`agent_api: none` in the skill turns it off; `agent_api: cli` keeps only `skillhook job …`):
 
 | Tool | Input | Effect |
 |---|---|---|
-| `job_progress` | `message`; optional `state` (`working`, `blocked`), `percent`, `step` | Records what the agent is doing (`job.progress`, `skillhook jobs show`). |
-| `job_ask_human` | `question`; optional `options`, `context`, `wait_seconds` | Asks a person and waits for the answer (`human_wait_seconds`); returns `{answered, answer, option, by}`. The job's timeout is paused meanwhile. |
-| `job_set_outcome` | `outcome`, `summary`; optional `links`, `data` | Writes `response.json` (the task outcome). |
+| `job_progress` | `message`; optional `title`, `state` (`working`, `blocked`), `percent`, `step` | Records what the agent is doing (`job.progress`, `skillhook jobs show`); `title` names the job (`job.title`) until a later report changes it. |
+| `job_ask_human` | `question`; optional `options`, `recommended`, `multiple`, `context`, `wait_seconds` | Asks a person and waits for the answer (`human_wait_seconds`); returns `{answered, answer, option, options?, by}` (`options`: the picks of a multiple-choice question). The job's timeout is paused meanwhile. |
+| `job_set_outcome` | `outcome`, `summary`; optional `headline`, `title`, `links` (URLs or `{url, title, kind}`), `options`, `recommended`, `multiple`, `data` | Writes `response.json` (the task outcome; [skills.md](skills.md#reporting-the-outcome) has every field). |
 | `job_note` | `text` | A timeline entry. |
 | `job_context` | — | The job, its files, what was reported so far, earlier questions and answers. |
 
@@ -192,5 +202,5 @@ Everything is files in the job directory ([skills.md](skills.md#reporting-progre
 - Secrets appear in a tool result exactly once (`create_skill`, `add_example`, `generate_secret`); if a value is lost, rotate with `generate_secret` and `force: true` and update the sender.
 - `run_skill` and `POST /skills/<name>/run` bypass webhook authentication, `when` filters and dedupe; use `send_test_webhook` to test those.
 - `run_skill` waits at most `wait_seconds`; long agent runs should be polled with `get_job` rather than waited on.
-- A job that `list_jobs {waiting: true}` shows needs a person: read its `question` (or `response.summary`), then `answer_job`; the agent continues in the same session.
+- A job that `list_jobs {waiting: true}` shows needs a person: read its `question` (or `response.headline` and `summary`, with the `options` it offers), then `answer_job`; the agent continues in the same session.
 - All paths in results are absolute paths on the machine running the MCP server.

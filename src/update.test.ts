@@ -1,8 +1,9 @@
 import { createServer, type Server } from "node:http";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { checkForUpdate, compareVersions, detectInstall, fetchLatestVersion, formatUpdateNotice, isNewerVersion, parseVersion, planUpdateNotice, readUpdateCache, registryUrl as registryUrlOf, spawnBackgroundRefresh, updateCacheFile, updateChecksDisabled, updateStatusFromCache, UPDATE_CHECK_INTERVAL_MS } from "./update.js";
+import { acquireUpdateLock, AUTO_INSTALL_RETRY_MS, checkForUpdate, compareVersions, detectInstall, fetchLatestVersion, formatUpdateNotice, installedVersion, isNewerVersion, lastInstall, markInstallAnnounced, parseVersion, planUpdateNotice, readUpdateCache, recordInstall, refreshPlugins, registryUrl as registryUrlOf, releaseUpdateLock, runBackgroundUpdate, spawnBackgroundRefresh, updateCacheFile, updateChecksDisabled, updateStatusFromCache, UPDATE_CHECK_INTERVAL_MS, UPDATE_LOCK_STALE_MS, type InstallInfo } from "./update.js";
+import type { ToolExecResult } from "./tools.js";
 import { tempHome } from "./test-support/helpers.js";
 import { VERSION } from "./version.js";
 
@@ -63,18 +64,28 @@ describe("policy", () => {
   });
 
   it("guesses the install method from the module path", () => {
-    expect(detectInstall("/opt/homebrew/lib/node_modules/@meterapp/skillhook/dist/update.js")).toEqual({ method: "npm", command: ["npm", "install", "-g", "@meterapp/skillhook@latest"], display: "npm install -g @meterapp/skillhook@latest" });
-    expect(detectInstall("/Users/me/Library/pnpm/global/5/node_modules/@meterapp/skillhook/dist/update.js", "2.0.0").command).toEqual(["pnpm", "add", "-g", "@meterapp/skillhook@2.0.0"]);
-    expect(detectInstall("/Users/me/.bun/install/global/node_modules/@meterapp/skillhook/dist/update.js").method).toBe("bun");
-    expect(detectInstall("/Users/me/.config/yarn/global/node_modules/@meterapp/skillhook/dist/update.js").method).toBe("yarn");
+    const all = { exists: () => true, writable: () => true };
+    // A global npm install is upgraded in its own prefix, with the npm beside the Node that runs skillhook.
+    expect(detectInstall("/opt/homebrew/lib/node_modules/@meterapp/skillhook/dist/update.js", "latest", { ...all, platform: "darwin", execPath: "/opt/homebrew/bin/node" })).toEqual({
+      method: "npm",
+      command: ["/opt/homebrew/bin/node", "/opt/homebrew/lib/node_modules/npm/bin/npm-cli.js", "install", "-g", "--prefix", "/opt/homebrew", "@meterapp/skillhook@latest"],
+      display: "npm install -g @meterapp/skillhook@latest",
+    });
+    const noNpmCli = { exists: (file: string) => !file.endsWith("npm-cli.js"), writable: () => false, platform: "linux" as const };
+    expect(detectInstall("/usr/lib/node_modules/@meterapp/skillhook/dist/update.js", "2.0.0", noNpmCli)).toEqual({ method: "npm", command: ["npm", "install", "-g", "--prefix", "/usr", "@meterapp/skillhook@2.0.0"], display: "npm install -g @meterapp/skillhook@2.0.0", blocked: "/usr/lib/node_modules is not writable by this user" });
+    expect(detectInstall("/Users/me/Library/pnpm/global/5/node_modules/@meterapp/skillhook/dist/update.js", "2.0.0", all).command).toEqual(["pnpm", "add", "-g", "@meterapp/skillhook@2.0.0"]);
+    expect(detectInstall("/Users/me/.bun/install/global/node_modules/@meterapp/skillhook/dist/update.js", "latest", all).method).toBe("bun");
+    expect(detectInstall("/Users/me/.config/yarn/global/node_modules/@meterapp/skillhook/dist/update.js", "latest", all).method).toBe("yarn");
+    expect(detectInstall("/Users/me/.volta/tools/image/packages/@meterapp/skillhook/lib/node_modules/@meterapp/skillhook/dist/update.js", "latest", all).command).toEqual(["volta", "install", "@meterapp/skillhook@latest"]);
     expect(detectInstall("/Users/me/.npm/_npx/abc123/node_modules/@meterapp/skillhook/dist/update.js")).toEqual({ method: "npx", display: "npx @meterapp/skillhook@latest" });
     expect(detectInstall("/Users/me/dev/skillhook/dist/update.js").method).toBe("source");
-    expect(detectInstall("C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@meterapp\\skillhook\\dist\\update.js").method).toBe("npm");
+    expect(detectInstall("/Users/me/app/node_modules/@meterapp/skillhook/dist/update.js", "latest", { ...all, exists: () => false })).toMatchObject({ method: "project" });
+    expect(detectInstall("C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@meterapp\\skillhook\\dist\\update.js", "latest", { ...all, platform: "win32", exists: (file) => file === "C:/Users/me/AppData/Roaming/npm/skillhook.cmd" })).toMatchObject({ method: "npm", command: ["npm", "install", "-g", "--prefix", "C:/Users/me/AppData/Roaming/npm", "@meterapp/skillhook@latest"] });
   });
 
   it("formats a notice with the matching upgrade command", () => {
     const status = { current: "0.1.0", latest: "0.2.0", available: true, checked_at: null, disabled: false, cached: true };
-    const npm = formatUpdateNotice(status, detectInstall("/usr/lib/node_modules/@meterapp/skillhook/dist/update.js"));
+    const npm = formatUpdateNotice(status, detectInstall("/usr/lib/node_modules/@meterapp/skillhook/dist/update.js", "latest", { exists: () => true, writable: () => true, platform: "linux" }));
     expect(npm).toContain("0.1.0 → 0.2.0");
     expect(npm).toContain("skillhook update --install");
     expect(npm).toContain("npm install -g @meterapp/skillhook@latest");
@@ -128,7 +139,7 @@ describe("registry lookup and cache", () => {
     expect(planUpdateNotice(paths, { env, now: 1_000_000 + UPDATE_CHECK_INTERVAL_MS + 2 })).toMatchObject({ stale: false });
     expect(planUpdateNotice(paths, { env, now: 1_000_000 + UPDATE_CHECK_INTERVAL_MS + 2 }).notice).toContain(NEWER);
     expect(planUpdateNotice(paths, { env, now: 1_000_000 + 2 * UPDATE_CHECK_INTERVAL_MS + 5 }).stale).toBe(true);
-    expect(planUpdateNotice(paths, { env: { ...env, CI: "1" } })).toEqual({ stale: false });
+    expect(planUpdateNotice(paths, { env: { ...env, CI: "1" } })).toEqual({ stale: false, refresh: false });
   });
 
   it("keeps the last known answer when the registry is unreachable, and is quiet when disabled", async () => {
@@ -170,5 +181,126 @@ describe("registry lookup and cache", () => {
     const deadline = Date.now() + 10_000;
     while (!existsSync(updateCacheFile(paths)) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
     expect(JSON.parse(readFileSync(updateCacheFile(paths), "utf8"))).toEqual({ argv: ["update", "--refresh", "--dir", paths.home] });
+  });
+});
+
+describe("automatic updates", () => {
+  const npm: InstallInfo = { method: "npm", command: ["npm", "install", "-g", `@meterapp/skillhook@${NEWER}`], display: `npm install -g @meterapp/skillhook@${NEWER}` };
+
+  it("keeps the last install across checks and says once that it happened", async () => {
+    const paths = tempHome();
+    recordInstall(paths, { version: VERSION, from: "0.0.1", at: new Date(1_000).toISOString(), ok: true });
+    await checkForUpdate(paths, { env: { SKILLHOOK_NPM_REGISTRY: registryUrl }, force: true, now: 2_000 });
+    expect(readUpdateCache(paths)).toMatchObject({ latest: NEWER, last_install: { version: VERSION, from: "0.0.1", ok: true } });
+    latest = VERSION;
+    try {
+      await checkForUpdate(paths, { env: { SKILLHOOK_NPM_REGISTRY: registryUrl }, force: true, now: 3_000 });
+    } finally {
+      latest = NEWER;
+    }
+    expect(planUpdateNotice(paths, { env: {}, now: 3_000, install: npm }).announce).toBe(`skillhook updated itself: 0.0.1 → ${VERSION}   (https://github.com/MeterApp/skillhook/releases/tag/v${VERSION})`);
+    markInstallAnnounced(paths);
+    expect(planUpdateNotice(paths, { env: {}, now: 3_000, install: npm }).announce).toBeUndefined();
+  });
+
+  it("installs a newer version in the background quietly, and only says what it cannot do itself", async () => {
+    const paths = tempHome();
+    const now = 10_000_000;
+    await checkForUpdate(paths, { env: { SKILLHOOK_NPM_REGISTRY: registryUrl }, now });
+    expect(planUpdateNotice(paths, { env: {}, now, install: npm })).toEqual({ stale: false, refresh: true });
+    expect(planUpdateNotice(paths, { env: {}, now, install: npm, config: { auto_update: false } })).toMatchObject({ refresh: false, notice: expect.stringContaining(NEWER) });
+    expect(planUpdateNotice(paths, { env: {}, now, install: { ...npm, blocked: "/usr/lib/node_modules is not writable by this user" } }).notice).toContain("not writable");
+    expect(planUpdateNotice(paths, { env: {}, now, install: { method: "npx", display: "npx @meterapp/skillhook@latest" } })).toMatchObject({ refresh: false, notice: expect.stringContaining("npx @meterapp/skillhook@latest") });
+    // A version that was tried is not tried again before the retry interval, and a failure is reported.
+    recordInstall(paths, { version: NEWER, from: VERSION, at: new Date(now).toISOString(), ok: false, error: "npm exited with 1" });
+    expect(planUpdateNotice(paths, { env: {}, now: now + 60_000, install: npm })).toMatchObject({ refresh: false, notice: expect.stringContaining("The automatic update failed (npm exited with 1)") });
+    expect(planUpdateNotice(paths, { env: {}, now: now + AUTO_INSTALL_RETRY_MS, install: npm }).refresh).toBe(true);
+  });
+
+  it("runs the install from the background update and records it, one at a time", async () => {
+    const paths = tempHome();
+    const env = { SKILLHOOK_NPM_REGISTRY: registryUrl };
+    const installs: InstallInfo[] = [];
+    const install = async (target: InstallInfo) => {
+      installs.push(target);
+      return { code: 0 };
+    };
+    expect(await runBackgroundUpdate(paths, { env, now: 1_000, target: npm, install })).toMatchObject({ latest: NEWER, available: true });
+    expect(installs).toEqual([npm]);
+    expect(lastInstall(paths)).toEqual({ version: NEWER, from: VERSION, at: new Date(1_000).toISOString(), ok: true });
+    // Tried already: not again until the retry interval.
+    await runBackgroundUpdate(paths, { env, now: 2_000, target: npm, install });
+    expect(installs).toHaveLength(1);
+    // Off, offline, a copy it cannot replace, or another update holding the lock: a check at most, no install.
+    const other = tempHome();
+    await runBackgroundUpdate(other, { env, config: { auto_update: false }, target: npm, install });
+    await runBackgroundUpdate(other, { env: { SKILLHOOK_NPM_REGISTRY: "http://127.0.0.1:1" }, timeoutMs: 500, target: npm, install });
+    await runBackgroundUpdate(other, { env, target: { method: "source", display: "git pull && npm ci && npm run build" }, install });
+    await runBackgroundUpdate(other, { env, target: { ...npm, blocked: "not writable" }, install });
+    expect(installs).toHaveLength(1);
+    expect(acquireUpdateLock(other)).toBe(true);
+    expect(await runBackgroundUpdate(other, { env, target: npm, install })).toBeUndefined();
+    releaseUpdateLock(other);
+    // A failure is recorded with its reason.
+    const failing = tempHome();
+    await runBackgroundUpdate(failing, { env, target: npm, install: async () => ({ code: 1, error: "npm exited with 1" }) });
+    expect(lastInstall(failing)).toMatchObject({ version: NEWER, ok: false, error: "npm exited with 1" });
+  });
+
+  it("breaks a lock left behind by a process that died", () => {
+    const paths = tempHome();
+    expect(acquireUpdateLock(paths)).toBe(true);
+    expect(acquireUpdateLock(paths)).toBe(false);
+    const old = new Date(Date.now() - UPDATE_LOCK_STALE_MS - 1_000);
+    utimesSync(path.join(paths.home, "update.lock"), old, old);
+    expect(acquireUpdateLock(paths)).toBe(true);
+    releaseUpdateLock(paths);
+  });
+
+  it("reads the version installed on disk", () => {
+    const paths = tempHome();
+    const file = path.join(paths.home, "package.json");
+    writeFileSync(file, JSON.stringify({ name: "@meterapp/skillhook", version: NEWER }));
+    expect(installedVersion(file)).toBe(NEWER);
+    writeFileSync(file, "{");
+    expect(installedVersion(file)).toBeUndefined();
+    expect(installedVersion()).toBe(VERSION);
+  });
+});
+
+describe("plugin updates", () => {
+  const result = (stdout: string, code = 0): ToolExecResult => ({ code, stdout, stderr: "", timedOut: false });
+  const CLAUDE_LIST = JSON.stringify([
+    { id: "supabase@claude-plugins-official", version: "0.1.15", scope: "user", enabled: true },
+    { id: "skillhook@meterapp-skillhook", version: "0.7.1", scope: "user", enabled: true },
+  ]);
+  const CODEX_LIST = "Marketplace `meterapp-skillhook`\n\nPLUGIN                        STATUS              VERSION  SOURCE\nskillhook@meterapp-skillhook  installed, enabled  0.7.1    /Users/me/.codex/.tmp/marketplaces/meterapp-skillhook\n";
+  const env = { PATH: "/usr/bin" };
+
+  it("refreshes the marketplace, then the plugin, wherever Claude Code and Codex have it", async () => {
+    const calls: string[] = [];
+    const answers: Record<string, ToolExecResult> = {
+      "plugin list --json": result(CLAUDE_LIST),
+      "plugin marketplace update meterapp-skillhook --json": result(""),
+      "plugin update skillhook@meterapp-skillhook --json --scope user": result('{"command":"update","outcome":"updated","message":"Updated skillhook to 0.8.0"}\n'),
+      "plugin list": result(CODEX_LIST),
+      "plugin marketplace upgrade meterapp-skillhook": result("Upgraded marketplace `meterapp-skillhook`\n"),
+    };
+    const exec = async (command: string, args: string[]) => {
+      calls.push(`${path.basename(command)} ${args.join(" ")}`);
+      return answers[args.join(" ")] ?? result("", 1);
+    };
+    expect(await refreshPlugins({ claude: process.execPath, codex: process.execPath, env, exec })).toEqual([
+      { host: "Claude Code", id: "skillhook@meterapp-skillhook", ok: true, detail: "Updated skillhook to 0.8.0" },
+      { host: "Codex", id: "skillhook@meterapp-skillhook", ok: true, detail: "Upgraded marketplace `meterapp-skillhook`" },
+    ]);
+    const node = path.basename(process.execPath);
+    expect(calls).toEqual([`${node} plugin list --json`, `${node} plugin marketplace update meterapp-skillhook --json`, `${node} plugin update skillhook@meterapp-skillhook --json --scope user`, `${node} plugin list`, `${node} plugin marketplace upgrade meterapp-skillhook`]);
+  });
+
+  it("skips a host that is missing or lacks the plugin, and reports a marketplace that failed", async () => {
+    expect(await refreshPlugins({ claude: "/nonexistent/claude", codex: "/nonexistent/codex", env, exec: async () => result("", 1) })).toEqual([]);
+    const exec = async (_command: string, args: string[]) => (args.join(" ") === "plugin list --json" ? result(CLAUDE_LIST) : args.join(" ").startsWith("plugin marketplace update") ? result('{"outcome":"failed","message":"could not fetch MeterApp/skillhook"}\n', 1) : result("", 1));
+    expect(await refreshPlugins({ claude: process.execPath, codex: process.execPath, env, exec })).toEqual([{ host: "Claude Code", id: "skillhook@meterapp-skillhook", ok: false, detail: "marketplace meterapp-skillhook: could not fetch MeterApp/skillhook" }]);
   });
 });

@@ -6,6 +6,7 @@ import { JOB_STATUSES } from "../jobs.js";
 import { TRIGGERS } from "../payload.js";
 import { PROGRESS_STATES } from "../progress.js";
 import { RUNNER_NAMES } from "../readiness.js";
+import { HEADLINE_MAX, LINK_KINDS, LINKS_MAX, OPTION_MAX, OPTIONS_MAX, TITLE_MAX } from "../reporting.js";
 import { JOB_OUTCOMES } from "../response.js";
 import { FAILURE_KINDS } from "../runners/failure.js";
 import * as protocol from "./protocol.js";
@@ -23,6 +24,8 @@ describe("protocol vocabulary", () => {
     expect([...protocol.DELIVERY_OUTCOMES]).toEqual(DELIVERY_OUTCOMES);
     expect([...protocol.FAILURE_KINDS]).toEqual(FAILURE_KINDS);
     expect([...protocol.PROGRESS_STATES]).toEqual(PROGRESS_STATES);
+    expect([...protocol.LINK_KINDS]).toEqual(LINK_KINDS);
+    expect(protocol.REPORT_LIMITS).toEqual({ max_links: LINKS_MAX, max_title: TITLE_MAX, max_headline: HEADLINE_MAX, max_options: OPTIONS_MAX, max_option: OPTION_MAX });
     expect([...protocol.CHECK_STATUSES]).toEqual(["ok", "warn", "fail", "skip"]);
     expect(HEALTH_GROUPS.length).toBeGreaterThan(0);
     // Every server event has a cloud counterpart (plus the link's own and job.output); server.* stays local.
