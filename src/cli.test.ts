@@ -738,8 +738,10 @@ describe("cli", () => {
       const none = io(env);
       expect(await main(["cloud", "machines", ...at, "--json"], none.cli)).toBe(1);
       expect(String(none.json().error)).toContain("skillhook cloud login");
+      // --key without one, and no terminal to ask at: nothing to log in with (without --key it would sign in with the browser).
       const usage = io(env);
-      expect(await main(["cloud", "login", ...at], usage.cli)).toBe(2);
+      expect(await main(["cloud", "login", "--key", ...at], usage.cli)).toBe(2);
+      expect(usage.err()).toContain("--key needs the organisation API key");
       const machineToken = io(env);
       expect(await main(["cloud", "login", "--key", fake.token, ...at], machineToken.cli)).toBe(2);
       expect(machineToken.err()).toContain("not an organisation API key");
@@ -750,7 +752,7 @@ describe("cli", () => {
       expect(fake.apiRequests).toEqual([]);
       const wrong = io(env);
       expect(await main(["cloud", "login", "--key", "shc_placeholder-unknown-key", ...at, "--json"], wrong.cli)).toBe(1);
-      expect(String(wrong.json().error)).toMatch(/refused the API key \(invalid_key: The API key is unknown, revoked or expired\. \(request req_\d+\)\)\. Log in with a valid one: skillhook cloud login/);
+      expect(String(wrong.json().error)).toMatch(/refused the API key \(invalid_key: The API key is unknown, revoked or expired\. \(request req_\d+\)\)\. Log in again: skillhook cloud login --url http:\/\/127\.0\.0\.1:\d+$/);
       expect(readFileSync(home.envFile, "utf8")).not.toContain("SKILLHOOK_CLOUD_API_KEY");
 
       // A key kept by skillhook 0.6 has no cloud of its own: it goes to the machine's, and status says so.
@@ -851,6 +853,83 @@ describe("cli", () => {
     }
   });
 
+  it("signs in with the browser: the link and the code shown, the browser opened, the key the cloud hands over kept and never printed", async () => {
+    const { FakeCloud } = await import("./test-support/fake-cloud.js");
+    const fake = await FakeCloud.start();
+    const home = tempHome("skillhook-cli-browser-login-");
+    const at = ["--dir", home.home];
+    try {
+      const env = { SKILLHOOK_CLOUD_URL: fake.url, SKILLHOOK_NO_UPDATE_CHECK: "1" };
+      fake.apiScopes = ["fleet:run"];
+      // Waiting, asked to slow down, the cloud in trouble for a moment, waiting again; then approved.
+      fake.signInScript.push("pending", "slow_down", "500", "pending");
+      const opened: string[] = [];
+      const waits: number[] = [];
+      const login = io(env);
+      login.cli.openUrl = (url) => opened.push(url) > 0;
+      login.cli.sleep = async (ms) => void waits.push(ms);
+      expect(await main(["cloud", "login", ...at], login.cli)).toBe(0);
+      const page = `${fake.url}/activate?user_code=WXYZ-2345`;
+      expect(opened).toEqual([page]);
+      expect(login.err()).toContain(`Sign in to ${fake.url} to log this computer in:\n  ${page}\n\nCheck that the page shows this code: WXYZ-2345\n\nOpened your browser (--no-browser to skip). Waiting for your approval (the code expires in 10 minutes; Ctrl-C stops)…`);
+      expect(waits).toEqual([1_000, 1_000, 6_000, 12_000, 12_000]);
+      expect(login.out()).toContain(`Logged in to ${fake.url} as Fake Org: key "laptop" (fleet:run), kept in ${home.envFile} with its cloud (SKILLHOOK_CLOUD_API_KEY, SKILLHOOK_CLOUD_API_URL).`);
+      for (const output of [login.out(), login.err()]) expect(output).not.toContain(fake.apiKey);
+      expect(readFileSync(home.envFile, "utf8")).toContain(`SKILLHOOK_CLOUD_API_KEY=${fake.apiKey}\nSKILLHOOK_CLOUD_API_URL=${fake.url}`);
+      expect(statSync(home.envFile).mode & 0o777).toBe(0o600);
+      // Only the name this computer gives itself went with the sign-in: no key, no token. The key was checked with /me.
+      expect(fake.signIns).toEqual([expect.objectContaining({ clientName: expect.stringMatching(/^skillhook CLI on \S+/), authorization: undefined, polls: 5, claimed: true })]);
+      expect(fake.apiRequests).toEqual([{ method: "GET", path: "/api/v1/me", authorization: `Bearer ${fake.apiKey}` }]);
+
+      // --no-browser prints the link and opens nothing; --json keeps stdout for the answer.
+      const quiet = io(env);
+      quiet.cli.openUrl = (url) => opened.push(url) > 0;
+      quiet.cli.sleep = async () => {};
+      expect(await main(["cloud", "login", "--no-browser", ...at, "--json"], quiet.cli)).toBe(0);
+      expect(opened).toHaveLength(1);
+      expect(quiet.err()).toContain("Open the link in a browser where you can sign in.");
+      expect(quiet.json()).toEqual({ ok: true, method: "browser", url: fake.url, organisation: { id: "org_fake", slug: "fake", name: "Fake Org" }, key: { id: "key_1", name: "laptop", scopes: ["fleet:run"] }, role: "member", env_file: home.envFile });
+      // Nothing opens where it was not asked for: without openUrl (an embedder, these tests) the link is the way.
+      const embedded = io(env);
+      embedded.cli.sleep = async () => {};
+      expect(await main(["cloud", "login", ...at], embedded.cli)).toBe(0);
+      expect(embedded.err()).toContain("Open the link in a browser where you can sign in.");
+
+      // Cancelled in the browser, or never approved: the command fails and nothing is kept.
+      writeEnv(home, {});
+      for (const [answer, message] of [["deny", "The sign-in was not approved: The sign-in was cancelled in the browser."], ["expire", "The code expired before it was approved. Run skillhook cloud login again."]] as const) {
+        fake.signInScript.push(answer);
+        const refused = io(env);
+        refused.cli.sleep = async () => {};
+        expect(await main(["cloud", "login", ...at, "--json"], refused.cli)).toBe(1);
+        expect(refused.json()).toEqual({ ok: false, error: message });
+      }
+      expect(readFileSync(home.envFile, "utf8")).not.toContain("SKILLHOOK_CLOUD_API_KEY");
+
+      // A cloud from before browser sign-in says how to log in with a key instead.
+      fake.signInMode = "missing";
+      const old = io(env);
+      expect(await main(["cloud", "login", ...at, "--json"], old.cli)).toBe(1);
+      expect(old.json().error).toBe(`${fake.url} does not offer signing in with the browser. Log in with a key from its dashboard (Settings → API keys) instead: skillhook cloud login --url ${fake.url} --key`);
+      fake.signInMode = "ok";
+
+      // Nobody to approve in CI, nothing sent under the kill switch, nothing in plain http: no sign-in starts.
+      const started = fake.signIns.length;
+      const ci = io({ ...env, CI: "true" });
+      expect(await main(["cloud", "login", ...at], ci.cli)).toBe(2);
+      expect(ci.err()).toContain("Signing in with the browser needs a person at it. In CI, give the key: --key - with it on stdin");
+      const killed = io({ ...env, SKILLHOOK_NO_CLOUD: "1" });
+      expect(await main(["cloud", "login", ...at], killed.cli)).toBe(1);
+      expect(killed.err()).toContain("SKILLHOOK_NO_CLOUD is set");
+      const insecure = io({ ...env, SKILLHOOK_CLOUD_URL: "http://cloud.example.invalid" });
+      expect(await main(["cloud", "login", ...at], insecure.cli)).toBe(1);
+      expect(insecure.err()).toContain("must use https");
+      expect(fake.signIns).toHaveLength(started);
+    } finally {
+      await fake.close();
+    }
+  });
+
   it("logs in to Skillhook Cloud itself on a machine that names no cloud, and keeps the key with it", async () => {
     const { FakeCloud } = await import("./test-support/fake-cloud.js");
     const fake = await FakeCloud.start();
@@ -862,7 +941,7 @@ describe("cli", () => {
       // Without a key: the command that keeps one, nothing to fill in.
       const none = io(env);
       expect(await main(["cloud", "overview", ...at, "--json"], none.cli)).toBe(1);
-      expect(none.json().error).toBe("No organisation API key. Create one on https://skillhook.dev (Settings → API keys), then: skillhook cloud login   (or set SKILLHOOK_CLOUD_API_KEY)");
+      expect(none.json().error).toBe("No organisation API key. Sign in with the browser: skillhook cloud login   (or set SKILLHOOK_CLOUD_API_KEY)");
       const login = io(env);
       expect(await main(["cloud", "login", "--key", fake.apiKey, ...at], login.cli)).toBe(0);
       expect(login.out()).toContain(`Logged in to https://skillhook.dev as Fake Org: key "laptop" (fleet:read), kept in ${home.envFile} with its cloud`);
@@ -875,7 +954,7 @@ describe("cli", () => {
       expect(await main(["cloud", "machines", ...at], io(env).cli)).toBe(0);
       const ambiguous = io(env);
       expect(await main(["cloud", "login", "--key", fake.apiKey, ...at], ambiguous.cli)).toBe(2);
-      expect(ambiguous.err()).toContain(`The key kept here was for https://skillhook.dev, and this machine's cloud is ${fake.url}: name the one this key belongs to`);
+      expect(ambiguous.err()).toContain(`The key kept here was for https://skillhook.dev, and this machine's cloud is ${fake.url}: name the one to log in to`);
       expect(production.requests).toEqual(["GET https://skillhook.dev/api/v1/me", "POST https://skillhook.dev/api/v1/tools/describe_cloud", "GET https://skillhook.dev/api/v1/machines"]);
       expect(fake.requests).toEqual([]);
     } finally {
@@ -916,13 +995,18 @@ describe("cli", () => {
       const ambiguous = io(env);
       const before = fake.apiRequests.length;
       expect(await main(["cloud", "login", "--key", fake.apiKey, ...at], ambiguous.cli)).toBe(2);
-      expect(ambiguous.err()).toContain(`The key kept here was for ${fake.url}, and this machine's cloud is https://other-cloud.example.invalid: name the one this key belongs to, skillhook cloud login --url https://…`);
+      expect(ambiguous.err()).toContain(`The key kept here was for ${fake.url}, and this machine's cloud is https://other-cloud.example.invalid: name the one to log in to, skillhook cloud login --url https://…`);
       expect(fake.apiRequests.length).toBe(before);
-      // Asked before the key is: at a terminal, nobody types a key only to be told which cloud is missing.
+      // Asked before the key is: at a terminal, nobody types a key only to be told which cloud is missing; nor is a browser
+      // sign-in started for one of the two.
       const asked = io(env);
       asked.cli.isTTY = true;
-      expect(await main(["cloud", "login", ...at], asked.cli)).toBe(2);
-      expect(asked.err()).toContain("name the one this key belongs to");
+      expect(await main(["cloud", "login", "--key", ...at], asked.cli)).toBe(2);
+      expect(asked.err()).toContain("name the one to log in to");
+      const browser = io(env);
+      expect(await main(["cloud", "login", ...at], browser.cli)).toBe(2);
+      expect(browser.err()).toContain("name the one to log in to");
+      expect(fake.signIns).toEqual([]);
       // A blank --url is no cloud at all, not "no --url".
       const blank = io(env);
       expect(await main(["cloud", "login", "--url", " ", "--key", fake.apiKey, ...at], blank.cli)).toBe(2);
@@ -932,7 +1016,7 @@ describe("cli", () => {
       writeConfigFile(home, {});
       const unnamed = io(env);
       expect(await main(["cloud", "login", "--key", fake.apiKey, ...at], unnamed.cli)).toBe(2);
-      expect(unnamed.err()).toContain(`The key kept here was for ${fake.url}, and this machine's cloud is https://skillhook.dev: name the one this key belongs to`);
+      expect(unnamed.err()).toContain(`The key kept here was for ${fake.url}, and this machine's cloud is https://skillhook.dev: name the one to log in to`);
       expect(fake.apiRequests.length).toBe(before);
       // With one cloud to go by (the key's is the machine's), that is the one.
       writeConfigFile(home, { cloud: { url: fake.url } });
@@ -1202,7 +1286,7 @@ describe("cli", () => {
       runners: [[], ["--refresh", "--local"]],
       stats: [[], ["--since", "7d"]],
       config: [[], ["show"], ["get", "port"], ["set", "port", "9999"], ["unset", "runners"], ["reload"], ["path"]],
-      cloud: [[], ["connect", "--code", "ABCD-EFGH", "--control"], ["disconnect"], ["status"], ["report", "Broken", "--body", "details"], ["login", "--key", "shc_placeholder-other-key", "--url", "https://cloud.example.invalid"], ["logout"], ["overview"], ["machines"], ["jobs", "--waiting"], ["job", job], ["tools"], ["tools", "answer_job"], ["answer_job", job, "yes"], ["save-skill", "mac-mini", "hello", "--content-file", "SKILL.md"], ["secret", "mac-mini", "hello", "--force"]],
+      cloud: [[], ["connect", "--code", "ABCD-EFGH", "--control"], ["disconnect"], ["status"], ["report", "Broken", "--body", "details"], ["login", "--key", "shc_placeholder-other-key", "--url", "https://cloud.example.invalid"], ["login", "--no-browser"], ["logout"], ["overview"], ["machines"], ["jobs", "--waiting"], ["job", job], ["tools"], ["tools", "answer_job"], ["answer_job", job, "yes"], ["save-skill", "mac-mini", "hello", "--content-file", "SKILL.md"], ["secret", "mac-mini", "hello", "--force"]],
       mcp: [[], ["--print-config"], ["--cloud"], ["--job", job]],
       update: [[], ["--install"], ["--refresh"]],
       link: [[], [unlinked]],

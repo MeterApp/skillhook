@@ -76,14 +76,16 @@ It needs a paired machine (`cloud.enabled` and `SKILLHOOK_CLOUD_TOKEN`); on one 
 
 Everything the dashboard shows and does for an organisation (every machine's jobs, deliveries, alerts, health and
 stats; answering agents, replaying, running and testing skills; skills, secrets, hosted URLs and machines) is a tool of
-the cloud, and skillhook offers each one in a terminal and to an agent. They use an organisation API key (`shc_…`; an
-admin creates one on the dashboard under Settings → API keys), never the machine token: a paired machine cannot read the
-rest of its organisation, only someone holding a key can. Its scope decides what it can do: `fleet:read` looks,
+the cloud, and skillhook offers each one in a terminal and to an agent. They use an organisation API key (`shc_…`, which
+`skillhook cloud login` gets by signing in with the browser, or one an admin made on the dashboard under Settings → API
+keys), never the machine token: a paired machine cannot read the rest of its organisation, only someone holding a key
+can. Its scope decides what it can do: `fleet:read` looks,
 `fleet:run` also answers agents, runs, tests, replays and cancels, `fleet:admin` also changes skills, configuration,
 hosted URLs, machines and settings and generates secrets.
 
 ```bash
-skillhook cloud login                                   # asks for the key at a terminal (or --key shc_…, --key - for stdin); --url for another deployment
+skillhook cloud login                                   # signs in with the browser: approve the code, the new key is kept here; --url for another deployment
+skillhook cloud login --key                             # keeps a key from Settings → API keys instead (asked for at a terminal; --key - reads stdin)
 skillhook cloud overview                                # what needs a person: waiting agents, alerts, failing checks, failures, the day's numbers
 skillhook cloud tools                                   # every tool this key has (and which a wider key would add)
 skillhook cloud tools answer_job                        # one tool's parameters
@@ -98,9 +100,22 @@ skillhook cloud job 20260929T101500Z-a1b2c3
 skillhook cloud logout                                  # forget the key here; revoke it on the dashboard to end it
 ```
 
+**Signing in.** `skillhook cloud login` signs in with the browser, as RFC 8628 has devices do: it starts a sign-in at
+the cloud (`POST /api/auth/device/code`, sending only the name this computer gives itself, `skillhook CLI on
+<hostname>`, which becomes the key's name on the dashboard), prints the page and a code, and opens the page in the
+browser with the system's opener (`open`, `xdg-open`; argv, never a shell; not over SSH, not on Linux without a display,
+never with `--no-browser`). The person signs in there, checks that the page shows the same code, chooses the
+organisation (one where they are an admin or owner: only they make keys) and the access (read, run or admin), and
+approves or cancels. Meanwhile the CLI asks `POST /api/auth/device/token` with the device code every few seconds (five
+seconds more after a `slow_down`, longer while the cloud cannot answer) for at most ten minutes; its first request after
+the approval gets a new organisation API key, made by the cloud at that moment and handed over once. The link and the
+code go to stderr, so `--json` keeps stdout for the result. A cloud from before browser sign-in says so, and `--key`
+works there; in CI (`CI` set) there is nobody to approve, so it asks for `--key -` or the environment instead.
+
 `login` checks the key with `GET /api/v1/me` against the cloud `--url` names (else the one logged in to before, else
 this machine's cloud: `SKILLHOOK_CLOUD_URL` or `cloud.url`, which is Skillhook Cloud itself, `https://skillhook.dev`,
-unless it names another; when those two differ it asks for `--url` rather than send a key to the wrong one) and keeps
+unless it names another; when those two differ it asks for `--url` rather than send a key to the wrong one or sign in to
+it) and keeps
 both in `.env`, as `SKILLHOOK_CLOUD_API_KEY` and
 `SKILLHOOK_CLOUD_API_URL` (mode 600, the key never printed); `logout` removes them. From then on the key goes to that
 cloud and nowhere else: a `cloud.url` changed later moves neither the key nor, since login never touches it, this
@@ -132,8 +147,10 @@ same wherever they stand: such a text goes after an equals sign, `--answer=--hel
 **The MCP server.** `skillhook mcp --cloud` serves the same tools to an agent (the skillhook plugin registers it as
 `skillhook-cloud`, next to this machine's own `skillhook` server): the catalogue is read when it starts, each call is
 forwarded with the key, and the cloud validates, authorises and audits it as that key. Without a key it offers one tool,
-`skillhook_cloud_setup`, which says what is missing and loads the tools once the person logged in; an agent never
-handles the key. See [mcp.md](mcp.md#skillhook-cloud-skillhook-mcp---cloud).
+`skillhook_cloud_setup`, which says what is missing and, without a working key, signs in with the browser like `cloud
+login`: it opens the person's browser on this computer and gives the agent the link and the code to show them, and once
+they approved, the key is kept in `.env` and the tools load. An agent never handles the key, and cannot choose the cloud
+it signs in to (the key's, else the machine's). See [mcp.md](mcp.md#skillhook-cloud-skillhook-mcp---cloud).
 
 **Secrets.** `skillhook cloud secret <machine> <skill|NAME> [--force]` (and the tool `generate_secret`) has the machine
 generate a skill's secret and seal it to a key pair made for this one request: `POST /api/v1/machines/<m>/secrets` with
@@ -149,7 +166,7 @@ The fixed views:
 
 | Command | Request |
 |---|---|
-| `cloud login` | `GET /api/v1/me` (the organisation, the key's name and scopes) |
+| `cloud login` | `POST /api/auth/device/code`, then `POST /api/auth/device/token` every few seconds until the person approved the code (at most ten minutes), then `GET /api/v1/me` for the new key; with `--key`, `GET /api/v1/me` (the organisation, the key's name and scopes) |
 | `cloud overview` | `POST /api/v1/tools/describe_cloud` |
 | `cloud tools [tool]` | `GET /api/v1/tools` |
 | `cloud machines` | `GET /api/v1/machines`: name, status, mode, skillhook version, last seen |
