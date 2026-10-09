@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { adminRequest, findRunningServer, readServerState } from "../client.js";
-import { API_KEY_RE, CloudApiError, fleetClient, JobDetailSchema, JobListSchema, machineNames, MachineListSchema, MeSchema, storedApiCredentials, type FleetClient, type FleetJob } from "../cloud/api.js";
-import { assertSecureCloudUrl, CLOUD_API_KEY_ENV, CLOUD_API_URL_ENV, CLOUD_PRIVATE_KEY_ENV, CLOUD_TOKEN_ENV, cloudDisabledByEnv, resolveCloudUrl, trimTrailingSlashes } from "../cloud/config.js";
+import { API_KEY_RE, CloudApiError, fleetClient, JobDetailSchema, JobListSchema, keepApiKey, loginCommand, machineNames, MachineListSchema, MeSchema, storedApiCredentials, type FleetClient, type FleetJob, type Me } from "../cloud/api.js";
+import { assertSecureCloudUrl, CLOUD_API_KEY_ENV, CLOUD_API_URL_ENV, CLOUD_PRIVATE_KEY_ENV, CLOUD_TOKEN_ENV, cloudDisabledByEnv, resolveCloudUrl, trimTrailingSlashes, truthy } from "../cloud/config.js";
+import { browserLogin } from "../cloud/login.js";
 import { CloudHttpError } from "../cloud/http.js";
 import { cloudStatus, disconnectCloud, machineInfo, pairMachine, writeLinkCredentials } from "../cloud/pair.js";
 import { ISSUE_KINDS, ISSUE_SEVERITIES, JOB_OUTCOMES, JOB_STATUSES, type IssueKind, type IssueSeverity } from "../cloud/protocol.js";
@@ -9,8 +10,8 @@ import { generateRemoteSecret, secretNameFor } from "../cloud/remote-secret.js";
 import { buildIssueReport, IssueReportError, reportIssue, type IssueReportInput } from "../cloud/report.js";
 import { machineKeyPair, publicKeyOf, SealError } from "../cloud/seal.js";
 import { afterOwnOptions, callTool, fetchCatalog, renderResult, toolInput, ToolInputError, toolName, toolUsage, type Catalog } from "../cloud/tools.js";
-import { ensureSecretFileMode, readEnvFile, removeEnvVar, upsertEnvVar } from "../env.js";
-import { printable } from "../util.js";
+import { readEnvFile, removeEnvVar } from "../env.js";
+import { errorMessage, printable } from "../util.js";
 import { bool, CommandError, formatDuration, num, promptHidden, relativeTime, str, table, UsageError, type Ctx } from "./shared.js";
 
 export const CLOUD_USAGE = `Usage:
@@ -19,7 +20,8 @@ export const CLOUD_USAGE = `Usage:
   skillhook cloud disconnect [--keep-token]                                              stop the link, forget the pairing, revoke the token
   skillhook cloud status
   skillhook cloud report "<title>" [--body TEXT|--body-file PATH|--body -] [--kind ${ISSUE_KINDS.join("|")}] [--severity ${ISSUE_SEVERITIES.join("|")}] [--job ID] [--delivery ID] [--skill NAME] [--email ADDRESS] [--no-diagnostics] [--dry-run]   report a problem to the Skillhook team from this paired machine
-  skillhook cloud login [--url URL] [--key shc_…|-]                                      check an organisation API key (Settings → API keys) and keep it in .env with its cloud; asks for it at a terminal
+  skillhook cloud login [--url URL] [--no-browser]                                       sign in with the browser: approve the code on the cloud's page, and the organisation API key it makes is kept in .env with its cloud
+  skillhook cloud login --key [shc_…|-] [--url URL]                                      keep a key from Settings → API keys instead (--key alone asks for it at a terminal, - reads stdin)
   skillhook cloud logout                                                                 forget that key
 
 With the API key, the whole organisation (every command below reads or acts through Skillhook Cloud):
@@ -148,27 +150,21 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
       // The cloud named here (else the one logged in to before, else the machine's) is the one the key is checked against,
       // kept with it, and the only one it is ever sent to: changing cloud.url later moves neither the key nor this
       // machine's link. With two to choose from the key could be for either, and it must not be sent to the other; a
-      // machine that names no cloud has Skillhook Cloud's own, which is one of the two like any other.
+      // machine that names no cloud has Skillhook Cloud's own, which is one of the two like any other. Signing in with
+      // the browser asks the same: the person approves on that cloud, and the key it makes goes to that cloud only.
       const before = env[CLOUD_API_URL_ENV]?.trim() || readEnvFile(ctx.paths.envFile)[CLOUD_API_URL_ENV] || undefined;
       const machineCloud = resolveCloudUrl(env, config.cloud);
-      if (!url && before && trimTrailingSlashes(before) !== machineCloud) throw new UsageError(`The key kept here was for ${before}, and this machine's cloud is ${machineCloud}: name the one this key belongs to, skillhook cloud login --url https://…`, CLOUD_USAGE);
+      if (!url && before && trimTrailingSlashes(before) !== machineCloud) throw new UsageError(`The key kept here was for ${before}, and this machine's cloud is ${machineCloud}: name the one to log in to, skillhook cloud login --url https://…`, CLOUD_USAGE);
+      if (ctx.flags.key === undefined || ctx.flags.key === false) return await browserSignIn(ctx, url ?? before);
       let given = str(ctx.flags, "key");
       if (!given && ctx.io.isTTY) given = await promptHidden("Organisation API key (dashboard → Settings → API keys): ");
-      if (!given) throw new UsageError("Give the organisation API key: --key shc_…, or --key - to read it from stdin (Settings → API keys on the dashboard); at a terminal, skillhook cloud login asks for it", CLOUD_USAGE);
+      if (!given) throw new UsageError("--key needs the organisation API key: --key shc_…, or --key - to read it from stdin (Settings → API keys on the dashboard); at a terminal, --key alone asks for it. Without --key, skillhook cloud login signs in with the browser", CLOUD_USAGE);
       const key = (given === "-" ? await readStdin(ctx) : given).trim();
       if (!API_KEY_RE.test(key)) throw new UsageError("That is not an organisation API key: those are shc_ followed by letters, digits, - and _ (Settings → API keys on the dashboard)", CLOUD_USAGE);
       const client = fleetClient(env, config.cloud, { key, url: undefined }, { url: url ?? before });
       const { data: me } = await client.get("/me", MeSchema);
-      upsertEnvVar(ctx.paths.envFile, CLOUD_API_KEY_ENV, key);
-      upsertEnvVar(ctx.paths.envFile, CLOUD_API_URL_ENV, client.url);
-      ensureSecretFileMode(ctx.paths.envFile);
-      const fromEnvironment = env[CLOUD_API_KEY_ENV]?.trim();
-      const lines = [
-        `Logged in to ${client.url} as ${me.organisation.name}: key "${me.key.name}" (${me.key.scopes.join(", ") || "no scopes"}), kept in ${ctx.paths.envFile} with its cloud (${CLOUD_API_KEY_ENV}, ${CLOUD_API_URL_ENV}).`,
-        ...(fromEnvironment && fromEnvironment !== key ? [`${CLOUD_API_KEY_ENV} is also set in this environment, and wins over .env.`] : []),
-        "Next: skillhook cloud overview (what needs attention), skillhook cloud tools (everything this key can do); agents get the same as the skillhook-cloud MCP server (skillhook mcp --cloud).",
-      ];
-      ctx.print(printable(lines.join("\n")), { ok: true, url: client.url, organisation: me.organisation, key: me.key, role: me.role, env_file: ctx.paths.envFile });
+      keepApiKey(ctx.paths, key, client.url);
+      ctx.print(printable(loggedIn(ctx, client.url, key, me).join("\n")), { ok: true, method: "key", url: client.url, organisation: me.organisation, key: me.key, role: me.role, env_file: ctx.paths.envFile });
       return 0;
     }
     case "logout": {
@@ -253,6 +249,50 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
   }
 }
 
+/** What a login says: whose key it kept and where, and what to run next. */
+function loggedIn(ctx: Ctx, url: string, key: string, me: Me): string[] {
+  const fromEnvironment = ctx.io.env[CLOUD_API_KEY_ENV]?.trim();
+  return [
+    `Logged in to ${url} as ${me.organisation.name}: key "${me.key.name}" (${me.key.scopes.join(", ") || "no scopes"}), kept in ${ctx.paths.envFile} with its cloud (${CLOUD_API_KEY_ENV}, ${CLOUD_API_URL_ENV}).`,
+    ...(fromEnvironment && fromEnvironment !== key ? [`${CLOUD_API_KEY_ENV} is also set in this environment, and wins over .env.`] : []),
+    "Next: skillhook cloud overview (what needs attention), skillhook cloud tools (everything this key can do); agents get the same as the skillhook-cloud MCP server (skillhook mcp --cloud).",
+  ];
+}
+
+/**
+ * `skillhook cloud login` without --key: signing in with the browser (src/cloud/login.ts). The link and the code go to
+ * stderr, so --json keeps stdout for the answer. The key the cloud hands over is new and that cloud's own, so it is kept
+ * at once, then read back with /me for what to say: a key lost to a failed read would be one nobody has.
+ */
+async function browserSignIn(ctx: Ctx, override: string | undefined): Promise<number> {
+  const env = ctx.io.env;
+  const config = ctx.config();
+  if (truthy(env.CI)) throw new UsageError("Signing in with the browser needs a person at it. In CI, give the key: --key - with it on stdin, or SKILLHOOK_CLOUD_API_KEY (and SKILLHOOK_CLOUD_API_URL) in the environment", CLOUD_USAGE);
+  const url = resolveCloudUrl(env, config.cloud, override);
+  const { key, scope } = await browserLogin({
+    url,
+    env,
+    sleep: ctx.io.sleep,
+    onPrompt: (prompt) => {
+      const opened = ctx.flags.browser !== false && Boolean(ctx.io.openUrl?.(prompt.url));
+      const minutes = Math.max(1, Math.round(prompt.expiresInSeconds / 60));
+      ctx.warn(printable(["", `Sign in to ${url} to log this computer in:`, `  ${prompt.url}`, "", `Check that the page shows this code: ${prompt.code}`, "", `${opened ? "Opened your browser (--no-browser to skip)." : "Open the link in a browser where you can sign in."} Waiting for your approval (the code expires in ${minutes} minutes; Ctrl-C stops)…`].join("\n")));
+    },
+  });
+  if (!API_KEY_RE.test(key)) throw new CommandError(`${url} handed over something that is not an organisation API key; nothing was kept`);
+  keepApiKey(ctx.paths, key, url);
+  let me: Me;
+  try {
+    ({ data: me } = await fleetClient(env, config.cloud, { key, url }).get("/me", MeSchema));
+  } catch (error) {
+    const problem = errorMessage(error);
+    ctx.print(printable(`Logged in to ${url}: the new key (${scope ?? "?"}) is kept in ${ctx.paths.envFile} with its cloud, but reading its details failed: ${problem}\nskillhook cloud status shows it; skillhook cloud overview uses it.`), { ok: true, method: "browser", url, scope, env_file: ctx.paths.envFile, warning: problem });
+    return 0;
+  }
+  ctx.print(printable(loggedIn(ctx, url, key, me).join("\n")), { ok: true, method: "browser", url, organisation: me.organisation, key: me.key, role: me.role, env_file: ctx.paths.envFile });
+  return 0;
+}
+
 /** A client with the organisation API key kept here (or in the environment), for the cloud it was checked against. */
 function apiClient(ctx: Ctx): FleetClient {
   return fleetClient(ctx.io.env, ctx.config().cloud, storedApiCredentials(ctx.paths, ctx.io.env));
@@ -292,7 +332,7 @@ async function callCloudTool(ctx: Ctx, given: string, at: number, ended: boolean
     if (error instanceof ToolInputError) throw new UsageError(error.message, toolUsage(tool));
     throw error;
   }
-  if (tool.allowed === false) throw new CommandError(`${tool.name} needs a key with the ${tool.scope ?? "?"} scope; this one has ${catalog.key?.scopes?.join(", ") || "?"}. Create one under Settings → API keys, then: skillhook cloud login`);
+  if (tool.allowed === false) throw new CommandError(`${tool.name} needs a key with the ${tool.scope ?? "?"} scope; this one has ${catalog.key?.scopes?.join(", ") || "?"}. Log in again and choose that access: ${loginCommand(client.url)}`);
   const result = await callTool(client, tool.name, input);
   ctx.print(renderResult(result), result);
   return 0;

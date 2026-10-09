@@ -1,3 +1,4 @@
+import { openBrowser } from "../cloud/login.js";
 import { ConfigError } from "../config.js";
 import { SkillError } from "../skills.js";
 import { errorMessage, jsonForTerminal, printable } from "../util.js";
@@ -74,7 +75,8 @@ Agents
   cloud connect --code XXXX-XXXX [--control] | disconnect | status   Pair this machine with Skillhook Cloud (opt-in; https://skillhook.dev, docs/cloud.md)
   cloud report "<title>" [--body T|--body-file F|--body -] [--kind K] [--severity S] [--job ID] [--email E] [--no-diagnostics] [--dry-run]
                                                            Report a problem to the Skillhook team from a paired machine, with its diagnostics (scrubbed)
-  cloud login [--url U] [--key shc_…|-] | logout          Keep an organisation API key (asked for at a terminal; never the machine token)
+  cloud login [--url U] [--no-browser] | logout            Sign in with the browser: the organisation API key it makes is kept here (never the machine token)
+  cloud login --key [shc_…|-]                              Keep a key from Settings → API keys instead (--key alone asks for it at a terminal)
   cloud overview | machines | jobs [--waiting] … | job <id>   What needs a person across the organisation; its machines and jobs
   cloud tools [tool] | <tool> [args] [--param value]…      Everything the dashboard shows and does, by name (answer_job, run_skill, get_stats, …)
   cloud secret <machine> <skill|NAME> [--force]            A skill's secret generated on a machine, opened only here
@@ -179,6 +181,7 @@ export function defaultIO(): CliIO {
     stderr: (text) => process.stderr.write(text),
     env: process.env,
     isTTY: Boolean(process.stdin.isTTY),
+    openUrl: (url) => openBrowser(url, process.env),
   };
 }
 

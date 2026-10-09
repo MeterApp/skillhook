@@ -66,7 +66,8 @@ export function cloudDisabledByEnv(env: NodeJS.ProcessEnv = process.env): boolea
   return truthy(env.SKILLHOOK_NO_CLOUD);
 }
 
-function truthy(value: string | undefined): boolean {
+/** Set, and not "", "0" or "false": how the switches in the environment read (`SKILLHOOK_NO_CLOUD`, `CI`). */
+export function truthy(value: string | undefined): boolean {
   return value !== undefined && value !== "" && value !== "0" && value.toLowerCase() !== "false";
 }
 

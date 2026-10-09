@@ -1,8 +1,25 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { FakeCloud } from "../test-support/fake-cloud.js";
 import { tempHome, writeConfigFile, writeEnv } from "../test-support/helpers.js";
 import { connectMcp, type McpTestClient } from "../test-support/mcp-client.js";
 import { buildCloudMcpServer, connectCloud } from "./bridge.js";
+
+/** Polls of a browser sign-in that wait until the test allows them, so the test decides when the person approved. */
+function gatedPolls() {
+  let budget = 0;
+  let wake: (() => void) | undefined;
+  return {
+    async sleep() {
+      while (budget === 0) await new Promise<void>((resolve) => (wake = resolve));
+      budget--;
+    },
+    allow(n: number) {
+      budget += n;
+      wake?.();
+    },
+  };
+}
 
 const clients: McpTestClient[] = [];
 const clouds: FakeCloud[] = [];
@@ -113,51 +130,116 @@ describe("skillhook mcp --cloud", () => {
     expect(fake.toolCalls.map((call) => call.name)).not.toContain("generate_secret");
   });
 
-  it("without a key, offers only the setup tool, which loads the cloud's tools once the person logged in", async () => {
-    const { fake, paths, client } = await setup({ loggedIn: false });
+  it("without a key, signs in with the browser: the link and the code for the person, then the cloud's tools", async () => {
+    const fake = await FakeCloud.start();
+    clouds.push(fake);
+    const paths = tempHome("skillhook-cloud-mcp-");
+    writeConfigFile(paths, { cloud: { url: fake.url } });
+    const env = { SKILLHOOK_NO_UPDATE_CHECK: "1" };
+    const opened: string[] = [];
+    const polls = gatedPolls();
+    const client = await connectMcp(buildCloudMcpServer(paths, env, await connectCloud(paths, env), { openUrl: (url) => opened.push(url) > 0, sleep: polls.sleep }));
+    clients.push(client);
     expect(await client.tools()).toEqual(["skillhook_cloud_setup"]);
     const instructions = String((client.init.result as { instructions: string }).instructions);
     expect(instructions).toContain("Skillhook Cloud is not connected on this computer: No organisation API key.");
-    expect(instructions).toContain(`then: skillhook cloud login --url ${fake.url}   (or set SKILLHOOK_CLOUD_API_KEY)`);
-    expect(instructions).toContain("Never ask them to paste the key into this conversation");
+    expect(instructions).toContain("To connect, call skillhook_cloud_setup: it signs in with the browser");
+    expect(instructions).toContain("Never ask the person to paste a key into this conversation");
 
-    const still = await client.call("skillhook_cloud_setup");
-    expect(still.isError).toBe(true);
-    expect(still.text).toContain("No organisation API key");
-    expect(fake.apiRequests).toEqual([]);
+    // The first call starts the sign-in, opens the page on this computer and returns at once with what to show.
+    const page = `${fake.url}/activate?user_code=WXYZ-2345`;
+    const started = await client.call("skillhook_cloud_setup");
+    expect(started).toMatchObject({ isError: false, data: { connected: false, signing_in: true, cloud: fake.url, url: page, code: "WXYZ-2345", browser_opened: true, expires_in_seconds: 600 } });
+    expect(started.text).toContain(`The sign-in page is open in the person's browser on this computer: ${page}\nIt must show the code WXYZ-2345`);
+    expect(opened).toEqual([page]);
+    // Asked again before the person approved: the same sign-in, not another one.
+    const again = await client.call("skillhook_cloud_setup");
+    expect(again.data).toMatchObject({ signing_in: true, code: "WXYZ-2345" });
+    expect(fake.signIns).toHaveLength(1);
+    expect(fake.signIns[0]).toMatchObject({ clientName: expect.stringMatching(/^skillhook CLI on /), authorization: undefined, polls: 0 });
 
-    writeEnv(paths, { SKILLHOOK_CLOUD_API_KEY: fake.apiKey });
-    const connected = await client.call("skillhook_cloud_setup");
+    // Approved after one more pending poll: the key is kept and the tools load; wait_seconds waits for it.
+    fake.signInScript.push("pending");
+    polls.allow(2);
+    const connected = await client.call("skillhook_cloud_setup", { wait_seconds: 30 });
     expect(connected).toMatchObject({ isError: false, data: { connected: true, organisation: { name: "Fake Org" }, tools: 6 } });
+    expect(fake.signIns[0]).toMatchObject({ polls: 2, claimed: true });
     expect(await client.tools()).toEqual(["describe_cloud", "get_delivery", "get_job", "list_jobs", "list_skills", "report_issue"]);
     expect((await client.call("describe_cloud")).data).toMatchObject({ organisation: { name: "Fake Org" } });
+    expect(readFileSync(paths.envFile, "utf8")).toContain(`SKILLHOOK_CLOUD_API_KEY=${fake.apiKey}\nSKILLHOOK_CLOUD_API_URL=${fake.url}`);
+    for (const result of [started, again, connected]) expect(result.text).not.toContain(fake.apiKey);
   });
 
-  it("without a key on a machine that names no cloud, gives the person the command for Skillhook Cloud itself", async () => {
+  it("starts again after a sign-in the person cancelled, and leaves a key from the environment to whoever set it", async () => {
+    const fake = await FakeCloud.start();
+    clouds.push(fake);
+    const paths = tempHome("skillhook-cloud-mcp-");
+    writeConfigFile(paths, { cloud: { url: fake.url } });
+    const polls = gatedPolls();
+    const client = await connectMcp(buildCloudMcpServer(paths, {}, await connectCloud(paths, {}), { sleep: polls.sleep }));
+    clients.push(client);
+    const started = await client.call("skillhook_cloud_setup");
+    expect(started.data).toMatchObject({ signing_in: true, browser_opened: false });
+    expect(started.text).toContain(`Give the person this link, to open in a browser where they can sign in: ${fake.url}/activate?user_code=WXYZ-2345`);
+    fake.signInScript.push("deny");
+    polls.allow(1);
+    const denied = await client.call("skillhook_cloud_setup", { wait_seconds: 30 });
+    expect(denied).toMatchObject({ isError: true });
+    expect(denied.text).toContain("The sign-in was not approved: The sign-in was cancelled in the browser.\nCall skillhook_cloud_setup again to start a new one.");
+    const fresh = await client.call("skillhook_cloud_setup");
+    expect(fresh.data).toMatchObject({ signing_in: true });
+    expect(fake.signIns).toHaveLength(2);
+
+    // A refused key in this server's environment wins over anything a sign-in would keep: say so, start nothing.
+    const env = { SKILLHOOK_CLOUD_API_KEY: "shc_placeholder-revoked-key-0123456789", SKILLHOOK_CLOUD_URL: fake.url };
+    const stuck = await connectMcp(buildCloudMcpServer(paths, env, await connectCloud(paths, env), { sleep: polls.sleep }));
+    clients.push(stuck);
+    const refused = await stuck.call("skillhook_cloud_setup");
+    expect(refused).toMatchObject({ isError: true });
+    expect(refused.text).toContain("refused the API key");
+    expect(refused.text).toContain("SKILLHOOK_CLOUD_API_KEY is set in this MCP server's environment and wins over a key kept by signing in");
+    expect(fake.signIns).toHaveLength(2);
+  });
+
+  it("without a key on a machine that names no cloud, signs in to Skillhook Cloud itself", async () => {
     const paths = tempHome("skillhook-cloud-mcp-");
     const env = { SKILLHOOK_NO_UPDATE_CHECK: "1" };
     const connection = await connectCloud(paths, env);
-    expect(connection).toEqual({ problem: "No organisation API key. Create one on https://skillhook.dev (Settings → API keys), then: skillhook cloud login   (or set SKILLHOOK_CLOUD_API_KEY)" });
+    expect(connection).toEqual({ problem: "No organisation API key. Sign in with the browser: skillhook cloud login   (or set SKILLHOOK_CLOUD_API_KEY)", code: "no_key" });
     const client = await connectMcp(buildCloudMcpServer(paths, env, connection));
     clients.push(client);
     const instructions = String((client.init.result as { instructions: string }).instructions);
-    expect(instructions).toContain("The person logs in once, in a terminal: `skillhook cloud login` (with `--url https://…` for a Skillhook Cloud other than https://skillhook.dev)");
+    expect(instructions).toContain("In a terminal, `skillhook cloud login` does the same (with `--url https://…` for a Skillhook Cloud other than https://skillhook.dev)");
     expect(instructions).not.toContain("https://<");
-    const listed = ((await client.request("tools/list")).result as { tools: { name: string; description: string }[] }).tools;
-    expect(listed).toEqual([expect.objectContaining({ name: "skillhook_cloud_setup", description: expect.stringContaining("`skillhook cloud login`") })]);
+    const listed = ((await client.request("tools/list")).result as { tools: { name: string; description: string; annotations: { readOnlyHint: boolean } }[] }).tools;
+    expect(listed).toEqual([expect.objectContaining({ name: "skillhook_cloud_setup", description: expect.stringContaining("signs in with the browser"), annotations: expect.objectContaining({ readOnlyHint: false }) })]);
   });
 
   it("says what is wrong when the cloud cannot be used: the kill switch, plain http, an older cloud", async () => {
     const paths = tempHome("skillhook-cloud-mcp-");
     writeEnv(paths, { SKILLHOOK_CLOUD_API_KEY: "shc_placeholder-organisation-key-0123456789abc" });
-    expect(await connectCloud(paths, { SKILLHOOK_NO_CLOUD: "1" })).toEqual({ problem: expect.stringContaining("SKILLHOOK_NO_CLOUD is set") });
+    const killed = await connectCloud(paths, { SKILLHOOK_NO_CLOUD: "1" });
+    expect(killed).toEqual({ problem: expect.stringContaining("SKILLHOOK_NO_CLOUD is set"), code: "disabled" });
+    // Signing in would not help there: the setup tool says what is wrong and starts nothing.
+    const client = await connectMcp(buildCloudMcpServer(paths, { SKILLHOOK_NO_CLOUD: "1" }, killed));
+    clients.push(client);
+    const setupCall = await client.call("skillhook_cloud_setup");
+    expect(setupCall).toMatchObject({ isError: true });
+    expect(setupCall.text).toContain("SKILLHOOK_NO_CLOUD is set");
     writeConfigFile(paths, { cloud: { url: "http://cloud.example.invalid" } });
-    expect(await connectCloud(paths, {})).toEqual({ problem: expect.stringContaining("must use https") });
+    expect(await connectCloud(paths, {})).toEqual({ problem: expect.stringContaining("must use https"), code: "insecure_url" });
+    // Without a key the problem is the key, but the sign-in that would fix it goes over https only too.
+    writeEnv(paths, {});
+    const plain = await connectMcp(buildCloudMcpServer(paths, {}, await connectCloud(paths, {}), { openUrl: () => true }));
+    clients.push(plain);
+    const refused = await plain.call("skillhook_cloud_setup");
+    expect(refused).toMatchObject({ isError: true });
+    expect(refused.text).toContain("the cloud URL must use https (got http://cloud.example.invalid)");
     const fake = await FakeCloud.start();
     clouds.push(fake);
     fake.catalogMode = "missing";
     writeConfigFile(paths, { cloud: { url: fake.url } });
     writeEnv(paths, { SKILLHOOK_CLOUD_API_KEY: fake.apiKey });
-    expect(await connectCloud(paths, {})).toEqual({ problem: expect.stringContaining("has no tool catalogue") });
+    expect(await connectCloud(paths, {})).toMatchObject({ problem: expect.stringContaining("has no tool catalogue") });
   });
 });

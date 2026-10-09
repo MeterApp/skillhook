@@ -14,17 +14,19 @@ this computer's own skillhook.
 ## 1. Connect
 
 If the `skillhook-cloud` tools include `describe_cloud`, you are connected. If the only tool is `skillhook_cloud_setup`,
-call it: it says what is missing. Logging in is for the person, in a terminal, once:
+call it: it says what is missing and, when there is no working key, signs in with the browser. It opens the sign-in
+page in the person's browser on this computer and returns the link and a code: tell them to check that the page shows
+that code and approve it (they choose the organisation and the access there; it needs an admin or owner of that
+organisation), and give them the link when `browser_opened` is false. Then call it again with `wait_seconds: 60`; the
+tools appear once they approved. In a terminal the same is:
 
 ```bash
-skillhook cloud login    # asks for an organisation API key, keeps it in ~/.skillhook/.env
+skillhook cloud login    # opens the browser; the person approves the code, the key is kept in ~/.skillhook/.env
 ```
 
 That is Skillhook Cloud at https://skillhook.dev; only a person on another deployment adds `--url https://…` (the
-setup tool's message names it when this machine uses one). The key comes from the dashboard: Settings → API keys
-(admins create them). Never ask the person to paste a key into the
-conversation, and never put one in a command line, a file or a commit. Then call `skillhook_cloud_setup` again (or
-reconnect the MCP server) and the tools appear.
+setup tool's message names it when this machine uses one). The key never passes through the conversation: never ask
+the person to paste one, and never put one in a command line, a file or a commit.
 
 The key's scope decides which tools exist: `fleet:read` looks, `fleet:run` also answers agents, runs, tests, replays and
 cancels, `fleet:admin` also changes skills, configuration, hosted URLs, machines and settings and generates secrets.

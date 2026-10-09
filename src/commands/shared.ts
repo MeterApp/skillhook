@@ -15,6 +15,10 @@ export interface CliIO {
   env: NodeJS.ProcessEnv;
   isTTY: boolean;
   stdin?: () => Promise<string>;
+  /** Opens a link in the person's browser (`cloud login`); false when it could not. Without it nothing is ever opened. */
+  openUrl?: (url: string) => boolean;
+  /** How the CLI waits between polls (`cloud login`); tests pass a quick one. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export class UsageError extends Error {
