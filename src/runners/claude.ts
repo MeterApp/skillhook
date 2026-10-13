@@ -70,7 +70,8 @@ export const claudeRunner: Runner = {
       return;
     }
     if (typeof event.session_id === "string" && !state.sessionId) state.sessionId = event.session_id;
-    if (event.type === "assistant") {
+    if (event.type === "assistant" && event.is_api_error_message !== true) {
+      state.producedOutput = true;
       const text = extractText(event.message);
       if (text) state.lastMessage = text;
     }

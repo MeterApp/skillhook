@@ -65,7 +65,11 @@ export const codexRunner: Runner = {
       case "thread.started":
         if (typeof event.thread_id === "string") state.sessionId = event.thread_id;
         break;
+      case "item.started":
+        state.producedOutput = true;
+        break;
       case "item.completed": {
+        state.producedOutput = true;
         const item = event.item as { type?: string; text?: string } | undefined;
         if (item?.type === "agent_message" && typeof item.text === "string") state.lastMessage = item.text;
         break;

@@ -414,3 +414,5 @@ The agent asked a question (`skillhook jobs show <id>` prints it) or finished wi
 ### The MCP server sees a different home than the CLI
 
 The MCP process reads `SKILLHOOK_HOME` or `--dir` from its own configuration. `skillhook mcp --print-config` adds `--dir` when either is set; make the MCP client and your shell agree.
+
+Fallback runners also accept targets such as `{ runner: codex, model: gpt-6.1-sol, effort: medium }` (JSON uses quoted keys and values). A target overrides the original model and effort when selected; plain runner names keep the original settings.

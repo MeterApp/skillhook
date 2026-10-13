@@ -551,11 +551,38 @@
                 "minItems": 1,
                 "type": "array",
                 "items": {
-                  "type": "string",
-                  "enum": [
-                    "claude",
-                    "codex",
-                    "shell"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "claude",
+                        "codex",
+                        "shell"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "runner": {
+                          "type": "string",
+                          "enum": [
+                            "claude",
+                            "codex",
+                            "shell"
+                          ]
+                        },
+                        "model": {
+                          "type": "string"
+                        },
+                        "effort": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "runner"
+                      ],
+                      "additionalProperties": false
+                    }
                   ]
                 }
               },
