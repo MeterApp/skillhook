@@ -121,6 +121,8 @@ export const SkillhookBlockSchema = z
     env: z.array(z.string()).optional(),
     /** How many jobs of this skill may run at once (default 1). */
     concurrency: z.number().int().min(1).optional(),
+    /** Reserve the working directory exclusively across skills (default true for Git worktrees, false otherwise). */
+    serialize_cwd: z.boolean().optional(),
     dedupe: z
       .object({
         /** Dotted path into the payload whose value identifies the delivery (wins over `header` and the provider header). */

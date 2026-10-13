@@ -179,7 +179,7 @@ skillhook deliveries replay <id> [--force] [--skip-filters] [--runner R] [--mode
 
 When a sender reports failures, `skillhook deliveries list --outcome rejected` shows what arrived and why it was refused; `--json` gives the records, `GET /deliveries` the same over the admin API ([api.md](api.md#get-deliveries)), and the MCP tools `list_deliveries` / `get_delivery` the same to an agent. The running server also publishes each record as a `delivery.received` event.
 
-Once the cause is fixed (a secret pasted, a filter corrected, a skill installed), `deliveries replay <id>` runs the recorded request again through the skill as it is now: a new job with `trigger: replay` and `replay_of`, the original payload, headers and query, no signature check (`--force` for a delivery that was rejected, since its body was never verified), `when` filters applied unless `--skip-filters`, never de-duplicated. `jobs replay <id>` does the same for any earlier job. Both go through the running server when there is one (`POST /deliveries/<id>/replay`, `POST /jobs/<id>/replay`; MCP `replay_delivery`, `replay_job`) and run in the CLI process otherwise. The agent is told it is replaying, so a well-written skill checks what earlier runs already did before repeating side effects. On a machine paired with [Skillhook Cloud](https://skillhook.dev) the records go to the cloud as they are written (`cloud.upload_payloads` decides whether the bodies do), where the deliveries of every machine are kept on record together and replayed from the dashboard, the cloud's API, its MCP server or `skillhook cloud replay_delivery <id>`, on the machine they arrived at, on another machine or through another skill: https://skillhook.dev/docs/deliveries.
+Once the cause is fixed (a secret pasted, a filter corrected, a skill installed), `deliveries replay <id>` runs the recorded request again through the skill as it is now: a new job with `trigger: replay` and `replay_of`, the original payload, headers and query, no signature check (`--force` for a delivery that was rejected, since its body was never verified), `when` filters applied unless `--skip-filters`, folded into an identical queued/running job when in-flight deduplication is enabled. Runner overrides and force do not bypass that check. Once that job finishes, another replay may run; this is not a side-effect receipt. `jobs replay <id>` does the same for any earlier job. Both go through the running server when there is one (`POST /deliveries/<id>/replay`, `POST /jobs/<id>/replay`; MCP `replay_delivery`, `replay_job`) and run in the CLI process otherwise. The agent is told it is replaying, so a well-written skill checks what earlier runs already did before repeating side effects. On a machine paired with [Skillhook Cloud](https://skillhook.dev) the records go to the cloud as they are written (`cloud.upload_payloads` decides whether the bodies do), where the deliveries of every machine are kept on record together and replayed from the dashboard, the cloud's API, its MCP server or `skillhook cloud replay_delivery <id>`, on the machine they arrived at, on another machine or through another skill: https://skillhook.dev/docs/deliveries.
 
 ## Configuration
 
@@ -416,3 +416,19 @@ The agent asked a question (`skillhook jobs show <id>` prints it) or finished wi
 The MCP process reads `SKILLHOOK_HOME` or `--dir` from its own configuration. `skillhook mcp --print-config` adds `--dir` when either is set; make the MCP client and your shell agree.
 
 Fallback runners also accept targets such as `{ runner: codex, model: gpt-6.1-sol, effort: medium }` (JSON uses quoted keys and values). A target overrides the original model and effort when selected; plain runner names keep the original settings.
+
+### Recovery queue fairness and shared working directories
+
+The server alternates eligible fresh work and replays when both are waiting,
+keeping FIFO within each class. One replay may precede a fresh arrival, but a
+recovery batch cannot monopolize subsequent slots; a continuous fresh stream
+cannot starve replays. Running jobs are never preempted. Skill concurrency,
+exclusive cwd ownership and the global cap determine eligibility first.
+
+Git worktrees are serialized by default, including jobs in subdirectories of the same worktree; independent worktrees still run concurrently. `serialize_cwd: false` opts out for jobs that coordinate their edits. Set `serialize_cwd: true` for shared mutable directories outside Git.
+The server reserves the canonical worktree root (or resolved cwd outside Git) before asynchronous runner
+preparation and holds it through retries, cancellation and terminal completion.
+An exclusive job waits for any job in the same cwd, and blocks other jobs there,
+including other skills; unrelated directories still run concurrently. The guard
+covers one server queue, not direct local processes, multiple servers or external cleanup. Outside Git, nested
+working directories are separate keys. It does not recover previously lost edits.

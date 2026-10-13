@@ -75,6 +75,7 @@ Unknown top-level keys are allowed. Unknown keys inside `skillhook:` are rejecte
 | `when` | list of conditions | none | All conditions must hold or the delivery is acknowledged with `200 {"skipped": true}`. See [Filters](#filters-when). |
 | `env` | list of env var names | `[]` | Variables from `.env` (or the server's environment) exposed to the agent. Nothing else secret is forwarded. See [Environment](#what-the-agent-receives). |
 | `concurrency` | integer >= 1 | 1 | How many jobs of this skill may run at once. The global cap is `concurrency` in `skillhook.json` (default 2). |
+| `serialize_cwd` | boolean | true for Git worktrees, false otherwise | Reserve the resolved working directory exclusively in the server queue, even across skills and symlink aliases. Git jobs reserve their worktree root, including jobs in subdirectories; separate worktrees remain independent. Set false only when parallel jobs coordinate their edits. It takes precedence over per-skill concurrency; either job requesting exclusivity blocks overlap. Independent directories can still run concurrently. |
 | `dedupe` | `{ path?: string, header?: string, in_flight?: boolean }` | provider delivery-id header; `in_flight` from `jobs.dedupe_in_flight` (`true`) | Where to take the delivery id for replay protection, and whether a delivery identical to a job that is still queued or running is folded into that job. See [Deduplication](#deduplication). |
 | `claude` | object | — | Claude-only options, below. |
 | `codex` | object | — | Codex-only options, below. |

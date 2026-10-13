@@ -1,14 +1,15 @@
 // Replaying what the server already received: a delivery from the delivery log (accepted or not) or an earlier job,
 // through the skill as it is now. Signatures are not checked again (they were, or the delivery was rejected and needs
-// `force`), `when` filters apply unless skipped, and nothing is de-duplicated: a replay is a new job with
+// `force`), `when` filters apply unless skipped, and identical in-flight work is reused. Otherwise a replay is a new job with
 // `trigger: replay` and `replay_of` pointing at the original.
 import { existsSync, readFileSync } from "node:fs";
 import type { Config } from "./config.js";
 import type { DeliveryLog, DeliveryRecord } from "./delivery-log.js";
 import { describeCondition, evaluateConditions } from "./filters.js";
 import type { JobRecord, JobStore } from "./jobs.js";
-import type { ManualRunInput } from "./manual.js";
-import { parseBody, type BodyKind } from "./payload.js";
+import { createManualJob, type ManualRunInput } from "./manual.js";
+import { deliveryFingerprint, parseBody, type BodyKind } from "./payload.js";
+import type { JobQueue } from "./queue.js";
 import type { SkillRegistry } from "./registry.js";
 import type { RunOverrides } from "./run.js";
 import type { Skill } from "./skills.js";
@@ -130,4 +131,16 @@ export function planReplay(deps: ReplayDeps, input: ReplayInput): ReplayPlan {
     body: { kind, contentType, raw },
   };
   return { ok: true, skill, input: runInput, origin };
+}
+
+/** Shared atomic admission for HTTP and cloud replay commands; no await between lookup and enqueue. */
+export function enqueueReplay(deps: { config: Config; store: JobStore; queue: JobQueue }, input: ManualRunInput): { job: JobRecord; duplicate: boolean } {
+  if (input.skill.config.dedupe?.in_flight ?? deps.config.jobs.dedupe_in_flight) {
+    const fingerprint = deliveryFingerprint({ kind: input.body?.kind ?? (typeof input.payload === "string" ? "text" : "json"), payload: input.payload, rawBody: input.body?.raw, query: input.query });
+    const existing = deps.queue.findInFlight(input.skill.name, fingerprint);
+    if (existing) return { job: deps.store.get(existing.id) ?? existing, duplicate: true };
+  }
+  const job = createManualJob(deps, input);
+  deps.queue.enqueue(job);
+  return { job, duplicate: false };
 }

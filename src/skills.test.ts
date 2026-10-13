@@ -156,3 +156,13 @@ describe("schedule options", () => {
     expect(() => parseSkillDocument(doc("  webhook: false"), "/tmp/s")).toThrow(/needs a `schedule`/);
   });
 });
+
+describe("exclusive working directory configuration", () => {
+  it("accepts explicit serialization without changing the default", () => {
+    const doc = (value: string) => `---\nname: s\ndescription: s\nskillhook:\n${value}\n---\nBody\n`;
+    expect(parseSkillDocument(doc("  serialize_cwd: true\n  concurrency: 4"), "/tmp/s").config.serialize_cwd).toBe(true);
+    expect(parseSkillDocument(doc("  serialize_cwd: false"), "/tmp/s").config.serialize_cwd).toBe(false);
+    expect(parseSkillDocument(doc("  concurrency: 4"), "/tmp/s").config.serialize_cwd).toBeUndefined();
+    expect(() => parseSkillDocument(doc("  serialize_cwd: yes"), "/tmp/s")).toThrow(/serialize_cwd/);
+  });
+});

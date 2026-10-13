@@ -309,7 +309,7 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
 
   server.registerTool(
     "replay_delivery",
-    { title: "Replay delivery", description: "Runs a recorded delivery again through the skill as it is now, as a new job with trigger `replay`: the original payload, headers and query, no signature check, `when` filters applied unless skip_filters, never de-duplicated. A delivery that was rejected needs `force` (its body was never verified). Uses the running server when there is one, otherwise runs in-process.", inputSchema: z.object({ ...replayInput, force: z.boolean().optional().describe("replay a delivery that was rejected or errored") }) },
+    { title: "Replay delivery", description: "Runs a recorded delivery again through the skill as it is now, as a new job with trigger `replay`: the original payload, headers and query, no signature check, `when` filters applied unless skip_filters, identical in-flight work is reused when deduplication is enabled on the running server. A delivery that was rejected needs `force` (its body was never verified). Uses the running server when there is one, otherwise runs in-process.", inputSchema: z.object({ ...replayInput, force: z.boolean().optional().describe("replay a delivery that was rejected or errored") }) },
     wrap((input) => replayTool("delivery", input)),
   );
 

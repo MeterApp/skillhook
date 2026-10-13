@@ -579,7 +579,7 @@ describe("HTTP surface", () => {
     const replayJob = store.get(String(forced.job_id))!;
     expect(replayJob).toMatchObject({ trigger: "replay", replay_of: { delivery: skippedId }, source: { method: "REPLAY", ip: "127.0.0.1" } });
     expect(replayJob.delivery_id).toBeUndefined();
-    expect(replayJob.fingerprint).toBeUndefined();
+    expect(replayJob.fingerprint).toMatch(/^[a-f0-9]{64}$/);
     const event = store.readEvent(replayJob.id);
     expect(event).toMatchObject({ trigger: "replay", body_kind: "json", payload: { action: "deleted", marker: "rp-skip" } });
     expect(event.headers["x-skillhook-replay-of"]).toBe(skippedId);
@@ -594,7 +594,7 @@ describe("HTTP surface", () => {
     const forcedRejected = await json(await fetch(`${base}/deliveries/${rejectedId}/replay`, { method: "POST", headers: auth, body: JSON.stringify({ force: true, wait: 20, model: "sonnet" }) }));
     expect(forcedRejected).toMatchObject({ status: "succeeded", replay_of: { delivery: rejectedId } });
     expect(String(forcedRejected.result)).toContain("model=sonnet");
-    // An accepted delivery replays through its job, a job replays directly, and neither is folded into an in-flight twin.
+    // An accepted delivery replays through its job, a job replays directly, and finished work can be replayed again.
     const original = await json(await fetch(`${base}/hooks/hello?wait=20`, { method: "POST", body: '{"name":"rp-job"}', headers: { authorization: "Bearer hello-secret", "content-type": "application/json" } }));
     const viaJob = await json(await fetch(`${base}/jobs/${original.job_id}/replay`, { method: "POST", headers: auth, body: JSON.stringify({ wait: 20 }) }));
     expect(viaJob).toMatchObject({ status: "succeeded", replay_of: { job: original.job_id } });
@@ -606,8 +606,7 @@ describe("HTTP surface", () => {
     await waitForJob(String(viaDelivery.job_id));
     const twin = await json(await fetch(`${base}/hooks/twin`, { method: "POST", body: '{"replay":"twin"}', headers: { authorization: "Bearer tw", "content-type": "application/json" } }));
     const twinReplay = await json(await fetch(`${base}/jobs/${twin.job_id}/replay`, { method: "POST", headers: auth, body: "{}" }));
-    expect(twinReplay.status).toBe("queued");
-    expect(twinReplay.job_id).not.toBe(twin.job_id);
+    expect(twinReplay).toMatchObject({ duplicate: true, in_flight: true, job_id: twin.job_id });
     await waitForJob(String(twin.job_id), 25_000);
     await waitForJob(String(twinReplay.job_id), 25_000);
     expect((await fetch(`${base}/jobs/20200101T000000Z-aaaaaa/replay`, { method: "POST", headers: auth, body: "{}" })).status).toBe(404);
@@ -615,7 +614,7 @@ describe("HTTP surface", () => {
     expect((await fetch(`${base}/jobs/${original.job_id}/replay`, { method: "POST", headers: auth, body: JSON.stringify({ runner: "gemini" }) })).status).toBe(400);
     expect((await fetch(`${base}/jobs/${original.job_id}/replay`, { method: "POST", headers: { "x-forwarded-for": "203.0.113.1", "content-type": "application/json" }, body: "{}" })).status).toBe(401);
     const replays = (await json(await fetch(`${base}/jobs?trigger=replay&limit=20`, { headers: auth }))) as unknown as { jobs: { trigger: string }[] };
-    expect(replays.jobs.length).toBeGreaterThanOrEqual(5);
+    expect(replays.jobs.length).toBeGreaterThanOrEqual(4);
     expect(replays.jobs.every((j) => j.trigger === "replay")).toBe(true);
   });
 
