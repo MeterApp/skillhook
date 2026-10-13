@@ -554,3 +554,5 @@ skillhook:
 
 Not used by the shell runner; document what handle.py does here.
 ```
+
+Fallback runners also accept targets such as `{ runner: codex, model: gpt-6.1-sol, effort: medium }` (JSON uses quoted keys and values). A target overrides the original model and effort when selected; plain runner names keep the original settings.

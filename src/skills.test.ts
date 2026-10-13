@@ -109,6 +109,7 @@ describe("fallback and retry options", () => {
   it("accepts runner lists and failure kinds and rejects anything else", () => {
     const doc = (block: string) => `---\nname: f\ndescription: f\nskillhook:\n${block}\n---\nBody\n`;
     expect(parseSkillDocument(doc("  fallback:\n    runners: [codex, shell]\n    on: [not_ready, rate_limit]"), "/tmp/f").config.fallback).toEqual({ runners: ["codex", "shell"], on: ["not_ready", "rate_limit"] });
+    expect(parseSkillDocument(doc("  fallback:\n    runners: [{runner: codex, model: gpt-6.1-sol, effort: medium}]"), "/tmp/f").config.fallback?.runners).toEqual([{ runner: "codex", model: "gpt-6.1-sol", effort: "medium" }]);
     expect(parseSkillDocument(doc("  retry:\n    attempts: 2\n    on: [crash]\n    backoff_seconds: 5"), "/tmp/f").config.retry).toEqual({ attempts: 2, on: ["crash"], backoff_seconds: 5 });
     expect(() => parseSkillDocument(doc("  fallback:\n    runners: [gemini]"), "/tmp/f")).toThrow(/fallback/);
     expect(() => parseSkillDocument(doc("  fallback:\n    runners: [codex]\n    on: [timeout]"), "/tmp/f")).toThrow(/fallback/);

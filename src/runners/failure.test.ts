@@ -21,6 +21,9 @@ describe("classifyFailure", () => {
     expect(classifyFailure({ status: "failed", error: "simulated failure", exitCode: 1, signal: null, resultEvent: { subtype: "error", is_error: true }, reported: true })).toEqual({ kind: "unknown", code: "error", retryable: false, message: "simulated failure" });
     // The last stderr lines count when the error text says nothing.
     expect(classifyFailure({ status: "failed", error: "claude exited with code 1", exitCode: 1, signal: null, stderr: "Error: Invalid API key · Please run /login" })).toMatchObject({ kind: "auth" });
+    for (const error of ["You've hit your session limit · resets 6pm (America/New_York)", "You've hit your weekly limit", "Credit balance is too low", "Out of credits"]) {
+      expect(classifyFailure({ status: "failed", error, exitCode: 1, signal: null, reported: true })).toMatchObject({ kind: "usage_limit", retryable: false });
+    }
     expect(FAILURE_KINDS).toHaveLength(9);
   });
 

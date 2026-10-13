@@ -22,8 +22,8 @@ export type FallbackTrigger = "not_ready" | "auth" | "usage_limit" | "rate_limit
 export const FALLBACK_TRIGGERS: FallbackTrigger[] = ["not_ready", "auth", "usage_limit", "rate_limit", "crash"];
 export const FallbackSchema = z
   .object({
-    /** Runners to use instead, in order of preference; `shell` only for a skill that has a `shell.command`. */
-    runners: z.array(z.enum(["claude", "codex", "shell"])).min(1),
+    /** Runners in order of preference, or targets with their own model and effort; `shell` requires `shell.command`. */
+    runners: z.array(z.union([z.enum(["claude", "codex", "shell"]), z.object({ runner: z.enum(["claude", "codex", "shell"]), model: z.string().optional(), effort: z.string().optional() }).strict()])).min(1),
     /** When to fall back. Default `[not_ready]`: only before the run, when the runner is not installed or not logged in. The others re-run a failed job on the next runner and are safe only for idempotent skills. */
     on: z.array(z.enum(FALLBACK_TRIGGERS as [FallbackTrigger, ...FallbackTrigger[]])).optional(),
   })
@@ -46,7 +46,7 @@ const RETRYABLE: FailureKind[] = ["rate_limit", "crash"];
 
 const PATTERNS: { kind: FailureKind; needles: string[] }[] = [
   { kind: "rate_limit", needles: ["rate limit", "rate_limit", "too many requests", "overloaded", " 429", "429 "] },
-  { kind: "usage_limit", needles: ["usage limit", "usage_limit", "hit your limit", "out of extra usage", "quota", "insufficient_quota", "limit will reset"] },
+  { kind: "usage_limit", needles: ["usage limit", "usage_limit", "hit your limit", "hit your session limit", "hit your weekly limit", "credit balance is too low", "out of credits", "out of extra usage", "quota", "insufficient_quota", "limit will reset"] },
   { kind: "auth", needles: ["failed to authenticate", "not logged in", "please run /login", "claude login", "codex login", "oauth", "invalid api key", "invalid x-api-key", "authentication", "unauthorized", "unauthenticated", " 401", "401 ", "credentials", "login required", "please log in"] },
   { kind: "budget", needles: ["max_budget", "max budget", "budget"] },
   { kind: "max_turns", needles: ["max_turns", "max turns", "maximum turns", "maximum number of turns"] },

@@ -49,6 +49,8 @@ export interface RunnerInvocation {
 
 /** Facts extracted from the runner's live output stream. */
 export interface StreamState {
+  /** Actual agent output or tool activity; excludes synthetic API error notices. */
+  producedOutput?: boolean;
   sessionId?: string;
   lastMessage?: string;
   failed?: string;
