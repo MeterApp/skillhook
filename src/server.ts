@@ -22,7 +22,7 @@ import { createAdhocJob, createManualJob } from "./manual.js";
 import { deliveryFingerprint, parseBody, redactHeaders, TRIGGERS, type BodyKind, type Trigger, type WebhookEvent } from "./payload.js";
 import { readProgress } from "./progress.js";
 import { collectStats, parseSince } from "./stats.js";
-import { planReplay, ReplayError, replayOfFor, type ReplayPlan } from "./replay.js";
+import { enqueueReplay, planReplay, ReplayError, replayOfFor, type ReplayPlan } from "./replay.js";
 import { JOB_OUTCOMES, jobOutcome, type JobOutcome } from "./response.js";
 import type { JobQueue } from "./queue.js";
 import { resolveRunSettings } from "./run.js";
@@ -577,11 +577,10 @@ export function createServer(deps: ServerDeps): Server {
       logger.info("replay skipped by filter", { skill: plan.skill.name, replay_of: replayOf, reason: plan.reason });
       return send(res, 200, { ok: true, skipped: true, reason: plan.reason, replay_of: replayOf });
     }
-    const job = createManualJob({ config, store }, plan.input);
-    logger.info("replay accepted", { skill: job.skill, job: job.id, replay_of: replayOf, trigger: job.trigger });
-    queue.enqueue(job);
+    const { job, duplicate } = enqueueReplay({ config, store, queue }, plan.input);
+    logger.info(duplicate ? "replay already in flight" : "replay accepted", { skill: job.skill, job: job.id, replay_of: replayOf, trigger: job.trigger });
     const wait = Math.min(Number(body.wait ?? 0) || parseWait(url, headers, config.max_wait_seconds), config.max_wait_seconds);
-    return respondWithJob(res, job, wait, { replay_of: replayOf });
+    return respondWithJob(res, job, wait, { replay_of: replayOf, ...(duplicate ? { duplicate: true, in_flight: true } : {}) });
   }
 
   /** `GET /jobs/<id>/events`: a `status` snapshot, then `stdout`/`stderr` chunks as the files grow and `status` updates from the bus, then `end`. */

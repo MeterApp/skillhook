@@ -416,7 +416,7 @@ The log lives in `jobs/.delivery-log/` and keeps the newest `deliveries.max` (20
 
 ## `POST /deliveries/<id>/replay`
 
-Runs a recorded delivery again through the skill as it is now: the original payload, headers (redacted, plus `x-skillhook-replay-of: <delivery id>`), query string and sender IP, as a new job with `trigger: "replay"`, `source.method: "REPLAY"` and `replay_of: {"delivery": "<id>", "job": "<original job id>"}` (the job is present when the delivery had been accepted; its `event.json` and `body.bin` are then what is replayed). The signature is not checked again, `when` filters apply unless skipped, and nothing is de-duplicated: a replay never counts as a duplicate and is never folded into a job still in flight, and it carries no `delivery_id` itself.
+Runs a recorded delivery again through the skill as it is now: the original payload, headers (redacted, plus `x-skillhook-replay-of: <delivery id>`), query string and sender IP, as a new job with `trigger: "replay"`, `source.method: "REPLAY"` and `replay_of: {"delivery": "<id>", "job": "<original job id>"}` (the job is present when the delivery had been accepted; its `event.json` and `body.bin` are then what is replayed). The signature is not checked again, `when` filters apply unless skipped, and identical in-flight work is reused when deduplication is enabled. A newly created replay carries no `delivery_id` itself.
 
 Body: a JSON object, all fields optional.
 
@@ -427,7 +427,7 @@ Body: a JSON object, all fields optional.
 | `runner`, `model`, `effort` | string | Overrides for this run, as in `POST /skills/<skill>/run`. |
 | `wait` | number | Seconds to wait for the result (also `?wait=`); clamped to `max_wait_seconds`. |
 
-Responses are the webhook shapes (`202` queued, `200` finished when waiting) plus `replay_of`. Errors: `404 unknown_delivery`, `404 unknown_skill` (the skill is gone or disabled), `409 replay_needs_force`, `409 no_body` (the body was not kept: `deliveries.store_bodies` was off, it was cut at `deliveries.body_max_bytes`, or the record was compacted away), `400 bad_request` (not a JSON object, or an unknown `runner`).
+Responses are the webhook shapes (`202` queued, `200` finished when waiting) plus `replay_of`. With in-flight deduplication enabled, an identical payload and query in this skill returns the existing job with `duplicate: true, in_flight: true` instead of enqueueing another replay. This applies to HTTP and cloud recovery, including replay chains. Distinct message/source identifiers in the payload stay separate; conversation identity alone is never the key. Overrides and `force` do not bypass deduplication. Finished jobs can be replayed again; the application must still check side-effect receipts. Errors: `404 unknown_delivery`, `404 unknown_skill` (the skill is gone or disabled), `409 replay_needs_force`, `409 no_body` (the body was not kept: `deliveries.store_bodies` was off, it was cut at `deliveries.body_max_bytes`, or the record was compacted away), `400 bad_request` (not a JSON object, or an unknown `runner`).
 
 ```bash
 curl -sS -X POST -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" -H "Content-Type: application/json" \

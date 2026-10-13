@@ -4,6 +4,8 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- Reuse identical in-flight replay work in HTTP and cloud recovery; alternate eligible fresh/replay queue slots and serialize shared Git worktrees by default, with `serialize_cwd` overrides for coordinated parallel jobs or non-Git directories.
+
 ## 0.10.1 (2026-10-13)
 
 - Fallback targets accept a runner, model and effort. Recognise Claude session/weekly limits and exhausted credits, ignore synthetic API error notices when checking whether fallback is safe, and never revisit a failed runner in the fallback chain.

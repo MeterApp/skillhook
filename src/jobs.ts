@@ -80,7 +80,7 @@ export interface JobRecord {
   /** Earlier attempts of this job (a retry, or a fallback after a failed run); the record itself is the last one. */
   attempts?: JobAttempt[];
   delivery_id?: string;
-  /** Hash of payload + query for in-flight de-duplication of webhook deliveries (see `deliveryFingerprint`). */
+  /** Hash of payload + query for in-flight de-duplication of deliveries and recovery (see `deliveryFingerprint`). */
   fingerprint?: string;
   source: JobSource;
 }
