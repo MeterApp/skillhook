@@ -2,7 +2,7 @@
 // Emulates `claude -p --output-format stream-json`: reads the prompt from stdin and prints
 // stream-json events. Controlled through env vars the test passes via env_passthrough:
 //   FAKE_CLAUDE_FAIL=<message>  -> emit an is_error result and exit 1
-//   FAKE_CLAUDE_FAIL_KIND=<auth|usage_limit|rate_limit|max_turns|budget> -> the failure the real CLI prints for it (also `auth`
+//   FAKE_CLAUDE_FAIL_KIND=<auth|usage_limit|session_limit|rate_limit|max_turns|budget> -> the failure the real CLI prints for it (also `auth`
 //                                  when CLAUDE_CONFIG_DIR/logged-out exists, like a logged-out install)
 //   FAKE_CLAUDE_SLEEP_MS=<ms>   -> delay before answering (timeout/cancel tests)
 //   FAKE_CLAUDE_RECORD=<file>   -> write argv, prompt, env and cwd as JSON for assertions
@@ -126,11 +126,16 @@ if (failKind) {
   // Captured shapes: the real CLI reports an auth failure as `subtype: success` with `is_error: true`.
   const canned = {
     auth: { subtype: "success", result: "Failed to authenticate: OAuth session expired and could not be refreshed" },
+    session_limit: { subtype: "success", result: "You've hit your session limit · resets 6pm (America/New_York)" },
     usage_limit: { subtype: "success", result: "You've hit your usage limit. Your limit will reset at 3pm (UTC)." },
     rate_limit: { subtype: "error_during_execution", result: 'API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit."}}' },
     max_turns: { subtype: "error_max_turns", result: "Reached max turns (1)" },
     budget: { subtype: "error_max_budget_usd", result: "Reached max budget ($0.01)" },
   }[failKind] ?? { subtype: "success", result: `simulated ${failKind} failure` };
+  if (failKind === "session_limit") {
+    if (prompt.includes("already acting")) out({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: {} }] } });
+    out({ type: "assistant", is_api_error_message: true, error: "rate_limit", message: { model: "<synthetic>", content: [{ type: "text", text: canned.result }] } });
+  }
   out({ type: "result", is_error: true, ...canned, session_id: sessionId, total_cost_usd: 0, num_turns: 1, duration_ms: 5 });
   process.exit(1);
 }

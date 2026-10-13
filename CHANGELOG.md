@@ -4,6 +4,10 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.10.1 (2026-10-13)
+
+- Fallback targets accept a runner, model and effort. Recognise Claude session/weekly limits and exhausted credits, ignore synthetic API error notices when checking whether fallback is safe, and never revisit a failed runner in the fallback chain.
+
 ## 0.10.0 (2026-10-09)
 
 - `skillhook cloud login` signs in with the browser: it shows a code, opens the cloud's sign-in page, and the person

@@ -180,7 +180,7 @@ Every job that ends `failed` or `timed_out` carries `failure: {kind, code?, retr
 ```yaml
 skillhook:
   fallback:
-    runners: [codex]              # in order of preference; shell only for a skill with shell.command
+    runners: [{runner: codex, model: gpt-6.1-sol, effort: medium}] # in order of preference; shell only for a skill with shell.command
     on: [not_ready]               # default; add auth, usage_limit, rate_limit, crash to re-run a failed job on the next runner
   retry:
     attempts: 1                   # more runs on the same runner (1–3)
@@ -189,6 +189,8 @@ skillhook:
 ```
 
 `fallback` names other runners for when this one cannot run. With the default `on: [not_ready]` it acts only before the run: the readiness check fails, the first ready runner of the list takes over, and the job records `runner` (the one that ran), `runner_requested` (the one asked for) and `runner_reason` (`fallback: claude not logged in`). `defaults.fallback` in `skillhook.json` applies to every skill that sets none.
+
+Retries on the current runner happen first; once exhausted, fallbacks are considered in list order. Each runner is visited at most once per job (same-runner retries are still allowed). Object targets set their own `model` and `effort`; plain names retain the original settings. Claude synthetic API error messages do not count as agent work, but real assistant messages and tool activity prevent fallback.
 
 The other triggers (`auth`, `usage_limit`, `rate_limit`, `crash`) and `retry` act after a run failed that way, **only when the agent had not produced anything yet** (no assistant message): the failed run becomes an entry of `attempts` (`{runner, started_at, finished_at, status, error, failure}`), the next run starts on the same runner (`retry`, after `backoff_seconds`) or on the next ready fallback runner, and the job record is the last attempt. A run that had already started acting is never repeated, because a repeat could redo its side effects; both features are off by default and belong on idempotent skills only. Each attempt gets the full `timeout_seconds`; `stdout.log` / `stderr.log` keep every attempt, separated by `--- attempt N (<runner>) ---`.
 

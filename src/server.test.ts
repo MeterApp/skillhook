@@ -85,6 +85,7 @@ beforeAll(async () => {
     FAKE_CLAUDE_ASK: "Deploy A or B?",
     FAKE_CLAUDE_ASK_WAIT_MS: "4000",
     SKILLHOOK_SECRET_FLAKY: "fl",
+    SKILLHOOK_SECRET_SESSIONFALLBACK: "sf",
     SKILLHOOK_SECRET_RETRIER: "re",
     SKILLHOOK_SECRET_FALLBACKY: "fb",
     FAKE_CLAUDE_FAIL_KIND: "rate_limit",
@@ -94,6 +95,7 @@ beforeAll(async () => {
   writeSkill(paths, "asker", "description: ask\nskillhook:\n  timeout_seconds: 2\n  human_wait_seconds: 20\n  env: [FAKE_CLAUDE_ASK, FAKE_CLAUDE_ASK_WAIT_MS]");
   writeSkill(paths, "askalone", "description: alone\nskillhook:\n  timeout_seconds: 30\n  env: [FAKE_CLAUDE_ASK, FAKE_CLAUDE_ASK_WAIT_MS]");
   writeSkill(paths, "flaky", "description: fl\nskillhook:\n  env: [FAKE_CLAUDE_FAIL_KIND]\n  fallback:\n    runners: [codex]\n    on: [not_ready, rate_limit]");
+  writeSkill(paths, "sessionfallback", "description: sf\nskillhook:\n  model: opus\n  effort: high\n  env: [FAKE_CLAUDE_FAIL_KIND, FAKE_CODEX_FAIL_KIND]\n  fallback:\n    runners: [{runner: codex, model: gpt-6.1-sol, effort: medium}, claude]\n    on: [not_ready, usage_limit] ");
   writeSkill(paths, "retrier", "description: re\nskillhook:\n  env: [FAKE_CLAUDE_FAIL_KIND]\n  retry:\n    attempts: 1\n    on: [rate_limit]\n    backoff_seconds: 0");
   writeSkill(paths, "fallbacky", "description: fb\nskillhook:\n  fallback:\n    runners: [codex]");
   writeSkill(paths, "structured", "description: st\nskillhook:\n  response:\n    mode: structured\n  env: [FAKE_CLAUDE_OUTCOME]");
@@ -771,6 +773,29 @@ describe("HTTP surface", () => {
     const first = JSON.parse(got[0]!.data) as { data: { report: { deep: boolean }; changed: { name: string; from: string | null; to: string }[] } };
     expect(first.data.report.deep).toBe(false);
     expect(first.data.changed.find((c) => c.name === "node")).toEqual({ name: "node", from: null, to: "ok" });
+  });
+
+  it("falls back on a synthetic Claude session limit with target settings, but never after tool activity or in a cycle", async () => {
+    writeEnv(paths, { ...ENV_BASE, FAKE_CLAUDE_FAIL_KIND: "session_limit" });
+    try {
+      const send = async (body = "{}") => json(await fetch(`${base}/hooks/sessionfallback?wait=20`, { method: "POST", body, headers: { authorization: "Bearer sf" } }));
+      const fell = await send();
+      const job = store.get(String(fell.job_id))!;
+      expect(job).toMatchObject({ status: "succeeded", runner: "codex", model: "gpt-6.1-sol", effort: "medium", runner_requested: "claude" });
+      expect(job.command).toContain("gpt-6.1-sol");
+      expect(job.command).toContain('model_reasoning_effort="medium"');
+      expect(job.attempts).toHaveLength(1);
+      expect(job.attempts?.[0]?.failure?.kind).toBe("usage_limit");
+      const acted = await send('{"text":"already acting"}');
+      expect(store.get(String(acted.job_id))).toMatchObject({ status: "failed", runner: "claude", failure: { kind: "usage_limit" } });
+      expect(store.get(String(acted.job_id))?.attempts).toBeUndefined();
+      writeEnv(paths, { ...ENV_BASE, FAKE_CLAUDE_FAIL_KIND: "session_limit", FAKE_CODEX_FAIL_KIND: "usage_limit" });
+      const exhausted = await send();
+      expect(store.get(String(exhausted.job_id))).toMatchObject({ status: "failed", runner: "codex", failure: { kind: "usage_limit" } });
+      expect(store.get(String(exhausted.job_id))?.attempts).toHaveLength(1);
+    } finally {
+      writeEnv(paths, ENV_BASE);
+    }
   });
 
   it("classifies failures, retries on the same runner and falls back to another after a failed run", async () => {

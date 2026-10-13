@@ -10,7 +10,7 @@ import { answerQuestion, readTimeline, type JobAnswer, type JobQuestion, type Pr
 import { deriveOutcome, resolveJobResponse } from "./response.js";
 import type { ReadinessCache, RunnerReadiness } from "./readiness.js";
 import { prepareRun } from "./run.js";
-import { classifyFailure, type FailureKind, type FallbackTrigger, type JobFailure } from "./runners/failure.js";
+import { classifyFailure, type FailureKind, type FallbackConfig, type FallbackTrigger, type JobFailure } from "./runners/failure.js";
 import type { RunnerOutcome, StreamState } from "./runners/index.js";
 import { lastLines } from "./runners/types.js";
 import type { SkillRegistry } from "./registry.js";
@@ -46,7 +46,7 @@ interface AttemptResult {
 }
 
 /** The skill's `fallback:` (else `defaults.fallback`), with the default trigger. */
-function fallbackPolicy(skill: Skill, config: Config): { runners: RunnerName[]; on: FallbackTrigger[] } {
+function fallbackPolicy(skill: Skill, config: Config): { runners: FallbackConfig["runners"]; on: FallbackTrigger[] } {
   const spec = skill.config.fallback ?? config.defaults.fallback;
   return { runners: spec?.runners ?? [], on: spec?.on ?? ["not_ready"] };
 }
@@ -300,13 +300,15 @@ export class JobQueue extends EventEmitter {
   }
 
   /** The first usable runner of `candidates` other than `exclude` (`shell` only for a skill that has a command). */
-  private async firstReady(candidates: RunnerName[], exclude: RunnerName, skill: Skill): Promise<RunnerReadiness | undefined> {
-    for (const candidate of candidates) {
-      if (candidate === exclude) continue;
+  private async firstReady(candidates: FallbackConfig["runners"], exclude: Set<RunnerName>, skill: Skill): Promise<{ runner: RunnerName; model?: string; effort?: string } | undefined> {
+    for (const entry of candidates) {
+      const target = typeof entry === "string" ? { runner: entry } : entry;
+      const candidate = target.runner;
+      if (exclude.has(candidate)) continue;
       if (candidate === "shell" && !skill.config.shell?.command) continue;
       try {
         const readiness = await this.deps.readiness?.get(candidate);
-        if (readiness?.ready) return readiness;
+        if (readiness?.ready) return target;
       } catch {
         /* a probe that fails is not a ready runner */
       }
@@ -338,6 +340,7 @@ export class JobQueue extends EventEmitter {
 
     // Pre-flight: a runner that is not installed or not logged in never spawns; a fallback takes over or the job fails fast.
     const policy = fallbackPolicy(skill, config);
+    const tried = new Set<RunnerName>([running.job.runner]);
     if (this.deps.readiness && running.job.runner !== "shell") {
       let readiness: RunnerReadiness | undefined;
       try {
@@ -346,14 +349,15 @@ export class JobQueue extends EventEmitter {
         logger.warn("readiness check failed; running anyway", { job: job.id, runner: running.job.runner, error: errorMessage(error) });
       }
       if (readiness && !readiness.ready) {
-        const alternative = policy.on.includes("not_ready") ? await this.firstReady(policy.runners, running.job.runner, skill) : undefined;
+        const alternative = policy.on.includes("not_ready") ? await this.firstReady(policy.runners, tried, skill) : undefined;
         if (!alternative) {
           this.finish(running.job, { status: "failed", started_at: nowIso(), error: `${running.job.runner} is not ready: ${readiness.detail}${readiness.hint ? ` (${readiness.hint})` : ""}`, failure: { kind: readiness.found ? "auth" : "not_found", retryable: false, message: readiness.detail } });
           return;
         }
         logger.warn("runner not ready; using the fallback", { job: job.id, skill: job.skill, runner: running.job.runner, fallback: alternative.runner, detail: readiness.detail });
-        running.job = store.update(job.id, { runner: alternative.runner, runner_requested: running.job.runner, runner_reason: `fallback: ${running.job.runner} ${readiness.detail}` });
-        this.events.emit("job.updated", { job: running.job, fields: ["runner", "runner_requested", "runner_reason"] });
+        tried.add(alternative.runner);
+        running.job = store.update(job.id, { runner: alternative.runner, ...(alternative.model ? { model: alternative.model } : {}), ...(alternative.effort ? { effort: alternative.effort } : {}), runner_requested: running.job.runner, runner_reason: `fallback: ${running.job.runner} ${readiness.detail}` });
+        this.events.emit("job.updated", { job: running.job, fields: ["runner", "model", "effort", "runner_requested", "runner_reason"] });
       }
     }
 
@@ -367,16 +371,19 @@ export class JobQueue extends EventEmitter {
       if (kind && (attempt.status === "failed" || attempt.status === "timed_out") && !attempt.producedOutput && !running.cancelled && !this.stopping) {
         if (kind === "auth") this.deps.readiness?.invalidate(running.job.runner);
         const sameRunner = retriesLeft > 0 && retryOn.includes(kind);
-        const alternative = !sameRunner && (policy.on as string[]).includes(kind) ? await this.firstReady(policy.runners, running.job.runner, skill) : undefined;
+        const alternative = !sameRunner && (policy.on as string[]).includes(kind) ? await this.firstReady(policy.runners, tried, skill) : undefined;
         if (sameRunner || alternative) {
           attempts.push({ runner: running.job.runner, started_at: attempt.startedAt, finished_at: nowIso(), status: attempt.status, ...(attempt.error ? { error: attempt.error } : {}), failure: attempt.failure });
           const fields: (keyof JobRecord)[] = ["attempts"];
           const patch: Partial<JobRecord> = { attempts: [...attempts] };
           if (alternative) {
+            tried.add(alternative.runner);
             patch.runner = alternative.runner;
+            if (alternative.model) patch.model = alternative.model;
+            if (alternative.effort) patch.effort = alternative.effort;
             patch.runner_requested = running.job.runner_requested ?? running.job.runner;
             patch.runner_reason = `fallback: ${running.job.runner} failed (${kind})`;
-            fields.push("runner", "runner_requested", "runner_reason");
+            fields.push("runner", "model", "effort", "runner_requested", "runner_reason");
           }
           running.job = store.update(job.id, patch);
           this.events.emit("job.updated", { job: running.job, fields });
@@ -567,7 +574,7 @@ export class JobQueue extends EventEmitter {
       status,
       failure,
       error,
-      producedOutput: Boolean(state.lastMessage),
+      producedOutput: Boolean(state.producedOutput || state.lastMessage),
       startedAt,
       patch: {
         ...(outcomeOverride ? { outcome: outcomeOverride } : {}),
