@@ -6,7 +6,7 @@ import type { Config, RunnerName } from "./config.js";
 import { parseFrontmatter } from "./frontmatter.js";
 import { newJobId } from "./ids.js";
 import type { JobRecord, JobStore } from "./jobs.js";
-import { redactHeaders, type BodyKind, type Trigger, type WebhookEvent } from "./payload.js";
+import { deliveryFingerprint, redactHeaders, type BodyKind, type Trigger, type WebhookEvent } from "./payload.js";
 import type { JobAnswer, JobQuestion } from "./progress.js";
 import { resolveRunSettings } from "./run.js";
 import { parseSkillDocument, SkillError, type Skill } from "./skills.js";
@@ -76,6 +76,7 @@ export function createManualJob(ops: { config: Config; store: JobStore }, input:
     source: { ip: input.sourceIp ?? "127.0.0.1", method: input.sourceMethod ?? "LOCAL", path: event.path, content_type: event.content_type, user_agent: event.headers["user-agent"] },
     delivery_id: input.deliveryId,
     replay_of: input.replayOf,
+    fingerprint: deliveryFingerprint({ kind: event.body_kind, payload: event.payload, rawBody: input.body?.raw, query: event.query }),
     adhoc: input.adhoc,
     skill_file: input.skill.file,
     resume_of: input.resume?.of,

@@ -16,7 +16,7 @@ import { generateSecretFor, resolveSecretName, setSecret, type Ops } from "../op
 import type { Paths } from "../paths.js";
 import type { JobQueue } from "../queue.js";
 import type { SkillRegistry } from "../registry.js";
-import { planReplay, ReplayError } from "../replay.js";
+import { enqueueReplay, planReplay, ReplayError } from "../replay.js";
 import type { RunOverrides } from "../run.js";
 import { buildSchedulePayload } from "../scheduler.js";
 import type { ServerControl } from "../server.js";
@@ -81,9 +81,8 @@ export function createControlHandlers(deps: ControlDeps): Partial<Record<Command
       throw error;
     }
     if (!plan.ok) return { result: { accepted: false, skipped: true, reason: plan.reason } };
-    const job = createManualJob({ config: deps.config, store: deps.store }, { ...plan.input, headers: { ...(plan.input.headers ?? {}), "x-skillhook-cloud-user": requester(command) } });
-    deps.queue.enqueue(job);
-    return { result: { accepted: true, job_id: job.id, skill: job.skill, replay_of: job.replay_of } };
+    const { job, duplicate } = enqueueReplay(deps, { ...plan.input, headers: { ...(plan.input.headers ?? {}), "x-skillhook-cloud-user": requester(command) } });
+    return { result: { accepted: true, job_id: job.id, skill: job.skill, replay_of: job.replay_of, ...(duplicate ? { duplicate: true, in_flight: true } : {}) } };
   };
 
   return {

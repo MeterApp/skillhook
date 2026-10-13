@@ -183,3 +183,12 @@ To iterate on a draft before installing it, or to try a change without touching 
 Keep SKILL.md under about 150 lines; move API shapes, field lists and long procedures into `references/*.md` and tell the agent when to read them.
 
 Fallback runners also accept targets such as `{ runner: codex, model: gpt-6.1-sol, effort: medium }` (JSON uses quoted keys and values). A target overrides the original model and effort when selected; plain runner names keep the original settings.
+
+Git worktrees are exclusive by default, including jobs below the worktree root.
+For shared mutable directories outside Git, set `skillhook.serialize_cwd: true`;
+set false only when parallel jobs coordinate their edits.
+The server reserves the resolved cwd before preparing the run and holds it through
+retries and terminal completion, even across different skills and symlink aliases.
+Independent Git worktrees remain parallel. This is one server's queue guard; direct local runs, a second server and external
+workspace cleanup still need their own coordination. Keep `concurrency: 1` until
+the installed server accepts this field. Validate before deploying a new hook map.

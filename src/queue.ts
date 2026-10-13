@@ -1,6 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { createWriteStream, existsSync } from "node:fs";
+import { createWriteStream, existsSync, realpathSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { deliveryFingerprint } from "./payload.js";
 import type { Config, RunnerName } from "./config.js";
 import type { Secrets } from "./env.js";
 import { Events } from "./events.js";
@@ -9,7 +11,7 @@ import type { Logger } from "./logger.js";
 import { answerQuestion, readTimeline, type JobAnswer, type JobQuestion, type ProgressEntry } from "./progress.js";
 import { deriveOutcome, resolveJobResponse } from "./response.js";
 import type { ReadinessCache, RunnerReadiness } from "./readiness.js";
-import { prepareRun } from "./run.js";
+import { prepareRun, resolveRunSettings } from "./run.js";
 import { classifyFailure, type FailureKind, type FallbackConfig, type FallbackTrigger, type JobFailure } from "./runners/failure.js";
 import type { RunnerOutcome, StreamState } from "./runners/index.js";
 import { lastLines } from "./runners/types.js";
@@ -53,6 +55,7 @@ function fallbackPolicy(skill: Skill, config: Config): { runners: FallbackConfig
 
 interface Running {
   job: JobRecord;
+  workspace?: { cwd: string; key: string; exclusive: boolean };
   child?: ChildProcess;
   cancelled: boolean;
   timedOut: boolean;
@@ -70,13 +73,14 @@ const PROGRESS_POLL_MS = 1000;
 const WAIT_GRACE_MS = 30_000;
 
 /**
- * In-memory FIFO with a global concurrency cap and one-at-a-time per skill by default. Jobs are
+ * In-memory queue with FIFO within fresh/replay classes, bounded fairness, a global concurrency cap and one-at-a-time per skill by default. Jobs are
  * persisted before they are enqueued, so a crash loses nothing but the running processes.
  */
 export class JobQueue extends EventEmitter {
   private queued: JobRecord[] = [];
   private running = new Map<string, Running>();
   private stopping = false;
+  private lastStartedWasReplay = true;
   private watcher?: NodeJS.Timeout;
   /** Typed `job.*` events (`job.queued`, `job.started`, `job.updated`, `job.cancelled`, `job.finished`). */
   readonly events: Events;
@@ -111,8 +115,17 @@ export class JobQueue extends EventEmitter {
 
   /** The running (preferred) or queued job of this skill with the same delivery fingerprint, if any. */
   findInFlight(skill: string, fingerprint: string): JobRecord | undefined {
-    for (const running of this.running.values()) if (running.job.skill === skill && running.job.fingerprint === fingerprint) return running.job;
-    return this.queued.find((job) => job.skill === skill && job.fingerprint === fingerprint);
+    const matches = (job: JobRecord) => {
+      if (job.skill !== skill) return false;
+      if (job.fingerprint) return job.fingerprint === fingerprint;
+      // Jobs retained across an upgrade may predate manual-job fingerprints.
+      const event = this.deps.store.readEvent(job.id);
+      const bodyFile = this.deps.store.pathsFor(job.id).body;
+      const rawBody = event.body_kind === "binary" && existsSync(bodyFile) ? readFileSync(bodyFile) : undefined;
+      return deliveryFingerprint({ kind: event.body_kind, payload: event.payload, query: event.query, ...(rawBody ? { rawBody } : {}) }) === fingerprint;
+    };
+    for (const running of this.running.values()) if (matches(running.job)) return running.job;
+    return this.queued.find(matches);
   }
 
   cancel(id: string): boolean {
@@ -200,16 +213,37 @@ export class JobQueue extends EventEmitter {
     }
   }
 
+  private workspaceFor(job: JobRecord): Running["workspace"] {
+    try {
+      const skill = job.adhoc ? loadAdhocSkill(this.deps.store.pathsFor(job.id).skillDir, job.id, job.skill) : this.deps.registry.get(job.skill);
+      if (!skill) return undefined; // execute records the missing/invalid skill failure
+      const cwd = path.resolve(resolveRunSettings(skill, this.deps.config, { cwd: job.cwd }).cwd);
+      const canonical = existsSync(cwd) ? realpathSync(cwd) : cwd;
+      // Worktree roots, not shared git object stores: sibling worktrees can run
+      // independently, but a job in backend/ must not race cleanup at the root.
+      let root = canonical;
+      while (!existsSync(path.join(root, ".git")) && path.dirname(root) !== root) root = path.dirname(root);
+      const gitRoot = existsSync(path.join(root, ".git")) ? root : undefined;
+      return { cwd: canonical, key: gitRoot ?? canonical, exclusive: skill.config.serialize_cwd ?? Boolean(gitRoot) };
+    } catch { return undefined; }
+  }
+
   private tick(): void {
     if (this.stopping) return;
     while (this.running.size < this.deps.config.concurrency) {
-      const index = this.queued.findIndex((job) => {
+      const eligible = this.queued.map((job, index) => ({ job, index, workspace: this.workspaceFor(job) })).filter(({ job, workspace }) => {
         const runningForSkill = [...this.running.values()].filter((r) => r.job.skill === job.skill).length;
-        return runningForSkill < this.perSkillLimit(job.skill);
+        if (runningForSkill >= this.perSkillLimit(job.skill)) return false;
+        return !workspace || ![...this.running.values()].some((r) => r.workspace?.key === workspace.key && (workspace.exclusive || r.workspace.exclusive));
       });
-      if (index < 0) break;
-      const [job] = this.queued.splice(index, 1);
-      if (job) void this.execute(job);
+      // Alternate when both classes can run: a batch cannot starve fresh work,
+      // and a continuous stream of fresh work cannot starve recovery either.
+      const preferred = eligible.find(({ job }) => (job.trigger === "replay") !== this.lastStartedWasReplay);
+      const next = preferred ?? eligible[0];
+      if (!next) break;
+      this.queued.splice(next.index, 1);
+      this.lastStartedWasReplay = next.job.trigger === "replay";
+      void this.execute(next.job, next.workspace);
     }
   }
 
@@ -322,9 +356,9 @@ export class JobQueue extends EventEmitter {
     while (Date.now() < until && !running.cancelled && !this.stopping) await new Promise((r) => setTimeout(r, Math.min(100, until - Date.now())));
   }
 
-  private async execute(job: JobRecord): Promise<void> {
+  private async execute(job: JobRecord, workspace?: Running["workspace"]): Promise<void> {
     const { store, config, registry, logger } = this.deps;
-    const running: Running = { job, cancelled: false, timedOut: false, progressOffset: 0 };
+    const running: Running = { job: workspace ? { ...job, cwd: workspace.cwd } : job, workspace, cancelled: false, timedOut: false, progressOffset: 0 };
     this.running.set(job.id, running);
     this.ensureWatcher();
 
@@ -415,7 +449,7 @@ export class JobQueue extends EventEmitter {
 
     let prepared: ReturnType<typeof prepareRun>;
     try {
-      prepared = prepareRun({ skill, config, secrets: this.deps.secrets(), fileSecrets: this.deps.fileSecrets?.(), store, job, event: store.readEvent(job.id), cwd: job.cwd, processEnv: this.deps.processEnv });
+      prepared = prepareRun({ skill, config, secrets: this.deps.secrets(), fileSecrets: this.deps.fileSecrets?.(), store, job, event: store.readEvent(job.id), cwd: running.workspace?.cwd ?? job.cwd, processEnv: this.deps.processEnv });
     } catch (error) {
       return fail(errorMessage(error));
     }
