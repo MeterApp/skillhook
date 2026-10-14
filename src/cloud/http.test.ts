@@ -35,6 +35,56 @@ async function failure(request: Promise<unknown>): Promise<CloudHttpError> {
 }
 
 describe("cloudRequest", () => {
+  it("cancels a chunked oversized answer before consuming its remaining data", async () => {
+    let cancelled = false;
+    let reads = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        reads++;
+        controller.enqueue(new TextEncoder().encode("12345"));
+      },
+      cancel() { cancelled = true; },
+    }, { highWaterMark: 0 });
+    const reply: typeof fetch = async () => new Response(stream);
+    expect(await failure(cloudRequest("https://cloud.example", "/api/agent/sync", { fetchImpl: reply, maxResponseBytes: 8 }))).toMatchObject({ code: "too_large" });
+    expect(cancelled).toBe(true);
+    expect(reads).toBe(2);
+  });
+
+  it("counts bytes and decodes UTF-8 split across chunks at the exact limit", async () => {
+    const bytes = new TextEncoder().encode('{"text":"é"}');
+    const reply: typeof fetch = async () => new Response(new ReadableStream({
+      start(controller) {
+        for (const byte of bytes) controller.enqueue(Uint8Array.of(byte));
+        controller.close();
+      },
+    }));
+    expect((await cloudRequest("https://cloud.example", "/api/v1/me", { fetchImpl: reply, maxResponseBytes: bytes.length })).body).toEqual({ text: "é" });
+    expect(await failure(cloudRequest("https://cloud.example", "/api/v1/me", { fetchImpl: reply, maxResponseBytes: bytes.length - 1 }))).toMatchObject({ code: "too_large" });
+  });
+
+  it("times out after headers when the body stalls and cancels the producer", async () => {
+    let cancelled = false;
+    const reply: typeof fetch = async () => new Response(new ReadableStream({ cancel() { cancelled = true; } }));
+    expect(await failure(cloudRequest("https://cloud.example", "/api/agent/sync", { fetchImpl: reply, timeoutMs: 20 }))).toMatchObject({ status: 0, code: "timeout" });
+    expect(cancelled).toBe(true);
+  });
+
+  it("normalizes and redacts errors from the response body, too", async () => {
+    const reply: typeof fetch = async () => new Response(new ReadableStream({ start(controller) { controller.error(new TypeError(`body refused Bearer ${KEY}`)); } }));
+    expect(await failure(cloudRequest("https://cloud.example", "/api/v1/me", { token: KEY, fetchImpl: reply }))).toMatchObject({ status: 0, code: "network", message: "body refused Bearer [redacted]" });
+  });
+
+  it("times out an empty-chunk flood even when cancellation never settles", async () => {
+    let cancelled = false;
+    const reply: typeof fetch = async () => new Response(new ReadableStream({
+      pull(controller) { controller.enqueue(new Uint8Array()); },
+      cancel() { cancelled = true; return new Promise<void>(() => {}); },
+    }, { highWaterMark: 0 }));
+    expect(await failure(cloudRequest("https://cloud.example", "/api/agent/sync", { fetchImpl: reply, timeoutMs: 20 }))).toMatchObject({ code: "timeout" });
+    expect(cancelled).toBe(true);
+  });
+
   it("reads the public API's problems as well as the agent API's errors", async () => {
     const problem = await answering(403, JSON.stringify({ type: "https://cloud.example/docs/api#forbidden", title: "forbidden", status: 403, code: "forbidden", detail: "Sending job.answer needs the member role.", request_id: "req_7" }), { "content-type": "application/problem+json" });
     expect(await failure(cloudRequest(problem, "/api/v1/jobs", { method: "GET", token: KEY }))).toMatchObject({ status: 403, code: "forbidden", message: "Sending job.answer needs the member role.", requestId: "req_7" });

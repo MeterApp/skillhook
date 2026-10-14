@@ -2,6 +2,7 @@
 // protocol header, a timeout, JSON in and out. The token is never logged or included in an error message.
 import { VERSION } from "../version.js";
 import { PROTOCOL_VERSION } from "./protocol.js";
+import { setImmediate } from "node:timers/promises";
 
 export class CloudHttpError extends Error {
   constructor(
@@ -25,6 +26,8 @@ export interface CloudRequestOptions {
   /** Raw bytes instead of JSON (artifact chunks). */
   raw?: { body: Uint8Array; contentType: string; headers?: Record<string, string> };
   timeoutMs?: number;
+  /** Decoded response bytes; sync supplies its smaller protocol limit. */
+  maxResponseBytes?: number;
   fetchImpl?: typeof fetch;
 }
 
@@ -54,16 +57,20 @@ export async function cloudRequest<T = unknown>(baseUrl: string, path: string, o
     headers["content-type"] = "application/json";
     body = JSON.stringify(options.body);
   }
+  const signal = AbortSignal.timeout(options.timeoutMs ?? 30_000);
   let response: Response;
+  let text: string;
   try {
-    response = await fetchImpl(`${baseUrl}${path}`, { method: options.method ?? "POST", headers, body, signal: AbortSignal.timeout(options.timeoutMs ?? 30_000) });
+    response = await fetchImpl(`${baseUrl}${path}`, { method: options.method ?? "POST", headers, body, signal });
+    text = await boundedText(response, options.maxResponseBytes ?? 64 * 1024 * 1024, signal);
   } catch (error) {
-    const raw = error instanceof Error ? error.message : String(error);
+    if (error instanceof CloudHttpError) throw error;
+    const cause: unknown = signal.aborted ? signal.reason : error;
+    const raw = cause instanceof Error ? cause.message : String(cause);
     const message = options.token ? raw.replaceAll(options.token, "[redacted]") : raw;
-    const name = error instanceof Error ? error.name : "";
+    const name = cause instanceof Error ? cause.name : "";
     throw new CloudHttpError(0, name === "TimeoutError" ? "timeout" : name === "AbortError" ? "aborted" : "network", message);
   }
-  const text = await response.text();
   let parsed: unknown = undefined;
   if (text) {
     try {
@@ -81,4 +88,49 @@ export async function cloudRequest<T = unknown>(baseUrl: string, path: string, o
     throw new CloudHttpError(response.status, field("error", "code") ?? `http_${response.status}`, field("message", "detail", "error_description", "title") ?? `${response.status} ${response.statusText}`.trim(), retryAfterMs, typeof record.min_protocol_version === "number" ? record.min_protocol_version : undefined, requestId);
   }
   return { status: response.status, body: parsed as T, headers: response.headers };
+}
+
+/** Count decoded bytes, including chunked/compressed answers, before buffering or parsing JSON. */
+async function boundedText(response: Response, maxBytes: number, signal: AbortSignal): Promise<string> {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  let bytes = Buffer.alloc(0);
+  let size = 0;
+  let reads = 0;
+  try {
+    for (;;) {
+      signal.throwIfAborted();
+      // Give timeout timers a turn even if a producer emits immediately resolved, empty chunks.
+      if (++reads % 1024 === 0) await setImmediate(undefined, { signal });
+      let onAbort: () => void = () => {};
+      const aborted = new Promise<never>((_resolve, reject) => {
+        onAbort = () => reject(signal.reason);
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+      let chunk: Awaited<ReturnType<typeof reader.read>>;
+      try {
+        chunk = await Promise.race([reader.read(), aborted]);
+      } finally {
+        signal.removeEventListener("abort", onAbort);
+      }
+      const { done, value } = chunk;
+      if (done) break;
+      const nextSize = size + value.byteLength;
+      if (nextSize > maxBytes) throw new CloudHttpError(response.status, "too_large", "Cloud response exceeds the byte limit");
+      if (nextSize > bytes.length) {
+        const grown = Buffer.allocUnsafe(Math.min(maxBytes, Math.max(nextSize, 4096, bytes.length * 2)));
+        bytes.copy(grown, 0, 0, size);
+        bytes = grown;
+      }
+      bytes.set(value, size);
+      size = nextSize;
+    }
+    return bytes.toString("utf8", 0, size);
+  } catch (error) {
+    // A broken producer may never settle cancellation. Do not let it hold the sync loop.
+    void reader.cancel().catch(() => {});
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
 }

@@ -653,7 +653,7 @@ export class CloudLink {
     try {
       const signal = this.inflight.signal;
       const fetchImpl = this.deps.fetchImpl ?? fetch;
-      const answer = await cloudRequest(url, "/api/agent/sync", { token, body: request, timeoutMs: options.timeoutMs, fetchImpl: (input, init) => fetchImpl(input, { ...init, signal: signal.aborted ? signal : anySignal([signal, init?.signal ?? undefined]) }) });
+      const answer = await cloudRequest(url, "/api/agent/sync", { token, body: request, timeoutMs: options.timeoutMs, maxResponseBytes: LIMITS.max_sync_bytes, fetchImpl: (input, init) => fetchImpl(input, { ...init, signal: signal.aborted ? signal : anySignal([signal, init?.signal ?? undefined]) }) });
       const parsed = SyncResponseSchema.safeParse(answer.body);
       if (!parsed.success) throw new CloudHttpError(answer.status, "protocol_error", "the cloud answered with something this version does not understand");
       response = parsed.data;
