@@ -4,6 +4,10 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.10.2 (2026-10-14)
+
+- Preserve public configuration in cloud uploads through the local `cloud.public_env` declaration, fixing GitHub repository slugs redacted inside job links. Unknown values and credential variables stay private; cloud commands cannot change this policy.
+
 - Reuse identical in-flight replay work in HTTP and cloud recovery; alternate eligible fresh/replay queue slots and serialize shared Git worktrees by default, with `serialize_cwd` overrides for coordinated parallel jobs or non-Git directories.
 
 ## 0.10.1 (2026-10-13)

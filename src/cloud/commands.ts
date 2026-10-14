@@ -155,7 +155,7 @@ const readHandlers: Partial<Record<CommandType, CommandHandler>> = {
     if (!existsSync(file)) throw new CommandError("not_found", `job ${args.id} has no ${args.name}`);
     const size = statSync(file).size;
     const max = args.max_inline_bytes ?? ARTIFACT_INLINE_DEFAULT;
-    const values = secretValues(deps.fileSecrets());
+    const values = secretValues(deps.fileSecrets(), deps.config.cloud.public_env);
     if (size <= max || !deps.upload) {
       const text = deps.store.readArtifact(job.id, args.name, max) ?? "";
       return { result: { job_id: job.id, name: args.name, bytes: size, text: scrubSecrets(text, values), truncated: size > max } };
@@ -216,7 +216,7 @@ export interface CommandDispatcher {
 export function createCommandDispatcher(deps: CommandDeps): CommandDispatcher {
   const finish = (command: Command, startedAt: string, outcome: { ok: true; result: unknown; sensitive?: boolean; sealed?: Sealed } | { ok: false; error: { code: CommandErrorCode; message: string; hint?: string } }): CommandResult => {
     const finished = nowIso();
-    const values = secretValues(deps.fileSecrets());
+    const values = secretValues(deps.fileSecrets(), deps.config.cloud.public_env);
     const base = { command_id: command.id, started_at: startedAt, finished_at: finished, duration_ms: Math.max(0, Date.parse(finished) - Date.parse(startedAt)) };
     // Even a sensitive result is scrubbed of .env values: what must travel does so sealed, never in `result`.
     const result: CommandResult = outcome.ok

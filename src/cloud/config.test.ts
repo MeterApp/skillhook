@@ -8,7 +8,7 @@ import { assertSecureCloudUrl, CLOUD_TOKEN_ENV, cloudDisabledByEnv, commandAllow
 describe("cloud config", () => {
   it("has safe defaults and validates the cloud block", () => {
     const paths = tempHome("skillhook-cloud-");
-    expect(loadConfig(paths).cloud).toEqual({ enabled: false, url: DEFAULT_CLOUD_URL, mode: "observe", allow_commands: [], deny_commands: [], upload_payloads: true, upload_artifacts: true, ingress: true, snapshot_interval_seconds: 60, health_interval_seconds: 600, outbox_max_events: 5000 });
+    expect(loadConfig(paths).cloud).toEqual({ enabled: false, url: DEFAULT_CLOUD_URL, mode: "observe", allow_commands: [], deny_commands: [], upload_payloads: true, public_env: [], upload_artifacts: true, ingress: true, snapshot_interval_seconds: 60, health_interval_seconds: 600, outbox_max_events: 5000 });
     writeConfigFile(paths, { cloud: { enabled: true, url: "https://cloud.example", machine_id: "m_1", mode: "control", allow_commands: ["secret.set"], deny_commands: ["update.*"] } });
     expect(loadConfig(paths).cloud).toMatchObject({ enabled: true, url: "https://cloud.example", machine_id: "m_1", mode: "control", allow_commands: ["secret.set"], deny_commands: ["update.*"] });
     writeConfigFile(paths, { cloud: { mode: "root" } });
