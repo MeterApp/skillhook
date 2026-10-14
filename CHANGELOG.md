@@ -4,6 +4,8 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- Update the development-only `source-map-js` lockfile entry to 1.2.2 to address the indexed source-map denial-of-service advisory.
+
 ## 0.10.3 (2026-10-14)
 
 - Bound decoded Cloud response bodies (4 MiB for machine sync, 64 MiB for other calls), cancel oversized or stalled streams, and normalize/redact body-read errors like connection errors. This hardens transport buffering; it does not establish the cause of the reported native HTTP/2 stall.
