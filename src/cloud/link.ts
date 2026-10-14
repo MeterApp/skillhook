@@ -308,7 +308,7 @@ export class CloudLink {
   private pumpWatches(): void {
     const machineId = this.deps.config.cloud.machine_id;
     if (!machineId) return;
-    const values = secretValues(this.deps.fileSecrets());
+    const values = secretValues(this.deps.fileSecrets(), this.deps.config.cloud.public_env);
     for (const [jobId, watch] of [...this.watches]) {
       const job = this.deps.store.get(jobId);
       const finished = !job || isTerminal(job.status);
@@ -433,7 +433,7 @@ export class CloudLink {
   }
 
   private prepare(event: SkillhookEvent): unknown {
-    const values = secretValues(this.deps.fileSecrets());
+    const values = secretValues(this.deps.fileSecrets(), this.deps.config.cloud.public_env);
     const as = <K extends EventType>(_type: K) => event as SkillhookEvent<K>;
     let data: unknown;
     switch (event.type) {
@@ -623,7 +623,7 @@ export class CloudLink {
       this.lastHealthAt = now;
       void this.deps.health
         .get({ deep: true, network: false })
-        .then(({ report }) => this.outbox.append(machineId, "health.report", scrubSecrets(report, secretValues(this.deps.fileSecrets()))))
+        .then(({ report }) => this.outbox.append(machineId, "health.report", scrubSecrets(report, secretValues(this.deps.fileSecrets(), this.deps.config.cloud.public_env))))
         .catch((error: unknown) => this.deps.logger.warn("health report for the cloud failed", { error: errorMessage(error) }));
     }
     const events = this.outbox.pending(Math.min(this.maxBatch, this.hints.max_batch_events ?? LIMITS.max_events_per_sync), LIMITS.max_sync_bytes - 512 * 1024);

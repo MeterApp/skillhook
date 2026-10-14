@@ -31,6 +31,19 @@ describe("redaction for uploads", () => {
     expect(JSON.stringify(scrubSecrets(input, FAKE_ENV))).not.toContain("placeholder-hello-value");
   });
 
+  it("preserves explicitly public repo links while keeping unknown and overlapping secrets private", () => {
+    const env = { METER_REPO_SLUG: "ExampleOrg/example-repo", UNKNOWN_VALUE: "placeholder-private-value" };
+    const url = "https://github.com/ExampleOrg/example-repo/pull/16223";
+    expect(scrubSecrets(url, env)).toBe("https://github.com/[redacted]/pull/16223");
+    const values = secretValues(env, ["METER_REPO_SLUG"]);
+    expect(scrubSecrets({ links: [{ url }], summary: env.UNKNOWN_VALUE }, values))
+      .toEqual({ links: [{ url }], summary: REDACTED });
+    expect(secretValues({ ...env, API_TOKEN: env.METER_REPO_SLUG }, ["METER_REPO_SLUG", "API_TOKEN"]))
+      .toContain(env.METER_REPO_SLUG);
+    expect(secretValues({ SKILLHOOK_SECRET_HELLO: "placeholder-credential" }, ["SKILLHOOK_SECRET_HELLO"]))
+      .toEqual(["placeholder-credential"]);
+  });
+
   it("drops command lines and environments and redacts headers wherever they appear", () => {
     const job = {
       id: "j1",

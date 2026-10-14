@@ -1,4 +1,4 @@
-// Nothing secret leaves the machine: every string uploaded is scrubbed against every value in `.env`, headers are
+// Nothing secret leaves the machine: uploads are scrubbed against private `.env` values; headers are
 // redacted like `event.json`, and command lines / environments never travel at all.
 import { redactHeaders } from "../payload.js";
 
@@ -7,10 +7,21 @@ export const REDACTED = "[redacted]";
 /** Keys never uploaded, whatever object they sit in. */
 const DROPPED_KEYS = new Set(["command", "env", "argv", "stdin", "resume_command"]);
 
-/** The `.env` values worth scrubbing (short ones would blank ordinary words). */
-export function secretValues(secrets: Record<string, string>): string[] {
+/** Only explicitly public configuration names may bypass value scrubbing; credentials never may. */
+export function isPublicEnvName(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)
+    && !/^SKILLHOOK_/i.test(name)
+    && !/(TOKEN|SECRET|PASSWORD|PASSWD|KEY|AUTH|COOKIE|CREDENTIAL|SIGNATURE)/i.test(name);
+}
+
+/** Private `.env` values worth scrubbing (short ones would blank ordinary words). */
+export function secretValues(secrets: Record<string, string>, publicEnv: readonly string[] = []): string[] {
   const values = new Set<string>();
-  for (const value of Object.values(secrets)) if (typeof value === "string" && value.length >= MIN_SECRET_LENGTH) values.add(value);
+  const publicNames = new Set(publicEnv.filter(isPublicEnvName));
+  for (const [name, value] of Object.entries(secrets)) {
+    // A value shared with a private variable is still a secret.
+    if (!publicNames.has(name) && typeof value === "string" && value.length >= MIN_SECRET_LENGTH) values.add(value);
+  }
   return [...values].sort((a, b) => b.length - a.length);
 }
 

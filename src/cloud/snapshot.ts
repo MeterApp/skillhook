@@ -50,5 +50,5 @@ export function buildSnapshot(deps: SnapshotDeps): Snapshot {
     ...(readiness.length ? { runners: readiness as unknown as Snapshot["runners"] } : {}),
     ...(stats ? { stats } : {}),
   };
-  return scrubSecrets(snapshot, secretValues(deps.fileSecrets()));
+  return scrubSecrets(snapshot, secretValues(deps.fileSecrets(), deps.config.cloud.public_env));
 }

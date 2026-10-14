@@ -17,6 +17,16 @@ describe("config", () => {
     expect(defaultConfig()).toEqual(config);
   });
 
+  it("accepts public environment names but refuses credential exemptions", () => {
+    expect(defaultConfig().cloud.public_env).toEqual([]);
+    const paths = tempHome();
+    setConfigValue(paths, "cloud.public_env", ["METER_REPO_SLUG"]);
+    expect(loadConfig(paths).cloud.public_env).toEqual(["METER_REPO_SLUG"]);
+    for (const name of ["API_TOKEN", "PRIVATE_KEY", "PASSWORD", "SKILLHOOK_CLOUD_URL", "invalid-name"]) {
+      expect(() => setConfigValue(paths, "cloud.public_env", [name])).toThrow(ConfigError);
+    }
+  });
+
   it("rejects unknown keys with a readable message", () => {
     const paths = tempHome();
     writeFileSync(paths.configFile, JSON.stringify({ prot: 1 }));

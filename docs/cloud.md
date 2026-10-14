@@ -8,7 +8,7 @@
 
 - **Opt-in, outbound only.** A machine talks to the cloud only after `skillhook cloud connect` pairs it (a code from the dashboard) and only by opening HTTPS requests to `cloud.url` (plain `http` only to a loopback address or with `SKILLHOOK_CLOUD_ALLOW_INSECURE=1`); the cloud never connects to the machine and never holds the admin token. It works behind NAT without Tailscale. Besides the link, [`cloud report`](#reporting-a-problem) and the [API-key commands and tools](#the-whole-organisation-with-an-api-key) send requests to the same URL only when a person runs one, or their agent calls one.
 - **Observe by default.** A freshly paired machine is in `mode: observe`: the cloud can read, not act. `--control` at pairing (what the dashboard's pairing page prints) or `cloud.mode: control` later lets it run skills, answer jobs, change the configuration and restart the server. `cloud.allow_commands` / `cloud.deny_commands` refine either mode per command type; the cloud cannot raise a machine's exposure, only the machine's own config can.
-- **Payloads are data, secrets stay home.** Headers are redacted on the machine before anything is uploaded; every uploaded string is scrubbed against every value in `.env`; webhook bodies (a delivery's, and a job's `payload`, `event` and `prompt`, which quotes it) travel only when both `cloud.upload_payloads` and the organisation's policy allow, and never beyond 256 KiB. What an agent writes is its own output and can quote anything it read, the body included: its transcript goes only with `cloud.upload_artifacts`, its result with the job record (the first 8 KiB). `SKILLHOOK_CLOUD_*` variables never reach a run, even when a skill lists them in `env:`. A secret the cloud asks skillhook to generate is sealed to the requester's key; the cloud never stores it in the clear.
+- **Payloads are data, secrets stay home.** Headers are redacted on the machine before anything is uploaded; every uploaded string is scrubbed against private values in `.env`; webhook bodies (a delivery's, and a job's `payload`, `event` and `prompt`, which quotes it) travel only when both `cloud.upload_payloads` and the organisation's policy allow, and never beyond 256 KiB. What an agent writes is its own output and can quote anything it read, the body included: its transcript goes only with `cloud.upload_artifacts`, its result with the job record (the first 8 KiB). `SKILLHOOK_CLOUD_*` variables never reach a run, even when a skill lists them in `env:`. A secret the cloud asks skillhook to generate is sealed to the requester's key; the cloud never stores it in the clear.
 - **Kill switches.** `cloud.enabled: false`, `SKILLHOOK_NO_CLOUD=1` in the server's environment, or `skillhook cloud disconnect` stop all traffic; the link never starts from `init`, from a job, or on its own. With `SKILLHOOK_NO_CLOUD=1` in its environment, `cloud report` and the API-key commands refuse to send anything too.
 
 ## Settings
@@ -49,6 +49,21 @@ skillhook cloud disconnect    # cloud.enabled: false, token removed from .env an
 
 `disconnect --keep-token` leaves the token in `.env`. `skillhook doctor` and `skillhook health` report a `cloud link` check: skipped when not connected, failing when `cloud.enabled` has no token, an `http` URL, or a revoked token or disabled machine, warning when no server runs, the link is degraded or events were dropped.
 
+## Public environment configuration
+
+The upload scrubber treats unknown `.env` values as private. If that file also contains public configuration, such as a
+repository slug, declare its variable name locally so GitHub links remain usable:
+
+```bash
+skillhook config set cloud.public_env '["METER_REPO_SLUG"]'
+```
+
+Only list values you intend to make public. Credential names (token, secret, password, key, auth, cookie, credential,
+signature) and `SKILLHOOK_*` names are refused. A public value that also appears under a private variable still gets
+redacted. The cloud cannot change this setting. It applies live to subsequent uploads, artifact reads, diagnostics and
+command results; already scrubbed cloud records need to be refreshed from the machine's original job, not guessed or
+replayed (a replay runs the skill again).
+
 ## Reporting a problem
 
 A person on a paired machine can tell the Skillhook team about a problem without leaving the terminal:
@@ -68,7 +83,7 @@ It sends one request, `POST {cloud.url}/api/agent/issues` with the machine token
 - `report_id`: a UUID generated for this report, the same on every attempt, so the cloud files it once however often it is retried;
 - unless `--no-diagnostics`, `diagnostics`: `skillhook_version`, `node_version`, `os`, `arch`, the machine's `cloud.mode`, the link's `state`, `reason` and `last_error` (from the running server), whether each runner is ready (`{runner, ready}` only), and the health summary (how many checks are ok, warn, fail, skip) with the checks that fail or warn (`id`: the check's name, `status`, `message`: its detail line; at most 50). With a running server these are its cached answers; without one, a quick local check (the doctor's checks, no network probes) and the runners' readiness.
 
-Every value in `.env` is replaced with `[redacted]` in the title, the body, the references and the diagnostics before anything leaves, as for everything the link sends (a contact address that is itself a value from `.env` is refused). Nothing else goes: never payloads, logs, prompts, job output, command lines, environments or `.env` itself. `--dry-run` prints the JSON that would be sent. The answer is `Reported as #N: <url>` and whether a confirmation email went out; `--json` prints the cloud's answer (`{ok, issue_id, number, url, acknowledged}`). Network errors, timeouts and `5xx` answers are retried (three attempts), a `429` only when the cloud asks for a pause of at most 15 seconds, another `4xx` never.
+Every private value in `.env` is replaced with `[redacted]` in the title, the body, the references and the diagnostics before anything leaves, as for everything the link sends (a contact address that is itself a value from `.env` is refused). Nothing else goes: never payloads, logs, prompts, job output, command lines, environments or `.env` itself. `--dry-run` prints the JSON that would be sent. The answer is `Reported as #N: <url>` and whether a confirmation email went out; `--json` prints the cloud's answer (`{ok, issue_id, number, url, acknowledged}`). Network errors, timeouts and `5xx` answers are retried (three attempts), a `429` only when the cloud asks for a pause of at most 15 seconds, another `4xx` never.
 
 It needs a paired machine (`cloud.enabled` and `SKILLHOOK_CLOUD_TOKEN`); on one that is not, pair it first or report the problem on the dashboard or through its hosted MCP server. It refuses under `SKILLHOOK_NO_CLOUD=1` and to a `cloud.url` that is not https. The MCP tool `cloud_report_issue` sends the same report for an agent the person asked to file one ([mcp.md](mcp.md)).
 
@@ -186,7 +201,7 @@ The running server opens HTTPS requests to `cloud.url` (`POST /api/agent/sync`);
 - **A deep health report** every `cloud.health_interval_seconds`.
 - **Command results** and **hosted-ingress acknowledgements** (below).
 
-Every string is scrubbed of every value in `.env` before it leaves, `authorization`, cookie, signature and token headers never leave, and command lines, environments and `.env` itself never do. Events wait in `jobs/.cloud/outbox.jsonl` while the cloud is unreachable (at most `cloud.outbox_max_events`, oldest dropped first and counted); a server restart loses nothing that was spooled. On errors the link backs off exponentially up to a minute, is reported `degraded` after three failures, stops on a revoked token (`401`) or a disabled machine (`403`) until the configuration or the token changes, halves its batches on `413`, honours `429`'s retry delay and waits ten minutes on `426` (update skillhook).
+Every string is scrubbed of private values in `.env` before it leaves, `authorization`, cookie, signature and token headers never leave, and command lines, environments and `.env` itself never do. Events wait in `jobs/.cloud/outbox.jsonl` while the cloud is unreachable (at most `cloud.outbox_max_events`, oldest dropped first and counted); a server restart loses nothing that was spooled. On errors the link backs off exponentially up to a minute, is reported `degraded` after three failures, stops on a revoked token (`401`) or a disabled machine (`403`) until the configuration or the token changes, halves its batches on `413`, honours `429`'s retry delay and waits ten minutes on `426` (update skillhook).
 
 ## Hosted URLs
 
@@ -194,7 +209,7 @@ A skill can have a hosted webhook URL on the cloud (the dashboard creates it) in
 
 ## What never leaves the machine
 
-`.env` and every value in it, the admin token, command lines and run environments, `authorization` / cookie / signature / token headers, job artifacts unless `cloud.upload_artifacts` allows them and a command asks, webhook bodies (deliveries, and a job's `payload`, `event` and `prompt`) unless `cloud.upload_payloads` allows them, and anything a command policy refuses. An agent's transcript and result are its own output: they can quote what it read, the body included.
+`.env` and its private values, the admin token, command lines and run environments, `authorization` / cookie / signature / token headers, job artifacts unless `cloud.upload_artifacts` allows them and a command asks, webhook bodies (deliveries, and a job's `payload`, `event` and `prompt`) unless `cloud.upload_payloads` allows them, and anything a command policy refuses. An agent's transcript and result are its own output: they can quote what it read, the body included.
 
 ## Commands the cloud may send
 
@@ -229,6 +244,6 @@ What each control command does, and the rules it adds on top of the policy:
 
 ## Live output and artifacts
 
-`job.watch` streams a job's `stdout` (or `stderr`) to the cloud as `job.output` events: complete lines, at most 64 KiB per job every two seconds, for at most five jobs at once, until the job ends (`eof: true` with its status) or `ttl_s` runs out (`expired: true`). `job.artifact` returns an artifact inline up to 256 KiB (`max_inline_bytes`) and uploads a larger one (up to 32 MiB) in 1 MiB chunks. Both are scrubbed of `.env` values and need `cloud.upload_artifacts`.
+`job.watch` streams a job's `stdout` (or `stderr`) to the cloud as `job.output` events: complete lines, at most 64 KiB per job every two seconds, for at most five jobs at once, until the job ends (`eof: true` with its status) or `ttl_s` runs out (`expired: true`). `job.artifact` returns an artifact inline up to 256 KiB (`max_inline_bytes`) and uploads a larger one (up to 32 MiB) in 1 MiB chunks. Both are scrubbed of private `.env` values and need `cloud.upload_artifacts`.
 
 Allow-list only: `secret.set` (a value sealed to this machine's key).
