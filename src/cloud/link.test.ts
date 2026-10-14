@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ConfigRef, loadConfig, type Config } from "../config.js";
 import { DeliveryLog } from "../delivery-log.js";
-import { loadSecrets, readEnvFile } from "../env.js";
+import { loadSecrets, readEnvFile, upsertEnvVar } from "../env.js";
 import { Events } from "../events.js";
 import { JobStore, type JobRecord } from "../jobs.js";
 import { silentLogger } from "../logger.js";
@@ -113,6 +113,25 @@ function ingress(partial: Partial<IngressItem> & { id: string }): IngressItem {
 }
 
 describe("CloudLink", () => {
+  it("uploads valid repo links in events and cloud job reads with locally declared public configuration", async () => {
+    const { fake, link, events, store, paths, config } = await setup();
+    upsertEnvVar(paths.envFile, "METER_REPO_SLUG", "ExampleOrg/example-repo");
+    config.cloud.public_env = ["METER_REPO_SLUG"];
+    link.start();
+    await fake.waitFor(() => fake.requests.length >= 1);
+    const job = newJob(store);
+    const url = "https://github.com/ExampleOrg/example-repo/pull/16223";
+    const finished = store.update(job.id, { status: "succeeded", response: { outcome: "completed", links: [{ url, title: "Fix", kind: "pull_request" }], summary: SECRET } });
+    events.emit("job.finished", { job: finished });
+    await fake.waitFor(() => fake.requests.some((r) => r.events.some((e) => e.type === "job.finished")));
+    const uploaded = fake.requests.flatMap((r) => r.events).find((e) => e.type === "job.finished")!;
+    expect(JSON.stringify(uploaded.data)).toContain(url);
+    expect(JSON.stringify(uploaded.data)).not.toContain(SECRET);
+    const results = await runCommands(fake, [cmd("public-read", "job.get", { id: job.id })]);
+    expect(JSON.stringify(results["public-read"])).toContain(url);
+    expect(JSON.stringify(results["public-read"])).not.toContain(SECRET);
+  });
+
   it("opens with link.started and a snapshot, then uploads events redacted and scrubbed of .env values", async () => {
     const { fake, link, events, store } = await setup();
     link.start();
@@ -367,6 +386,7 @@ describe("CloudLink", () => {
       cmd("answer-again", "job.answer", { id: needy.id, answer: "main" }),
       cmd("patch", "config.patch", { set: { concurrency: 3 } }),
       cmd("patch-runner", "config.patch", { set: { "runners.claude.command": "/bin/sh" } }),
+      cmd("patch-public-env", "config.patch", { set: { "cloud.public_env": ["API_TOKEN"] } }),
       cmd("patch-cloud", "config.patch", { set: { "cloud.mode": "observe" } }),
       cmd("patch-bad", "config.patch", { set: { concurrency: "lots" } }),
       cmd("sched", "schedule.run", { name: "hello" }),
@@ -380,6 +400,7 @@ describe("CloudLink", () => {
     expect(second.patch).toMatchObject({ ok: true, result: { applied: ["concurrency"] } });
     expect(config.concurrency).toBe(3);
     expect(second["patch-runner"]).toMatchObject({ ok: false, error: { code: "denied_by_policy" } });
+    expect(second["patch-public-env"]).toMatchObject({ ok: false, error: { code: "denied_by_policy" } });
     expect(second["patch-cloud"]).toMatchObject({ ok: false, error: { code: "denied_by_policy" } });
     expect(second["patch-bad"]).toMatchObject({ ok: false, error: { code: "invalid_args" } });
     expect(config.cloud.mode).toBe("control");

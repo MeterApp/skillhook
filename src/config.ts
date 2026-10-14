@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import { z } from "zod";
 import type { Events } from "./events.js";
+import { isPublicEnvName } from "./cloud/redact.js";
 import { DEFAULT_CLOUD_URL } from "./cloud/config.js";
 import { FallbackSchema } from "./runners/failure.js";
 import { readFileSync } from "node:fs";
@@ -132,6 +133,8 @@ export const ConfigSchema = z
         deny_commands: z.array(z.string().max(100)).default([]),
         /** Upload webhook payloads (redacted headers, bodies at most 256 KiB) with deliveries. */
         upload_payloads: z.boolean().default(true),
+        /** Local declaration of non-sensitive .env configuration; unknown names stay private. */
+        public_env: z.array(z.string().refine(isPublicEnvName, "Expected a public environment name, never a credential or SKILLHOOK_* variable")).default([]),
         /** Let the cloud ask for job artifacts (transcripts, results) and live output. */
         upload_artifacts: z.boolean().default(true),
         /** Accept hosted-ingress deliveries (webhooks the cloud received for this machine while it was asleep). */

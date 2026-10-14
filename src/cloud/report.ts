@@ -1,7 +1,7 @@
 // `skillhook cloud report` and the MCP tool `cloud_report_issue`: a person on a paired machine tells the Skillhook team
 // about a problem. One request, `POST /api/agent/issues` with the machine token, and only when someone asks for it: the
 // person's own words and, unless they say no, what the machine already knows about itself (versions, platform, the
-// link's state, runner readiness, the checks that fail), scrubbed of every `.env` value like everything the link sends.
+// link's state, runner readiness, the checks that fail), scrubbed of private `.env` values like everything the link sends.
 // Never payloads, logs, prompts or job output. See docs/cloud.md.
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -44,7 +44,7 @@ export interface DiagnosticsOptions {
 /**
  * The versions, the platform and the cloud mode; then, from the running server's cached answers (or a quick local check
  * when none runs), the link's state, whether each runner is ready and the health summary with the checks that fail or
- * warn. Scrubbed of every `.env` value, then cut to the protocol's bounds; what cannot be read is left out.
+ * warn. Scrubbed of private `.env` values, then cut to the protocol's bounds; what cannot be read is left out.
  */
 export async function gatherDiagnostics(paths: Paths, env: NodeJS.ProcessEnv, options: DiagnosticsOptions = {}): Promise<IssueDiagnostics> {
   const config = options.config ?? loadConfig(paths);
@@ -67,7 +67,7 @@ export async function gatherDiagnostics(paths: Paths, env: NodeJS.ProcessEnv, op
     const link = running?.health.cloud ?? undefined;
     const failing = (report?.checks ?? []).filter((c) => c.status === "fail" || c.status === "warn").sort((a, b) => Number(b.status === "fail") - Number(a.status === "fail"));
     // Scrubbed before being cut: a replacement may make a line longer.
-    const facts = scrubSecrets({ last_error: link?.last_error ?? "", failing: failing.slice(0, MAX_FAILING).map((c) => ({ id: c.name, status: c.status, message: c.detail })) }, secretValues(fileSecrets));
+    const facts = scrubSecrets({ last_error: link?.last_error ?? "", failing: failing.slice(0, MAX_FAILING).map((c) => ({ id: c.name, status: c.status, message: c.detail })) }, secretValues(fileSecrets, config.cloud.public_env));
     const diagnostics: IssueDiagnostics = {
       ...basics,
       ...(link ? { link: { state: link.state, ...(link.reason ? { reason: link.reason } : {}), ...(facts.last_error ? { last_error: facts.last_error.slice(0, MAX_LINE) } : {}) } } : {}),
@@ -94,7 +94,7 @@ export async function buildIssueReport(paths: Paths, env: NodeJS.ProcessEnv, inp
   const config = options.config ?? loadConfig(paths);
   // Every field is scrubbed like the diagnostics: whoever fills them (an agent, too) may have put anything there.
   const given = { title: input.title.trim(), body: input.body?.trim() ?? "", contact_email: input.contact_email?.trim() ?? "", job_id: input.job_id ?? "", delivery_id: input.delivery_id ?? "", skill: input.skill ?? "" };
-  const text = scrubSecrets(given, secretValues(readEnvFile(paths.envFile)));
+  const text = scrubSecrets(given, secretValues(readEnvFile(paths.envFile), config.cloud.public_env));
   if (!text.title) throw new IssueReportError("The report needs a title: one line that says what went wrong");
   if (text.title.length > MAX_TITLE) throw new IssueReportError(`The title is ${text.title.length} characters; at most ${MAX_TITLE} (put the rest in the body)`);
   if (text.body.length > MAX_BODY) throw new IssueReportError(`The body is ${text.body.length} characters; at most ${MAX_BODY} (refer to the job instead of pasting its output)`);

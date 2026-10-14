@@ -390,6 +390,13 @@
           "default": true,
           "type": "boolean"
         },
+        "public_env": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "upload_artifacts": {
           "default": true,
           "type": "boolean"
