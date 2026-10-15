@@ -219,6 +219,19 @@ describe("HTTP surface", () => {
     expect(job.status).toBe("succeeded");
   });
 
+  it("deduplicates a hosted retry after completion when the provider has no delivery ID", async () => {
+    const post = () => fetch(`${base}/hooks/hello`, {
+      method: "POST", body: JSON.stringify({ name: "Hosted retry" }),
+      headers: { authorization: "Bearer hello-secret", "content-type": "application/json", "x-skillhook-ingress-id": "hosted-response-lost-1" },
+    });
+    const first = await json(await post());
+    await waitForJob(String(first.job_id));
+    const duplicate = await post();
+    expect(duplicate.status).toBe(200);
+    expect(await json(duplicate)).toMatchObject({ duplicate: true, job_id: first.job_id });
+    expect(store.seenDelivery("hello", "ingress:hosted-response-lost-1", Date.now() + 25 * 60 * 60 * 1000)).toBe(first.job_id);
+  });
+
   it("honours Prefer: wait=N like ?wait=", async () => {
     const res = await fetch(`${base}/hooks/hello`, { method: "POST", body: JSON.stringify({ name: "Pref" }), headers: { authorization: "Bearer hello-secret", prefer: "wait=20" } });
     expect(res.status).toBe(200);

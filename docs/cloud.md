@@ -207,6 +207,14 @@ Every string is scrubbed of private values in `.env` before it leaves, `authoriz
 
 ## Hosted URLs
 
+Temporary loopback transport failures, HTTP 429 rate limits and HTTP 5xx responses
+remain unacknowledged, so Cloud can redeliver them after its lease expires and
+until the hosted delivery expires (currently 72 hours). This does not retry a
+finished agent task. Invalid signatures, explicit ingress opt-out, missing hook
+credentials and authentication lockouts remain terminal. A trusted Cloud
+delivery ID also deduplicates requests whose provider supplies no delivery ID,
+including when the first job completed before its HTTP response was lost.
+
 A skill can have a hosted webhook URL on the cloud (the dashboard creates it) in addition to, or instead of, its Tailscale URL. The cloud accepts the request, keeps it sealed until this machine collects it, and hands it over in a sync response; the link replays it to the local server as the original request (method, headers, body, query string without `wait`, the sender's address as `X-Forwarded-For`), so the signature is verified here with the local secret and deduplication, `when` filters and queueing apply exactly as for a direct webhook. The delivery record says `via: "ingress"` with the cloud's `ingress_id`, and the outcome goes back to the cloud with the next sync. A delivery the cloud sends twice is acknowledged again from `jobs/.cloud/ingress.json` and never run twice. `cloud.ingress: false` declines them (`503 ingress_disabled`). `?wait=` does not apply to hosted deliveries: the cloud has already answered the sender.
 
 ## What never leaves the machine
