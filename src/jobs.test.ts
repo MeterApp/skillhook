@@ -99,6 +99,17 @@ describe("JobStore", () => {
     expect(s.seenDelivery("b", "d1", 1_000_000)).toBeUndefined();
   });
 
+  it("retains hosted delivery IDs beyond provider retention, pruning and a process restart", () => {
+    const s = store();
+    const start = 1_000_000;
+    s.rememberDelivery("a", "ingress:one", "job-1", start, 72 * 60 * 60);
+    s.rememberDelivery("a", "ordinary", "job-2", start + 25 * 60 * 60 * 1000);
+    s.configure({ maxJobs: 100, dedupeWindowSeconds: 1 });
+    const restarted = new JobStore(s.jobsDir, { maxJobs: 100, dedupeWindowSeconds: 1 });
+    expect(restarted.seenDelivery("a", "ingress:one", start + 71 * 60 * 60 * 1000)).toBe("job-1");
+    expect(restarted.seenDelivery("a", "ingress:one", start + 73 * 60 * 60 * 1000)).toBeUndefined();
+  });
+
   it("recovers on startup and prunes finished jobs beyond the limit", async () => {
     const s = store(2);
     const src = { ip: "", method: "POST", path: "", content_type: null };

@@ -4,6 +4,8 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- Keep transient hosted-ingress loopback failures unacknowledged for Cloud's existing bounded redelivery window; deduplicate by the trusted Cloud delivery ID when the sender provides none. Permanent authentication/configuration rejections stay terminal.
+
 - Update the development-only `source-map-js` lockfile entry to 1.2.2 to address the indexed source-map denial-of-service advisory.
 
 ## 0.10.3 (2026-10-14)

@@ -50,7 +50,12 @@ export async function processIngressItem(item: IngressItem, deps: IngressDeps): 
     if (!base) ack = { id: item.id, outcome: "error", http_status: 503, code: "server_not_listening", reason: "the local server is not listening" };
     else ack = await deliver(item, base, deps);
   }
-  deps.ledger.record(ack);
+  // Acknowledging a transient failure makes Cloud discard its sealed payload.
+  // Leave it unacknowledged so the existing lease/expiry contract can redeliver
+  // it; do not add an unbounded retry loop or hold up the next machine sync.
+  const terminalCodes = ["ingress_disabled", "skill_not_configured", "too_many_failures"];
+  const deferred = !terminalCodes.includes(ack.code ?? "") && (ack.http_status === 429 || ack.http_status >= 500);
+  if (!deferred) deps.ledger.record(ack);
   deps.logger.info("hosted-ingress delivery processed", { ingress: item.id, skill: item.skill, outcome: ack.outcome, http_status: ack.http_status, job: ack.job_id });
   return ack;
 }

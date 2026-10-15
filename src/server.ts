@@ -461,14 +461,21 @@ export function createServer(deps: ServerDeps): Server {
     }
 
     let deliveryId = verdict.deliveryId;
+    const ingressKey = draft.ingress_id ? `ingress:${draft.ingress_id}` : undefined;
+    // Cloud can redeliver for 72 hours, independently of the shorter configured
+    // provider dedupe window. Remember its trusted ID before acknowledging.
+    const rememberIngress = (jobId: string) => {
+      if (ingressKey) store.rememberDelivery(skill.name, ingressKey, jobId, Date.now(), 72 * 60 * 60);
+    };
     if (skill.config.dedupe?.header) deliveryId = headers[skill.config.dedupe.header.toLowerCase()] ?? deliveryId;
     if (skill.config.dedupe?.path) {
       const fromPayload = getPath(payload, skill.config.dedupe.path);
       if (fromPayload !== undefined && fromPayload !== null) deliveryId = String(fromPayload);
     }
-    if (deliveryId) {
-      const existing = store.seenDelivery(skill.name, deliveryId);
+    if (ingressKey || deliveryId) {
+      const existing = (ingressKey ? store.seenDelivery(skill.name, ingressKey) : undefined) ?? (deliveryId ? store.seenDelivery(skill.name, deliveryId) : undefined);
       if (existing) {
+        rememberIngress(existing);
         logger.info("duplicate delivery ignored", { skill: skill.name, delivery_id: deliveryId, job: existing });
         record("duplicate", 200, { code: "duplicate", delivery_id: deliveryId, job_id: existing });
         return send(res, 200, { ok: true, duplicate: true, job_id: existing, status_url: `/jobs/${existing}` });
@@ -493,13 +500,14 @@ export function createServer(deps: ServerDeps): Server {
         const current = store.get(inFlight.id) ?? inFlight;
         logger.info("identical delivery already in flight; not queued again", { skill: skill.name, job: current.id, status: current.status, ip, delivery_id: deliveryId });
         if (deliveryId) store.rememberDelivery(skill.name, deliveryId, current.id);
+        rememberIngress(current.id);
         record("in_flight", 200, { code: "in_flight", delivery_id: deliveryId, job_id: current.id });
         if (wait > 0) return respondWithJob(res, current, wait, { duplicate: true, in_flight: true });
         return send(res, 200, { ok: true, duplicate: true, in_flight: true, job_id: current.id, status: current.status, status_url: `/jobs/${current.id}` });
       }
     }
 
-    const job = createJob({ skill, trigger: "webhook", payload, kind, rawBody, headers, query, ip, method: req.method ?? "POST", path: url.pathname, deliveryId, fingerprint });
+    const job = createJob({ skill, trigger: "webhook", payload, kind, rawBody, headers, query, ip, method: req.method ?? "POST", path: url.pathname, deliveryId, fingerprint, ingressKey });
     record("accepted", 202, { delivery_id: deliveryId, job_id: job.id });
     await respondWithJob(res, job, wait);
   }
@@ -517,6 +525,7 @@ export function createServer(deps: ServerDeps): Server {
     path: string;
     deliveryId?: string;
     fingerprint?: string;
+    ingressKey?: string;
     overrides?: { runner?: RunnerName; model?: string; effort?: string };
   }
 
@@ -554,6 +563,7 @@ export function createServer(deps: ServerDeps): Server {
       rawBody: args.rawBody,
     });
     if (args.deliveryId) store.rememberDelivery(args.skill.name, args.deliveryId, job.id);
+    if (args.ingressKey) store.rememberDelivery(args.skill.name, args.ingressKey, job.id, Date.now(), 72 * 60 * 60);
     logger.info("webhook accepted", { skill: args.skill.name, job: job.id, ip: args.ip, trigger: args.trigger, delivery_id: args.deliveryId, bytes: event.content_length });
     queue.enqueue(job);
     return job;

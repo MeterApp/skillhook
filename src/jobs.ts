@@ -195,7 +195,7 @@ export const JOB_ARTIFACTS: JobArtifact[] = ["stdout", "stderr", "prompt", "resu
 const RESULT_INLINE_MAX = 20_000;
 
 interface DeliveryIndex {
-  [key: string]: { job: string; at: number };
+  [key: string]: { job: string; at: number; expires_at?: number };
 }
 
 /** Every job is a directory under `jobs/`; `job.json` is the record, siblings are the artifacts. */
@@ -368,15 +368,15 @@ export class JobStore {
   seenDelivery(skill: string, deliveryId: string, now = Date.now()): string | undefined {
     const entry = this.loadDeliveries()[`${skill}::${deliveryId}`];
     if (!entry) return undefined;
-    if (now - entry.at > this.options.dedupeWindowSeconds * 1000) return undefined;
+    if (entry.expires_at !== undefined ? now > entry.expires_at : now - entry.at > this.options.dedupeWindowSeconds * 1000) return undefined;
     return entry.job;
   }
 
-  rememberDelivery(skill: string, deliveryId: string, jobId: string, now = Date.now()): void {
+  rememberDelivery(skill: string, deliveryId: string, jobId: string, now = Date.now(), retentionSeconds?: number): void {
     const index = this.loadDeliveries();
     const cutoff = now - this.options.dedupeWindowSeconds * 1000;
-    for (const [key, entry] of Object.entries(index)) if (entry.at < cutoff) delete index[key];
-    index[`${skill}::${deliveryId}`] = { job: jobId, at: now };
+    for (const [key, entry] of Object.entries(index)) if (entry.expires_at !== undefined ? entry.expires_at < now : entry.at < cutoff) delete index[key];
+    index[`${skill}::${deliveryId}`] = { job: jobId, at: now, ...(retentionSeconds === undefined ? {} : { expires_at: now + retentionSeconds * 1000 }) };
     this.saveDeliveries();
   }
 
