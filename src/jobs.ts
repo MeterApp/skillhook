@@ -387,7 +387,7 @@ export class JobStore {
     let removed = 0;
     for (const id of ids.slice(keep).reverse()) {
       const job = this.get(id);
-      if (job && !TERMINAL_STATUSES.includes(job.status)) continue;
+      if (job && (!TERMINAL_STATUSES.includes(job.status) || isWaitingForHuman(job))) continue;
       rmSync(this.pathsFor(id).dir, { recursive: true, force: true });
       removed++;
       if (ids.length - removed <= keep) break;
