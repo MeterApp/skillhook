@@ -257,3 +257,5 @@ What each control command does, and the rules it adds on top of the policy:
 `job.watch` streams a job's `stdout` (or `stderr`) to the cloud as `job.output` events: complete lines, at most 64 KiB per job every two seconds, for at most five jobs at once, until the job ends (`eof: true` with its status) or `ttl_s` runs out (`expired: true`). `job.artifact` returns an artifact inline up to 256 KiB (`max_inline_bytes`) and uploads a larger one (up to 32 MiB) in 1 MiB chunks. Both are scrubbed of private `.env` values and need `cloud.upload_artifacts`.
 
 Allow-list only: `secret.set` (a value sealed to this machine's key).
+
+Restart recovery replays retained `interrupted` jobs as durable `job.finished` events on each new cloud-link session, including when recovery happened before pairing or a crash prevented the original publication. Events use the normal redaction and retry path. Duplicate terminal records are safe.

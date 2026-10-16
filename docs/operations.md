@@ -117,7 +117,7 @@ Lifecycle: `queued` → `running` → one of `succeeded`, `failed`, `timed_out`,
 
 All files are mode 600. Job ids are `YYYYMMDDTHHMMSSZ-<6 random chars>` (UTC), so `ls jobs/` sorts chronologically.
 
-Retention: after each new job the store deletes the oldest finished jobs beyond `jobs.max_jobs` (1000); `skillhook jobs prune [--keep N]` does the same on demand. Running and queued jobs are never pruned. Delivery ids expire after `jobs.dedupe_window_seconds` (86400). On a machine paired with [Skillhook Cloud](https://skillhook.dev) every job and delivery record has already gone to the cloud, where it outlives this machine's retention (webhook bodies for as long as the organisation's plan keeps them, https://skillhook.dev/pricing; the history and its replay: https://skillhook.dev/docs/deliveries).
+Retention: after each new job the store deletes the oldest finished jobs beyond `jobs.max_jobs` (1000); `skillhook jobs prune [--keep N]` does the same on demand. Running and queued jobs, unanswered questions, and unresolved `needs_human` jobs are never pruned. These protected jobs may keep the directory above the limit. An answer or resume makes a finished job eligible for pruning again. Delivery ids expire after `jobs.dedupe_window_seconds` (86400). On a machine paired with [Skillhook Cloud](https://skillhook.dev) every job and delivery record has already gone to the cloud, where it outlives this machine's retention (webhook bodies for as long as the organisation's plan keeps them, https://skillhook.dev/pricing; the history and its replay: https://skillhook.dev/docs/deliveries).
 
 ```bash
 skillhook jobs list [--skill NAME] [--status queued|running|succeeded|failed|timed_out|cancelled|interrupted] [--limit N]

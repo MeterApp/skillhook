@@ -105,6 +105,7 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   const cloudControl = createControlHandlers({ paths: ctx.paths, config, configRef, secrets, fileSecrets, registry, store, deliveryLog, queue, events, logger, serverControl: control });
   link = new CloudLink({ paths: ctx.paths, config, secrets, fileSecrets, events, logger, registry, store, deliveryLog, schedules: () => scheduler.status(), health, readiness, serverState: () => state, localBaseUrl: () => localBaseUrl({ host, port: boundPort }), env: ctx.io.env, queueStats: () => queue.stats(), runningJobs: () => queue.stats().running_ids, control: cloudControl });
   link.start();
+  for (const job of recovered.interrupted) events.emit("job.finished", { job });
   logger.info("skillhook listening", { url: `http://${host}:${boundPort}`, public_url: config.public_url, skills: loaded.skills.map((s) => s.name), concurrency: config.concurrency, home: ctx.paths.home, version: VERSION });
   if (config.public_url) for (const skill of loaded.skills) logger.info("webhook url", { skill: skill.name, url: `${config.public_url}/hooks/${skill.name}` });
 

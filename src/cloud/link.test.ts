@@ -113,6 +113,45 @@ function ingress(partial: Partial<IngressItem> & { id: string }): IngressItem {
 }
 
 describe("CloudLink", () => {
+  it("replays recovery completed before subscription, including a previous crash and delayed pairing", async () => {
+    const { fake, link, store, config } = await setup({ cloud: { enabled: false } });
+    const old = newJob(store);
+    store.update(old.id, { status: "running", result: SECRET });
+    store.recoverOnStartup();
+    // A second startup no longer returns the interrupted job: the persisted record must be replayed.
+    expect(store.recoverOnStartup().interrupted).toEqual([]);
+    link.start();
+    await sleep(50);
+    expect(fake.requests).toHaveLength(0);
+    config.cloud.enabled = true;
+    link.wake();
+    await fake.waitFor(() => fake.requests.some((r) => r.events.some((e) => e.type === "job.finished")));
+    const uploaded = fake.requests.flatMap((r) => r.events).find((e) => e.type === "job.finished")!;
+    expect(uploaded.data).toMatchObject({ job: { id: old.id, status: "interrupted", outcome: "failed", result: "[redacted]" } });
+    expect(uploaded.seq).not.toBeNull();
+    await waitUntil(() => link.status().outbox_depth === 0);
+  });
+
+  it("keeps recovered terminal events durable across an unacknowledged link restart", async () => {
+    const { fake, link, store, paths, config, registry, secrets } = await setup();
+    const job = newJob(store);
+    store.update(job.id, { status: "running" });
+    store.recoverOnStartup();
+    fake.ackEvents = false;
+    link.start();
+    await fake.waitFor(() => fake.requests.some((r) => r.events.some((e) => e.type === "job.finished")));
+    const pending = fake.requests.flatMap((r) => r.events).find((e) => e.type === "job.finished")!;
+    await link.stop("crash simulation");
+    expect(link.status().outbox_depth).toBeGreaterThan(0);
+    const restarted = new CloudLink({ paths, config, secrets, fileSecrets: secrets, events: new Events(silentLogger), logger: silentLogger, registry, store, serverState: () => undefined, localBaseUrl: () => undefined, env: {}, timing: TIMING });
+    cleanups.push(() => restarted.stop("test"));
+    const before = fake.requests.length;
+    fake.ackEvents = true;
+    restarted.start();
+    await fake.waitFor(() => fake.requests.slice(before).some((r) => r.events.some((e) => e.id === pending.id)));
+    await waitUntil(() => restarted.status().outbox_depth === 0);
+  });
+
   it("uploads valid repo links in events and cloud job reads with locally declared public configuration", async () => {
     const { fake, link, events, store, paths, config } = await setup();
     upsertEnvVar(paths.envFile, "METER_REPO_SLUG", "ExampleOrg/example-repo");
