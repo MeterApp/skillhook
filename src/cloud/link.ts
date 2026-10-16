@@ -613,6 +613,13 @@ export class CloudLink {
     const now = Date.now();
     if (this.needsStartEvent) {
       this.outbox.append(machineId, "link.started", { at: nowIso(), version: PROTOCOL_VERSION, mode: cloud.mode });
+      // Recovery may have happened before the link subscribed, or a previous process may have died between
+      // updating job.json and spooling the event. Replay retained interruptions on each new link session.
+      // The durable outbox retries until acknowledged; a duplicate terminal record is safe to project.
+      for (const id of this.deps.store.ids()) {
+        const job = this.deps.store.get(id);
+        if (job?.status === "interrupted") this.outbox.append(machineId, "job.finished", this.prepare({ type: "job.finished", seq: 0, at: nowIso(), data: { job } }));
+      }
       this.needsStartEvent = false;
       // Nothing else checks the runners until a job starts; their first readiness becomes runners.changed events, which
       // is how the dashboard learns whether claude and codex are installed and signed in.

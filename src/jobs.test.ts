@@ -90,6 +90,27 @@ describe("JobStore", () => {
     expect(s.list({ waiting: true }).map((j) => j.id)).toEqual([asked.id]);
   });
 
+  it("keeps unanswered questions and unresolved needs_human jobs across pruning and restarts", () => {
+    const s = store();
+    const make = (id: string) => s.create({ id, skill: "a", trigger: "webhook", runner: "codex", source: { ip: "", method: "POST", path: "", content_type: null }, event: event("a", {}) });
+    const asked = make("20260928T120000Z-aaaaaa");
+    const needy = make("20260928T120001Z-bbbbbb");
+    const completed = make("20260928T120002Z-cccccc");
+    s.update(asked.id, { status: "interrupted", question: { id: "q1", text: "Choose?", asked_at: asked.created_at } });
+    s.update(needy.id, { status: "succeeded", response: { outcome: "needs_human", summary: "Choose" } });
+    s.update(completed.id, { status: "succeeded", outcome: "completed" });
+    const restarted = new JobStore(s.jobsDir, { maxJobs: 1, dedupeWindowSeconds: 60 });
+    make("20260928T120003Z-dddddd");
+    expect(restarted.prune()).toBe(1);
+    expect(restarted.get(completed.id)).toBeUndefined();
+    expect(restarted.get(asked.id)?.question?.id).toBe("q1");
+    expect(restarted.get(needy.id)?.response?.outcome).toBe("needs_human");
+    restarted.update(asked.id, { answer: { question_id: "q1", text: "A", at: asked.created_at } });
+    restarted.update(needy.id, { resolved_by: "20260928T120003Z-dddddd" });
+    expect(restarted.prune()).toBe(2);
+    expect(restarted.ids()).toEqual(["20260928T120003Z-dddddd"]);
+  });
+
   it("remembers deliveries within the window", () => {
     const s = store();
     expect(s.seenDelivery("a", "d1")).toBeUndefined();
