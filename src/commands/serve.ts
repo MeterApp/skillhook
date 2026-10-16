@@ -66,6 +66,7 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
     scheduler.stop();
     server.close();
     await link?.stop(reason);
+    queue.preservePendingOrder();
     clearServerState(ctx.paths);
     process.exit(0);
   };

@@ -17,8 +17,8 @@ function fixture() {
   const store = new JobStore(paths.jobsDir, { maxJobs: 100, dedupeWindowSeconds: 60 });
   const queue = new JobQueue({ store, config, registry: new SkillRegistry(paths.skillsDir), secrets: () => ({}), logger: silentLogger });
   const gate = path.join(paths.home, "release");
-  const script = `const fs = require('node:fs'); setInterval(() => { if (fs.existsSync(${JSON.stringify(gate)})) process.exit(0); }, 10);`;
-  const skillMd = `---\nname: gated\ndescription: Gated shell.\nskillhook:\n  runner: shell\n  shell:\n    command: ${JSON.stringify([process.execPath, "-e", script])}\n---\nBody\n`;
+  const script = "const fs = require('node:fs'); setInterval(() => { if (fs.existsSync(process.argv[1])) process.exit(0); }, 10);";
+  const skillMd = `---\nname: gated\ndescription: Gated shell.\nskillhook:\n  runner: shell\n  shell:\n    command: ${JSON.stringify([process.execPath, "-e", script, gate])}\n---\nBody\n`;
   const create = (payload: unknown) => createAdhocJob({ config, store }, { skillMd, payload }).job;
   return { paths, store, queue, gate, create };
 }
@@ -57,6 +57,7 @@ describe("bounded restart", () => {
     expect(queue.stats()).toEqual({ running: 0, queued: 1, running_ids: [] });
     expect(store.get(active.id)?.status).toBe("succeeded");
     expect(store.get(pending.id)).toEqual(before);
+    queue.preservePendingOrder();
     const recovered = store.recoverOnStartup();
     expect(recovered.interrupted).toEqual([]);
     expect(recovered.queued.map((job) => job.id)).toEqual([pending.id]);

@@ -192,6 +192,11 @@ export class JobQueue extends EventEmitter {
     return this.running.size;
   }
 
+  /** Called synchronously just before a graceful process exit, once intake and cloud sync have closed. */
+  preservePendingOrder(): void {
+    this.deps.store.preserveQueueOrder(this.queued.map((job) => job.id));
+  }
+
   /** Resume dispatch after an abandoned drain; running attempts, retries and questions were never stopped. */
   resumeDispatch(): void {
     if (this.stopping) return;
