@@ -80,6 +80,7 @@ export class JobQueue extends EventEmitter {
   private queued: JobRecord[] = [];
   private running = new Map<string, Running>();
   private stopping = false;
+  private dispatchPaused = false;
   private lastStartedWasReplay = true;
   private watcher?: NodeJS.Timeout;
   /** Typed `job.*` events (`job.queued`, `job.started`, `job.updated`, `job.cancelled`, `job.finished`). */
@@ -185,10 +186,22 @@ export class JobQueue extends EventEmitter {
 
   /** Stops starting new jobs and waits up to `timeoutMs` for the running ones to finish on their own; returns how many are still running. */
   async drain(timeoutMs: number): Promise<number> {
-    this.stopping = true;
+    this.dispatchPaused = true;
     const deadline = Date.now() + timeoutMs;
     while (this.running.size > 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
     return this.running.size;
+  }
+
+  /** Called synchronously just before a graceful process exit, once intake and cloud sync have closed. */
+  preservePendingOrder(): void {
+    this.deps.store.preserveQueueOrder(this.queued.map((job) => job.id));
+  }
+
+  /** Resume dispatch after an abandoned drain; running attempts, retries and questions were never stopped. */
+  resumeDispatch(): void {
+    if (this.stopping) return;
+    this.dispatchPaused = false;
+    this.tick();
   }
 
   /** Stops starting new jobs and terminates running ones (they are marked interrupted). */
@@ -229,7 +242,7 @@ export class JobQueue extends EventEmitter {
   }
 
   private tick(): void {
-    if (this.stopping) return;
+    if (this.stopping || this.dispatchPaused) return;
     while (this.running.size < this.deps.config.concurrency) {
       const eligible = this.queued.map((job, index) => ({ job, index, workspace: this.workspaceFor(job) })).filter(({ job, workspace }) => {
         const runningForSkill = [...this.running.values()].filter((r) => r.job.skill === job.skill).length;

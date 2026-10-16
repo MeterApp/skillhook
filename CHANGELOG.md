@@ -4,6 +4,8 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- Bound graceful restart attempts without terminating active jobs: keep intake and cloud sync available, resume dispatch on timeout, and drain queued work safely for automatic upgrades. Preserve exact pending dispatch order across graceful exits, including jobs created within the same second.
+
 ## 0.10.4 (2026-10-16)
 
 - Keep unanswered questions and unresolved `needs_human` jobs when retention prunes old jobs.

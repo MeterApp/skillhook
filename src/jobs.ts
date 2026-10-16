@@ -342,6 +342,11 @@ export class JobStore {
     return { jobs: out, next_after: out.length >= limit ? (out[out.length - 1] as JobRecord).id : null };
   }
 
+  /** Checkpoint dispatch order at a graceful exit; records and payloads stay in their original directories. */
+  preserveQueueOrder(ids: string[]): void {
+    writeJsonFile(path.join(this.jobsDir, ".queue-order.json"), ids);
+  }
+
   /** Called once at server start: running jobs from a previous process are lost; queued ones are re-run. */
   recoverOnStartup(): { interrupted: JobRecord[]; queued: JobRecord[] } {
     const interrupted: JobRecord[] = [];
@@ -352,7 +357,20 @@ export class JobStore {
       if (job.status === "running") interrupted.push(this.update(id, { status: "interrupted", finished_at: nowIso(), error: "server restarted while the job was running", outcome: "failed" }));
       else if (job.status === "queued") queued.push(job);
     }
-    return { interrupted, queued: queued.reverse() };
+    const file = path.join(this.jobsDir, ".queue-order.json");
+    const saved = readJsonFileOr<unknown>(file, []);
+    const pending = new Map(queued.reverse().map((job) => [job.id, job]));
+    const ordered: JobRecord[] = [];
+    if (Array.isArray(saved)) for (const id of saved) {
+      const job = typeof id === "string" ? pending.get(id) : undefined;
+      if (!job) continue;
+      ordered.push(job);
+      pending.delete(job.id);
+    }
+    // A crash during shutdown may leave later accepted jobs absent from the checkpoint: retain those too.
+    ordered.push(...pending.values());
+    rmSync(file, { force: true });
+    return { interrupted, queued: ordered };
   }
 
   private loadDeliveries(): DeliveryIndex {

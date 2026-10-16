@@ -587,7 +587,7 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
 
   server.registerTool(
     "restart_server",
-    { title: "Restart server", description: "Ask the running server to restart: it stops accepting requests, lets running jobs finish for up to wait_seconds (default 30; `force: true` terminates them) and exits, and launchd / systemd starts it again. Only works for a server run as the service (409 otherwise); use it after update_config changed host or port, or after an update was installed.", inputSchema: z.object({ force: z.boolean().optional(), wait_seconds: z.number().int().min(0).max(600).optional() }) },
+    { title: "Restart server", description: "Ask the running server to restart: it pauses dispatch while keeping intake and cloud sync available, lets running jobs finish for up to wait_seconds (default 30), then exits only if idle. On timeout it resumes dispatch without terminating jobs; `force: true` terminates them. Launchd / systemd starts it again after an exit. Only works for a server run as the service (409 otherwise); use it after update_config changed host or port, or after an update was installed.", inputSchema: z.object({ force: z.boolean().optional(), wait_seconds: z.number().int().min(0).max(600).optional() }) },
     wrap(async ({ force, wait_seconds }) => {
       const running = await findRunningServer(paths);
       if (!running) throw new Error("No running server to restart");

@@ -112,7 +112,7 @@ export class RateLimiter {
 /** What `POST /control/restart` needs from `serve`: whether a supervisor brings the server back, and the stop itself. */
 export interface ServerControl {
   supervised(): Promise<boolean>;
-  /** Stops accepting requests, lets running jobs finish (or kills them when forced), exits 0. Called after the response was sent. */
+  /** Pauses dispatch and exits 0 only after running jobs finish; resumes on timeout. Force terminates jobs. Called after the response was sent. */
   restart(options: { force: boolean; waitSeconds: number }): void;
 }
 
