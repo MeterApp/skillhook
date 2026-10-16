@@ -14,6 +14,21 @@ function store(maxJobs = 100) {
 }
 
 describe("JobStore", () => {
+  it("recovers the exact graceful dispatch order, retaining jobs accepted after the checkpoint", () => {
+    const s = store();
+    const make = (id: string) => s.create({ id, skill: "a", trigger: "webhook", runner: "claude", source: { ip: "", method: "POST", path: "/hooks/a", content_type: "application/json" }, event: event("a", { id }) });
+    const first = make("20261016T140000Z-zzzzzz");
+    const second = make("20261016T140000Z-aaaaaa");
+    s.preserveQueueOrder([first.id, second.id, first.id, "nonexistent"]);
+    const later = make("20261016T140001Z-aaaaaa");
+    const recovered = s.recoverOnStartup();
+    expect(recovered.interrupted).toEqual([]);
+    expect(recovered.queued.map((job) => job.id)).toEqual([first.id, second.id, later.id]);
+    expect(s.readEvent(first.id).payload).toEqual({ id: first.id });
+    expect(s.readEvent(second.id).payload).toEqual({ id: second.id });
+    expect(s.readEvent(later.id).payload).toEqual({ id: later.id });
+  });
+
   it("creates job directories with payload and event files", () => {
     const s = store();
     const job = s.create({ skill: "a", trigger: "webhook", runner: "claude", source: { ip: "1.1.1.1", method: "POST", path: "/hooks/a", content_type: "application/json" }, event: event("a", { x: 1 }) });

@@ -24,7 +24,7 @@ Related: [security.md](security.md) (authentication), [skills.md](skills.md) (fi
 | `GET` | `/stats` | admin | Numbers over jobs and deliveries: by status, outcome, runner, failure kind; durations, cost, tokens; per skill (`?since=24h`, `?until=`, `?skill=`). |
 | `GET`, `PATCH` | `/config` | admin | The live `skillhook.json` (defaults applied) with what applies live and what needs a restart; change keys in one validated write. |
 | `POST` | `/config/reload` | admin | Re-read `skillhook.json` (after editing it by hand). |
-| `POST` | `/control/restart` | admin | Stop, let running jobs finish, exit; launchd / systemd starts the server again. `409` when not run as the service. |
+| `POST` | `/control/restart` | admin | Pause dispatch, exit only if active jobs finish within the bound; otherwise resume dispatch. `409` when not run as the service. |
 | `GET` | `/service` | admin | The launchd / systemd service status. |
 | `GET` | `/logs` | admin | The last lines of the service log (`?lines=200`). |
 | `POST` | `/update` | admin | Ask npm for a newer skillhook; `{"install": true}` installs it (the server does not restart itself). |
@@ -453,7 +453,7 @@ curl -sS -X PATCH -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" -H "content-
 
 ## `POST /control/restart`
 
-Body `{"force"?: boolean, "wait_seconds"?: number}` (default 30, at most 600). The server answers `202 {ok, restarting: true, force, wait_seconds, running}`, stops accepting requests, lets running jobs finish for up to `wait_seconds` (terminates them at once with `force`, or when the wait runs out), removes `server.json` and exits 0; launchd (`KeepAlive`) or systemd (`Restart=always`) starts it again, and queued jobs are re-queued at start. `409 not_a_service` when this server is not the one the service supervises (a `skillhook serve` in a terminal), since nothing would start it again.
+Body `{"force"?: boolean, "wait_seconds"?: number}` (default 30, at most 600). The server answers `202 {ok, restarting: true, force, wait_seconds, running}`, pauses dispatch while continuing HTTP intake, cloud sync, questions and schedules, and lets running jobs finish for up to `wait_seconds`. If the wait expires it resumes dispatch without terminating jobs or exiting. If all active jobs finish it removes `server.json` and exits 0; launchd (`KeepAlive`) or systemd (`Restart=always`) starts it again, and queued jobs are re-queued at start. Only `force: true` terminates running jobs. A 202 acknowledges the asynchronous attempt; verify `/health` and `server.json` to confirm activation. Versions through 0.10.4 terminate active jobs when the wait expires even with `force: false`. `409 not_a_service` when this server is not the one the service supervises (a `skillhook serve` in a terminal), since nothing would start it again.
 
 ## `GET /service`, `GET /logs`
 
