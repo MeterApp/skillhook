@@ -243,7 +243,7 @@ What each control command does, and the rules it adds on top of the policy:
 | `job.cancel` | Cancels a queued or running job. |
 | `job.answer` | A person's answer to a job waiting for one: delivered live, or a new job resumes the agent's session ([skills.md](skills.md#reporting-progress-and-asking-a-person)); `by` defaults to the requester's name. |
 | `config.patch` | Changes `skillhook.json` like `PATCH /config`, except for `host`, `port`, `trust_proxy`, `runners`, `env_passthrough`, `projects` and `cloud`, which the cloud may never change. |
-| `service.restart` | Restarts a server run by launchd / systemd once the cloud has the answer (`when: idle` lets running jobs finish, up to `wait_seconds`; `now` does not wait). |
+| `service.restart` | Restarts a server run by launchd / systemd once the cloud has the answer (`when: idle` pauses dispatch and lets running jobs finish up to `wait_seconds`, then resumes dispatch if jobs remain; `now` terminates them without waiting. Through version 0.10.4, even `idle` terminates jobs when the wait expires). |
 | `schedule.run` | Fires a scheduled skill now. |
 | `update.install` | Installs a newer skillhook with the package manager that installed it; the server keeps running the old version until `service.restart`. |
 | `secret.generate` | Generates a skill's secret (or any `ENV_NAME`) and returns it only sealed to the requester's key (`recipient_key`, required); the value never travels or rests in the clear. The machine's own credentials (`SKILLHOOK_CLOUD_*`, `SKILLHOOK_ADMIN_TOKEN`) are refused, by whatever name they are asked for (`admin`, a skill's, the variable's). |

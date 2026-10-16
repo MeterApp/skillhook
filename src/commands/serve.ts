@@ -9,6 +9,7 @@ import { HealthCache } from "../health.js";
 import { ReadinessCache } from "../readiness.js";
 import { baseRunEnv } from "../runners/env.js";
 import { JobQueue } from "../queue.js";
+import { prepareRestart } from "../lifecycle.js";
 import { createLogger } from "../logger.js";
 import { Scheduler } from "../scheduler.js";
 import { clearServerState, createServer, writeServerState, type ServerControl } from "../server.js";
@@ -53,15 +54,17 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   const stop = async (reason: string, options: { force: boolean; waitSeconds: number }) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    logger.info("shutting down", { reason, running: queue.stats().running, force: options.force, wait_seconds: options.waitSeconds });
+    logger.info("shutdown requested", { reason, running: queue.stats().running, force: options.force, wait_seconds: options.waitSeconds });
+    // Keep HTTP intake, cloud sync, questions, and the scheduler alive during the bounded drain.
+    // Only dispatch pauses: a retry belongs to an already-running execution and must finish normally.
+    if (!(await prepareRestart(queue, options))) {
+      shuttingDown = false;
+      logger.info("restart deferred; jobs still running after the wait", { running: queue.stats().running });
+      return;
+    }
     events.emit("server.stopping", { reason, running: queue.stats().running });
     scheduler.stop();
     server.close();
-    if (options.force) await queue.shutdown();
-    else if ((await queue.drain(options.waitSeconds * 1000)) > 0) {
-      logger.warn("jobs still running after the wait; terminating them", { running: queue.stats().running });
-      await queue.shutdown();
-    }
     await link?.stop(reason);
     clearServerState(ctx.paths);
     process.exit(0);
@@ -138,15 +141,14 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
       void (async () => {
         const installed = installedVersion();
         if (shuttingDown || !installed || !isNewerVersion(installed, VERSION)) return;
-        const { running, queued } = queue.stats();
-        const reason = !autoUpdateEnabled(config) ? "auto_update is off" : running + queued > 0 ? "jobs in progress" : !(await control.supervised()) ? "not run by launchd or systemd" : undefined;
+        const reason = !autoUpdateEnabled(config) ? "auto_update is off" : !(await control.supervised()) ? "not run by launchd or systemd" : undefined;
         if (reason) {
           if (waitingFor !== `${installed}:${reason}`) logger.info("newer version installed; restart to run it", { running: VERSION, installed, waiting_for: reason });
           waitingFor = `${installed}:${reason}`;
           return;
         }
         logger.info("restarting to run the newly installed version", { running: VERSION, installed });
-        control.restart({ force: false, waitSeconds: 30 });
+        control.restart({ force: false, waitSeconds: 600 });
       })();
     }, 60_000).unref();
   }
