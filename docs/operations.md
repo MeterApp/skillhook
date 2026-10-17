@@ -269,6 +269,7 @@ skillhook config set defaults.model sonnet
 | `sleep` (macOS, when schedules exist) | `pmset` reports `sleep 0` | the Mac may sleep; schedules only fire while it is awake | (`skip` when `pmset` is unavailable) |
 | `project <dir>` | the linked repository's `skillhook.yaml` parses; hooks listed | | file missing or invalid; a hook that does not compile (`skip` when nothing is linked) |
 | `claude` / `codex` | CLI found (version shown) and logged in, or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` present | | not on PATH; not logged in (checked only for runners a skill or the default uses; probed with the same environment the jobs get, so `CLAUDE_CONFIG_DIR` / `CODEX_HOME` in `.env` apply) |
+| `claude <dir>` | the Claude Code configuration directory that skills name in `claude.config_dir` is logged in (the account and the skills are shown) | | the directory does not exist; not logged in (hint: `CLAUDE_CONFIG_DIR=<dir> claude login`) |
 | `tailscale` | the configured port is exposed via Funnel or Serve (URL shown) | CLI missing; not running; port not exposed | |
 | `public url` | `<public_url>/health` answers | did not answer (certificate still provisioning, or the server is down) | |
 | `server` | running (version, queue) | not running | |

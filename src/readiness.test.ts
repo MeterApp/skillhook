@@ -84,4 +84,24 @@ describe("ReadinessCache", () => {
     expect((await cache.get("codex")).ready).toBe(true);
     expect(seen).toHaveLength(4);
   });
+
+  it("answers for each Claude Code configuration directory a skill names, separately", async () => {
+    const { paths, config } = configured();
+    const loggedOut = path.join(paths.home, "claude-out");
+    const acme = path.join(paths.home, "claude-acme");
+    mkdirSync(loggedOut, { recursive: true });
+    mkdirSync(acme, { recursive: true });
+    writeFileSync(path.join(loggedOut, "logged-out"), "");
+    // The server-wide default is logged out and an API key is set; a skill's own directory is judged by its login alone.
+    const cache = new ReadinessCache({ config: () => config, env: () => ({ ...ENV, CLAUDE_CONFIG_DIR: loggedOut }) });
+    expect(await cache.get("claude")).toMatchObject({ ready: false });
+    const own = await cache.get("claude", { claudeConfigDir: acme });
+    expect(own).toMatchObject({ ready: true, config_dir: acme });
+    expect(cache.last("claude", { claudeConfigDir: acme })).toBe(own);
+    expect(cache.last("claude")?.ready).toBe(false);
+    const out = await checkReadiness("claude", config, { ...ENV, ANTHROPIC_API_KEY: "sk-test" }, loggedOut);
+    expect(out).toMatchObject({ ready: false, config_dir: loggedOut, hint: `run \`CLAUDE_CONFIG_DIR=${loggedOut} claude login\` in a terminal as this user` });
+    // Other runners ignore it.
+    expect((await cache.get("codex", { claudeConfigDir: acme })).config_dir).toBeUndefined();
+  });
 });

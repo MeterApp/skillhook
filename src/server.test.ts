@@ -29,6 +29,8 @@ let supervised = false;
 const restartCalls: { force: boolean; waitSeconds: number }[] = [];
 let ENV_BASE: Record<string, string> = {};
 const recordFile = path.join(paths.home, "record.json");
+/** A second Claude Code login, named by the `profiled` skill's `claude.config_dir`. */
+const profileDir = path.join(paths.home, "claude-profile");
 const projectDir = path.join(paths.home, "repo");
 const ADMIN = "admin-token-123";
 
@@ -88,6 +90,7 @@ beforeAll(async () => {
     SKILLHOOK_SECRET_SESSIONFALLBACK: "sf",
     SKILLHOOK_SECRET_RETRIER: "re",
     SKILLHOOK_SECRET_FALLBACKY: "fb",
+    SKILLHOOK_SECRET_PROFILED: "pr",
     FAKE_CLAUDE_FAIL_KIND: "rate_limit",
   };
   writeEnv(paths, ENV_BASE);
@@ -98,6 +101,8 @@ beforeAll(async () => {
   writeSkill(paths, "sessionfallback", "description: sf\nskillhook:\n  model: opus\n  effort: high\n  env: [FAKE_CLAUDE_FAIL_KIND, FAKE_CODEX_FAIL_KIND]\n  fallback:\n    runners: [{runner: codex, model: gpt-6.1-sol, effort: medium}, claude]\n    on: [not_ready, usage_limit] ");
   writeSkill(paths, "retrier", "description: re\nskillhook:\n  env: [FAKE_CLAUDE_FAIL_KIND]\n  retry:\n    attempts: 1\n    on: [rate_limit]\n    backoff_seconds: 0");
   writeSkill(paths, "fallbacky", "description: fb\nskillhook:\n  fallback:\n    runners: [codex]");
+  mkdirSync(profileDir, { recursive: true });
+  writeSkill(paths, "profiled", `description: pr\nskillhook:\n  env: [FAKE_CLAUDE_RECORD]\n  claude:\n    config_dir: ${profileDir}\n  fallback:\n    runners: [codex]`);
   writeSkill(paths, "structured", "description: st\nskillhook:\n  response:\n    mode: structured\n  env: [FAKE_CLAUDE_OUTCOME]");
   writeSkill(paths, "filer", "description: fi\nskillhook:\n  env: [FAKE_CLAUDE_WRITE_RESPONSE]");
   writeSkill(paths, "codexst", "description: cs\nskillhook:\n  runner: codex\n  response:\n    mode: structured\n  env: [FAKE_CODEX_OUTCOME]");
@@ -871,6 +876,12 @@ describe("HTTP surface", () => {
       expect(fastJob.failure).toEqual({ kind: "auth", retryable: false, message: "not logged in" });
       expect(fastJob.command).toBeUndefined();
       expect(fastJob.started_at).toBeDefined();
+      // A skill with its own claude.config_dir is judged, and run, by that login: no fallback, and the run sees it.
+      const profiled = await json(await fetch(`${base}/hooks/profiled?wait=20`, { method: "POST", body: "{}", headers: { authorization: "Bearer pr" } }));
+      expect(profiled).toMatchObject({ status: "succeeded" });
+      expect(store.get(String(profiled.job_id))).toMatchObject({ runner: "claude", resume_command: expect.stringContaining(`CLAUDE_CONFIG_DIR=${profileDir} claude --resume`) });
+      expect(store.get(String(profiled.job_id))?.runner_requested).toBeUndefined();
+      expect((JSON.parse(readFileSync(recordFile, "utf8")) as { env: Record<string, string> }).env.CLAUDE_CONFIG_DIR).toBe(profileDir);
     } finally {
       writeEnv(paths, ENV_BASE);
     }

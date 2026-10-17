@@ -8,6 +8,58 @@
     "$schema": {
       "type": "string"
     },
+    "claude": {
+      "type": "object",
+      "properties": {
+        "permission_mode": {
+          "type": "string",
+          "enum": [
+            "acceptEdits",
+            "auto",
+            "bypassPermissions",
+            "manual",
+            "dontAsk",
+            "plan"
+          ]
+        },
+        "allowed_tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "disallowed_tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "add_dirs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_budget_usd": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "append_system_prompt": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "config_dir": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
     "hooks": {
       "type": "object",
       "propertyNames": {
@@ -486,6 +538,10 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "config_dir": {
+                "type": "string",
+                "minLength": 1
               }
             },
             "additionalProperties": false

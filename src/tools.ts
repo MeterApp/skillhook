@@ -53,6 +53,8 @@ export interface ToolAuth {
   /** `claude.ai`, `console`, `apiKey`, `none`, … as the CLI reports it; `chatgpt` / `api_key` for Codex. */
   method?: string;
   provider?: string;
+  /** Who is logged in, as the CLI reports it (Claude Code: the account's email and organisation). */
+  account?: string;
   detail: string;
 }
 
@@ -94,7 +96,8 @@ export function parseClaudeAuth(result: Pick<ToolExecResult, "code" | "stdout" |
     if (isPlainObject(json) && typeof json.loggedIn === "boolean") {
       const method = typeof json.authMethod === "string" ? json.authMethod : undefined;
       const provider = typeof json.apiProvider === "string" ? json.apiProvider : undefined;
-      return { loggedIn: json.loggedIn, method, provider, detail: json.loggedIn ? `logged in (${method ?? "unknown method"})` : "not logged in" };
+      const account = [json.email, json.orgName].filter((v): v is string => typeof v === "string" && v.length > 0).join(", ");
+      return { loggedIn: json.loggedIn, method, provider, ...(json.loggedIn && account ? { account } : {}), detail: json.loggedIn ? `logged in (${method ?? "unknown method"})` : "not logged in" };
     }
   } catch {
     /* not JSON: an older CLI */

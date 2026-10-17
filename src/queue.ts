@@ -12,6 +12,7 @@ import { answerQuestion, readTimeline, type JobAnswer, type JobQuestion, type Pr
 import { deriveOutcome, resolveJobResponse } from "./response.js";
 import type { ReadinessCache, RunnerReadiness } from "./readiness.js";
 import { prepareRun, resolveRunSettings } from "./run.js";
+import { claudeConfigDir } from "./runners/env.js";
 import { classifyFailure, type FailureKind, type FallbackConfig, type FallbackTrigger, type JobFailure } from "./runners/failure.js";
 import type { RunnerOutcome, StreamState } from "./runners/index.js";
 import { lastLines } from "./runners/types.js";
@@ -354,7 +355,7 @@ export class JobQueue extends EventEmitter {
       if (exclude.has(candidate)) continue;
       if (candidate === "shell" && !skill.config.shell?.command) continue;
       try {
-        const readiness = await this.deps.readiness?.get(candidate);
+        const readiness = await this.deps.readiness?.get(candidate, { claudeConfigDir: claudeConfigDir(skill) });
         if (readiness?.ready) return target;
       } catch {
         /* a probe that fails is not a ready runner */
@@ -391,7 +392,7 @@ export class JobQueue extends EventEmitter {
     if (this.deps.readiness && running.job.runner !== "shell") {
       let readiness: RunnerReadiness | undefined;
       try {
-        readiness = await this.deps.readiness.get(running.job.runner);
+        readiness = await this.deps.readiness.get(running.job.runner, { claudeConfigDir: claudeConfigDir(skill) });
       } catch (error) {
         logger.warn("readiness check failed; running anyway", { job: job.id, runner: running.job.runner, error: errorMessage(error) });
       }
@@ -416,7 +417,7 @@ export class JobQueue extends EventEmitter {
       const attempt = await this.attempt(running, skill, attempts.length);
       const kind = attempt.failure?.kind;
       if (kind && (attempt.status === "failed" || attempt.status === "timed_out") && !attempt.producedOutput && !running.cancelled && !this.stopping) {
-        if (kind === "auth") this.deps.readiness?.invalidate(running.job.runner);
+        if (kind === "auth") this.deps.readiness?.invalidate(running.job.runner, { claudeConfigDir: claudeConfigDir(skill) });
         const sameRunner = retriesLeft > 0 && retryOn.includes(kind);
         const alternative = !sameRunner && (policy.on as string[]).includes(kind) ? await this.firstReady(policy.runners, tried, skill) : undefined;
         if (sameRunner || alternative) {
@@ -507,7 +508,7 @@ export class JobQueue extends EventEmitter {
         /* ignore parser errors */
       }
       if (state.sessionId && running.job.session_id !== state.sessionId) {
-        running.job = store.update(job.id, { session_id: state.sessionId, resume_command: runner.resumeCommand?.(state.sessionId, invocation.cwd) });
+        running.job = store.update(job.id, { session_id: state.sessionId, resume_command: runner.resumeCommand?.(state.sessionId, invocation.cwd, invocation.env) });
         this.events.emit("job.updated", { job: running.job, fields: ["session_id", "resume_command"] });
       }
     };
@@ -629,7 +630,7 @@ export class JobQueue extends EventEmitter {
         exit_code: exit.code,
         signal: exit.signal,
         session_id: sessionId,
-        resume_command: sessionId ? runner.resumeCommand?.(sessionId, invocation.cwd) : undefined,
+        resume_command: sessionId ? runner.resumeCommand?.(sessionId, invocation.cwd, invocation.env) : undefined,
         cost_usd: outcome.costUsd,
         usage: outcome.usage,
         num_turns: outcome.numTurns,

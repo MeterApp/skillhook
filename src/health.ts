@@ -14,7 +14,7 @@ import type { Paths } from "./paths.js";
 import { configProjects, SkillRegistry } from "./registry.js";
 import { jobOutcome } from "./response.js";
 import { resolveRunSettings } from "./run.js";
-import { baseRunEnv } from "./runners/env.js";
+import { baseRunEnv, claudeConfigDir, withClaudeConfigDir } from "./runners/env.js";
 import { commandParts } from "./runners/types.js";
 import { nextRun } from "./schedule.js";
 import { serviceStatus } from "./service.js";
@@ -215,10 +215,14 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
   }
 
   const runnersNeeded = new Set<string>();
+  /** Claude Code configuration directories that skills name (`claude.config_dir`) → those skills. */
+  const claudeDirs = new Map<string, string[]>();
   if (config) {
     for (const skill of loaded.skills) {
       const settings = resolveRunSettings(skill, config);
       runnersNeeded.add(settings.runner);
+      const configDir = claudeConfigDir(skill);
+      if (configDir && skill.enabled) claudeDirs.set(configDir, [...(claudeDirs.get(configDir) ?? []), skill.name]);
       const auth = skill.auth;
       const where = `cwd ${settings.cwd}${skill.source.type === "project" ? `, from ${displayPath(skill.source.file)}` : ""}`;
       const scheduleNote = skill.schedule ? `, schedule ${skill.schedule.cron} (${skill.schedule.timezone})` : "";
@@ -236,7 +240,7 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
       const hints = found.map((f) => f.hint);
       const last = lastJobs.get(skill.name);
       const lastNote = last ? `, last run ${last.status}${jobOutcome(last) ? ` (${jobOutcome(last)})` : ""} ${last.finished_at ?? last.created_at}` : deep ? ", no runs yet" : "";
-      const data = { runner: settings.runner, model: settings.model ?? null, cwd: settings.cwd, auth: auth.type, schedule: skill.schedule?.cron ?? null, source: skill.source.type, ...(last ? { last_job: { id: last.id, status: last.status, outcome: jobOutcome(last) ?? null, finished_at: last.finished_at ?? null } } : {}), ...(missingEnv.length ? { missing_env: missingEnv } : {}) };
+      const data = { runner: settings.runner, model: settings.model ?? null, cwd: settings.cwd, ...(configDir ? { claude_config_dir: configDir } : {}), auth: auth.type, schedule: skill.schedule?.cron ?? null, source: skill.source.type, ...(last ? { last_job: { id: last.id, status: last.status, outcome: jobOutcome(last) ?? null, finished_at: last.finished_at ?? null } } : {}), ...(missingEnv.length ? { missing_env: missingEnv } : {}) };
       const suffix = problems.length ? `; ${problems.join("; ")}` : "";
       if (!skill.webhook) check("skills", `skill ${skill.name}`, status, `${settings.runner}${settings.model ? ` ${settings.model}` : ""}${scheduleNote}, schedule only, ${where}${lastNote}${suffix}`, hints[0], data);
       else if (auth.type === "none") check("skills", `skill ${skill.name}`, status === "fail" ? "fail" : "warn", `auth: none — anyone with the URL can trigger it${scheduleNote}${lastNote}${suffix}`, hints[0] ?? "set skillhook.auth.type in SKILL.md (or webhook: false for a schedule-only hook)", data);
@@ -274,6 +278,19 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
     if (!claude.found) check("runners", "claude", "fail", claude.auth.detail, "install Claude Code: https://claude.com/claude-code, or set runners.claude.command", data);
     else if (claude.auth.loggedIn || apiKey) check("runners", "claude", "ok", `${version}${apiKey && !claude.auth.loggedIn ? "ANTHROPIC_API_KEY set" : claude.auth.detail}`, undefined, data);
     else check("runners", "claude", "fail", `${version}${claude.auth.detail}`, "run `claude login` in a terminal (subscription) or put ANTHROPIC_API_KEY in .env", data);
+  }
+  // Each configuration directory skills name is its own login: one that is logged out sends its skills to the fallback.
+  if (config && claudeDirs.size) {
+    const probes = await Promise.all([...claudeDirs].map(async ([dir, skills]) => ({ dir, skills, probe: await probeClaude(config.runners.claude.command, { env: withClaudeConfigDir(probeEnv, dir), deep: false, timeoutMs }) })));
+    for (const { dir, skills, probe } of probes) {
+      const name = `claude ${displayPath(dir)}`;
+      const used = `${skills.length} skill(s): ${skills.join(", ")}`;
+      const data = { config_dir: dir, found: probe.found, logged_in: probe.auth.loggedIn, method: probe.auth.method ?? null, account: probe.auth.account ?? null, skills };
+      if (!probe.found) continue; // the claude row already says it is not installed
+      if (!isDirectory(dir)) check("runners", name, "fail", `${dir} does not exist (${used})`, `run: CLAUDE_CONFIG_DIR=${dir} claude login`, data);
+      else if (probe.auth.loggedIn) check("runners", name, "ok", `${probe.auth.detail}${probe.auth.account ? ` as ${probe.auth.account}` : ""} (${used})`, undefined, data);
+      else check("runners", name, "fail", `${probe.auth.detail} (${used})`, `run: CLAUDE_CONFIG_DIR=${dir} claude login`, data);
+    }
   }
   if (codex) {
     const apiKey = Boolean(secrets.OPENAI_API_KEY);

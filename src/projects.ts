@@ -3,7 +3,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
 import { CommandSpecSchema } from "./config.js";
-import { loadSkill, normalizeAuth, resolveSchedule, SkillError, SkillhookBlockSchema, type Skill, type SkillhookBlock } from "./skills.js";
+import { ClaudeOptionsSchema, loadSkill, normalizeAuth, resolveSchedule, SkillError, SkillhookBlockSchema, type ClaudeOptions, type Skill, type SkillhookBlock } from "./skills.js";
 import { displayPath, exists, expandTilde, isDirectory, isValidSkillName, SKILL_NAME_RE } from "./util.js";
 
 // ---------------------------------------------------------------------------
@@ -41,6 +41,8 @@ const hookName = z.string().min(1).max(64).regex(SKILL_NAME_RE, "hook names use 
 export const ProjectFileSchema = z
   .object({
     $schema: z.string().optional(),
+    /** Claude Code options for every hook of this file (`config_dir` above all: the account this repository's hooks run as). A hook's own `claude:` keys, and those of the SKILL.md it names, win key by key. */
+    claude: ClaudeOptionsSchema.optional(),
     /** Webhook name → hook. Each is served at `POST /hooks/<name>`. */
     hooks: z.record(hookName, HookSchema),
   })
@@ -132,7 +134,7 @@ export function loadProject(entry: string, base = process.cwd()): LoadedProject 
       project.stamps[path.join(skillDir, "SKILL.md")] = mtimeOf(path.join(skillDir, "SKILL.md"));
     }
     try {
-      project.hooks.push(compileHook(ref, name, hook));
+      project.hooks.push(compileHook(ref, name, hook, parsed.claude));
     } catch (error) {
       project.errors.push({ name, error: (error as Error).message });
     }
@@ -162,16 +164,22 @@ function describeCommand(command: string | string[]): string {
  * Turns a hook into the same `Skill` shape a SKILL.md produces, so the server, runners and CLI need no special case.
  * `cwd` defaults to the project directory (a relative `cwd` is resolved against it) rather than the skill directory.
  */
-export function compileHook(project: ProjectRef, name: string, hook: Hook): Skill {
+export function compileHook(project: ProjectRef, name: string, hook: Hook, projectClaude?: ClaudeOptions): Skill {
   if (!isValidSkillName(name)) throw new SkillError(`Invalid hook name "${name}": use 1-64 lowercase letters, digits and single hyphens`, project.dir);
   const { skill: skillPath, run, prompt, description, ...overrides } = hook;
   const block = stripUndefined(overrides) as SkillhookBlock;
+  // A config_dir written in skillhook.yaml (for the file or the hook) is relative to the repository.
+  const fromFile = (options: ClaudeOptions | undefined): ClaudeOptions | undefined => (options?.config_dir ? { ...options, config_dir: path.resolve(project.dir, expandTilde(options.config_dir)) } : options);
+  const fileClaude = fromFile(projectClaude);
+  if (block.claude) block.claude = fromFile(block.claude);
 
   if (skillPath !== undefined) {
     const skillDir = resolveSkillDir(project.dir, skillPath);
     if (!isDirectory(skillDir)) throw new SkillError(`Hook "${name}": skill directory ${skillDir} does not exist (paths are relative to ${project.dir})`, project.dir);
     const doc = loadSkill(skillDir);
     const config: SkillhookBlock = { ...doc.config, ...block };
+    const claude = { ...fileClaude, ...doc.config.claude, ...block.claude };
+    if (Object.keys(claude).length) config.claude = claude;
     config.cwd = path.resolve(project.dir, expandTilde(block.cwd ?? doc.config.cwd ?? "."));
     const { schedule, ...rest } = doc;
     void schedule; // the hook's own schedule (possibly inherited, possibly `false`) replaces the SKILL.md's
@@ -188,6 +196,7 @@ export function compileHook(project: ProjectRef, name: string, hook: Hook): Skil
   }
 
   const config: SkillhookBlock = run !== undefined ? { ...block, runner: "shell", shell: { command: run } } : block;
+  if (fileClaude) config.claude = { ...fileClaude, ...block.claude };
   config.cwd = path.resolve(project.dir, expandTilde(block.cwd ?? "."));
   return {
     name,
