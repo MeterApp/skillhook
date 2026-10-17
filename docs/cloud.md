@@ -66,6 +66,29 @@ redacted. The cloud cannot change this setting. It applies live to subsequent up
 command results; already scrubbed cloud records need to be refreshed from the machine's original job, not guessed or
 replayed (a replay runs the skill again).
 
+## Feedback and reviews
+
+The [feedback board](https://skillhook.dev/feedback) is shared by every Skillhook organisation: ask for a feature, vote
+for what others asked, report an issue with the request that failed, follow it to done. With the API key of
+`skillhook cloud login`:
+
+```bash
+skillhook feedback list --kind feature --search retry         # the board: status, votes, comments
+skillhook feedback request "Retry failed jobs automatically"  # lists similar requests first; --force files anyway
+skillhook feedback upvote 12                                  # one vote per organisation; --remove takes it back
+skillhook feedback comment 12 "We need this for on-call"
+skillhook feedback report "Replays hang" --last --job 20261017T101500Z-a1b2c3
+skillhook feedback show 12 · skillhook feedback mine
+skillhook review --rating 5 --likes "The inbox" --dislikes "…" · skillhook reviews
+```
+
+Each is a tool of the cloud's catalogue (`list_feedback`, `request_feature`, `report_issue`, `upvote_feedback`,
+`remove_feedback_vote`, `comment_on_feedback`, `get_feedback`, `list_my_feedback`, `submit_review`, `list_reviews`), so
+`skillhook mcp --cloud` offers the same to an agent. `report --last` attaches the last request the cloud refused from
+this computer (its request id, endpoint, status and error code, kept in `<home>/cloud-last-failure.json`); every report
+carries the skillhook version, Node and the platform. Reports stay private to your organisation and the Skillhook team.
+Machine-filed reports (`skillhook cloud report`, below) keep working and appear on the board too.
+
 ## Reporting a problem
 
 A person on a paired machine can tell the Skillhook team about a problem without leaving the terminal:

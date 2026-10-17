@@ -4,6 +4,10 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.13.0 (2026-10-17)
+
+- The Skillhook feedback board from the terminal: `skillhook feedback list|show|mine|request|report|upvote|comment` and `skillhook review` / `skillhook reviews`, through the cloud's new catalogue tools (which `skillhook mcp --cloud` picks up by itself). `request` and `report` list similar items first (`--force` files anyway); `report --last` attaches the last request the cloud refused from this computer, `--job` / `--delivery` / `--request-id` what it is about, and every report carries the skillhook version and platform.
+
 ## 0.12.0 (2026-10-17)
 
 - Skillhook Cloud's plans for agents and people in a terminal: `skillhook pricing [--json]` lists every plan's price, limits, features and checkout link without a key; `skillhook cloud billing [--portal]` shows the organisation's plan, renewal, usage against every limit and what the next plan adds (or Stripe's link to invoices and the card); `skillhook cloud upgrade --plan pro|business [--yearly] [--open]` gives a person the link that buys a plan, with a key (Stripe Checkout for the organisation) or without one (a link that signs them up first). Nothing is charged and no card details are taken. `skillhook mcp --cloud` offers `get_pricing` and `create_checkout_link` before anyone signed in, and requests to the cloud say which front end sent them (`x-skillhook-client`), so its links are attributed to `agent-cli` or `agent-mcp`.

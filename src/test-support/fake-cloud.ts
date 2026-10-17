@@ -106,6 +106,8 @@ export class FakeCloud {
   readonly secretValue = "placeholder-generated-secret-0123456789";
   /** More catalogue entries, as listed (to try names the bridge keeps for itself, or entries it cannot read). */
   extraTools: Record<string, unknown>[] = [];
+  /** Answers for tools outside the fake catalogue (the feedback board's), by name: called with the input, never scope-checked. */
+  readonly toolAnswers = new Map<string, (input: Record<string, unknown>) => Record<string, unknown> | { problem: [number, string, string] }>();
   machines: Record<string, unknown>[] = [];
   jobs: Record<string, unknown>[] = [];
   private readonly commands: Command[] = [];
@@ -450,6 +452,12 @@ export class FakeCloud {
       const input = (await readJson(req)) as Record<string, unknown>;
       this.toolCalls.push({ name, input });
       this.notify();
+      const answerer = this.toolAnswers.get(name);
+      if (answerer) {
+        const answer = answerer(input);
+        if ("problem" in answer && Array.isArray(answer.problem)) return this.problem(res, ...(answer.problem as [number, string, string]));
+        return this.reply(res, 200, answer);
+      }
       const tool = FAKE_TOOLS.find((t) => t.name === name);
       if (!tool) return this.problem(res, 404, "unknown_tool", `No tool "${name}"; GET /api/v1/tools lists them.`);
       if (!this.allows(tool.scope)) return this.problem(res, 403, "forbidden", `${name} needs a key with the ${tool.scope} scope (this one has ${this.apiScopes.join(", ")}).`);
