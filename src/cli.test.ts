@@ -1003,6 +1003,42 @@ describe("cli", () => {
     }
   });
 
+  it("shows the plans and hands out a link that buys one without a key, never charging anything", async () => {
+    const { FakeCloud } = await import("./test-support/fake-cloud.js");
+    const fake = await FakeCloud.start();
+    const home = tempHome("skillhook-cli-pricing-");
+    const at = ["--dir", home.home];
+    try {
+      writeConfigFile(home, { cloud: { url: fake.url } });
+      const env = { SKILLHOOK_NO_UPDATE_CHECK: "1" };
+      const pricing = io(env);
+      expect(await main(["pricing", ...at], pricing.cli)).toBe(0);
+      expect(pricing.out()).toMatch(/Pro\s+\$29\/mo, \$290\/yr\s+10\s+10\s+25\s+50,000\s+30 d/);
+      expect(pricing.out()).toContain(`Pro: ${fake.url}/checkout?plan=pro&interval=month&ref=agent-cli`);
+      expect(pricing.out()).toContain("Enterprise: mailto:support@example.test");
+      const json = io(env);
+      expect(await main(["pricing", ...at, "--json"], json.cli)).toBe(0);
+      expect(json.json()).toMatchObject({ product: "skillhook-cloud", plans: expect.any(Array) });
+
+      const upgrade = io(env);
+      expect(await main(["cloud", "upgrade", "--plan", "pro", "--yearly", ...at], upgrade.cli)).toBe(0);
+      expect(upgrade.out()).toContain(`${fake.url}/checkout?plan=pro&interval=year&ref=agent-cli`);
+      const wrong = io(env);
+      expect(await main(["cloud", "upgrade", "--plan", "enterprise", ...at], wrong.cli)).toBe(2);
+      // Only the two public routes, without a key or the machine token, each saying it is the CLI.
+      expect(fake.apiRequests).toEqual([
+        { method: "GET", path: "/api/v1/pricing?ref=agent-cli", authorization: undefined, client: "cli" },
+        { method: "GET", path: "/api/v1/pricing?ref=agent-cli", authorization: undefined, client: "cli" },
+        { method: "POST", path: "/api/v1/billing/checkout", authorization: undefined, client: "cli" },
+      ]);
+      const killed = io({ ...env, SKILLHOOK_NO_CLOUD: "1" });
+      expect(await main(["pricing", ...at], killed.cli)).toBe(1);
+      expect(killed.err()).toContain("SKILLHOOK_NO_CLOUD is set");
+    } finally {
+      await fake.close();
+    }
+  });
+
   it("does what the cloud's catalogue offers: login with --url, the overview, every tool by name, a sealed secret", async () => {
     const { FakeCloud } = await import("./test-support/fake-cloud.js");
     const fake = await FakeCloud.start();
@@ -1326,7 +1362,8 @@ describe("cli", () => {
       runners: [[], ["--refresh", "--local"]],
       stats: [[], ["--since", "7d"]],
       config: [[], ["show"], ["get", "port"], ["set", "port", "9999"], ["unset", "runners"], ["reload"], ["path"]],
-      cloud: [[], ["connect", "--code", "ABCD-EFGH", "--control"], ["disconnect"], ["status"], ["report", "Broken", "--body", "details"], ["login", "--key", "shc_placeholder-other-key", "--url", "https://cloud.example.invalid"], ["login", "--no-browser"], ["logout"], ["overview"], ["machines"], ["jobs", "--waiting"], ["job", job], ["tools"], ["tools", "answer_job"], ["answer_job", job, "yes"], ["save-skill", "mac-mini", "hello", "--content-file", "SKILL.md"], ["secret", "mac-mini", "hello", "--force"]],
+      cloud: [[], ["connect", "--code", "ABCD-EFGH", "--control"], ["disconnect"], ["status"], ["report", "Broken", "--body", "details"], ["login", "--key", "shc_placeholder-other-key", "--url", "https://cloud.example.invalid"], ["login", "--no-browser"], ["logout"], ["overview"], ["machines"], ["jobs", "--waiting"], ["job", job], ["tools"], ["tools", "answer_job"], ["answer_job", job, "yes"], ["save-skill", "mac-mini", "hello", "--content-file", "SKILL.md"], ["secret", "mac-mini", "hello", "--force"], ["billing", "--portal"], ["upgrade", "--plan", "pro", "--yearly"]],
+      pricing: [[], ["--json"]],
       mcp: [[], ["--print-config"], ["--cloud"], ["--job", job]],
       update: [[], ["--install"], ["--refresh"]],
       link: [[], [unlinked]],

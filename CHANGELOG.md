@@ -4,6 +4,10 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.12.0 (2026-10-17)
+
+- Skillhook Cloud's plans for agents and people in a terminal: `skillhook pricing [--json]` lists every plan's price, limits, features and checkout link without a key; `skillhook cloud billing [--portal]` shows the organisation's plan, renewal, usage against every limit and what the next plan adds (or Stripe's link to invoices and the card); `skillhook cloud upgrade --plan pro|business [--yearly] [--open]` gives a person the link that buys a plan, with a key (Stripe Checkout for the organisation) or without one (a link that signs them up first). Nothing is charged and no card details are taken. `skillhook mcp --cloud` offers `get_pricing` and `create_checkout_link` before anyone signed in, and requests to the cloud say which front end sent them (`x-skillhook-client`), so its links are attributed to `agent-cli` or `agent-mcp`.
+
 ## 0.11.0 (2026-10-17)
 
 - Run each repository's hooks as a different Claude login: `claude.config_dir` on a skill or hook, or a top-level `claude:` block in `skillhook.yaml` for every hook of the file, sets `CLAUDE_CONFIG_DIR` for the run (and drops `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` unless listed in `env:`). Readiness and the `fallback:` decision probe that directory, `skillhook health` shows a `claude <dir>` row per directory with the logged-in account, and `resume_command` resumes with the same directory.

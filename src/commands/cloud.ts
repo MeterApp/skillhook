@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { adminRequest, findRunningServer, readServerState } from "../client.js";
 import { API_KEY_RE, CloudApiError, fleetClient, JobDetailSchema, JobListSchema, keepApiKey, loginCommand, machineNames, MachineListSchema, MeSchema, storedApiCredentials, type FleetClient, type FleetJob, type Me } from "../cloud/api.js";
 import { assertSecureCloudUrl, CLOUD_API_KEY_ENV, CLOUD_API_URL_ENV, CLOUD_PRIVATE_KEY_ENV, CLOUD_TOKEN_ENV, cloudDisabledByEnv, resolveCloudUrl, trimTrailingSlashes, truthy } from "../cloud/config.js";
-import { browserLogin } from "../cloud/login.js";
+import { browserLogin, openBrowser } from "../cloud/login.js";
+import { publicCheckoutLink } from "../cloud/pricing.js";
 import { CloudHttpError } from "../cloud/http.js";
 import { cloudStatus, disconnectCloud, machineInfo, pairMachine, writeLinkCredentials } from "../cloud/pair.js";
 import { ISSUE_KINDS, ISSUE_SEVERITIES, JOB_OUTCOMES, JOB_STATUSES, type IssueKind, type IssueSeverity } from "../cloud/protocol.js";
@@ -31,7 +32,10 @@ With the API key, the whole organisation (every command below reads or acts thro
   skillhook cloud job <id>                                                               one job: status, outcome, the question waiting for a person, the result
   skillhook cloud tools [tool]                                                           every tool the cloud offers this key (the dashboard's views and actions); one tool's parameters
   skillhook cloud <tool> [arguments] [--param value]…                                    run one, e.g. answer_job <job> "yes", get_stats --days 30, run_skill <machine> <skill> --payload @event.json
-  skillhook cloud secret <machine> <skill|NAME> [--force]                                generate a skill's secret on a machine: shown here once, sealed so the cloud never sees it`;
+  skillhook cloud secret <machine> <skill|NAME> [--force]                                generate a skill's secret on a machine: shown here once, sealed so the cloud never sees it
+  skillhook cloud billing [--portal]                                                     the plan, its renewal, every limit against its use, what the next plan adds; --portal: Stripe's link to invoices and the card (admin)
+  skillhook cloud upgrade --plan pro|business [--yearly] [--open]                        a link to buy the plan for a person to open (admin key: Stripe Checkout for the organisation; no key: one that signs them in or up first). Nothing is charged here
+  skillhook pricing [--json]                                                             every plan's price, limits and checkout link, no key needed`;
 
 /** The running server re-reads skillhook.json now (it would notice within a few seconds anyway). */
 async function notifyReload(ctx: Ctx, baseUrl: string): Promise<void> {
@@ -234,6 +238,32 @@ async function cloudSubcommand(ctx: Ctx): Promise<number> {
       ctx.print(printable(describeCatalog(catalog)), catalog);
       return 0;
     }
+    case "billing": {
+      const client = apiClient(ctx);
+      if (bool(ctx.flags, "portal")) {
+        const data = await callTool(client, "get_billing_link", {});
+        ctx.print(printable(`${String(data.url ?? "")}\n${String(data.note ?? "")}`.trim()), data);
+        return 0;
+      }
+      const data = await callTool(client, "get_billing", {});
+      ctx.print(printable(describeBilling(data)), data);
+      return 0;
+    }
+    case "upgrade": {
+      const plan = str(ctx.flags, "plan") ?? ctx.args[1];
+      if (plan !== "pro" && plan !== "business") throw new UsageError("Name the plan: skillhook cloud upgrade --plan pro|business [--yearly]  (skillhook pricing lists them)", CLOUD_USAGE);
+      const interval = bool(ctx.flags, "yearly") || str(ctx.flags, "interval") === "year" ? "year" : "month";
+      const credentials = storedApiCredentials(ctx.paths, env);
+      // Without a key (nobody signed in here) the cloud's public link still works: it signs the person in, or up, first.
+      const link = credentials.key
+        ? await callTool(apiClient(ctx), "create_checkout_link", { plan, interval })
+        : (await publicCheckoutLink(env, config.cloud, { plan, interval }, { keptUrl: credentials.url, client: "cli" })).raw as Record<string, unknown>;
+      const url = String(link.url ?? "");
+      const opened = bool(ctx.flags, "open") && url.startsWith("https://") && openBrowser(url, env);
+      const said = link.kind === "dashboard" ? `${String(link.note ?? "")}\n${url}` : `${String(link.price ?? plan)}: ${url}\n${String(link.note ?? "Open it in a browser to pay; nothing is charged until a person completes it there.")}`;
+      ctx.print(printable(`${said}${opened ? "\n(opened in the browser)" : ""}`), { ...link, opened });
+      return 0;
+    }
     case "secret": {
       const [, machine, given] = ctx.args;
       if (!machine || !given) throw new UsageError("Name the machine and the skill (or its secret's variable): skillhook cloud secret mac-mini hello", CLOUD_USAGE);
@@ -295,7 +325,36 @@ async function browserSignIn(ctx: Ctx, override: string | undefined): Promise<nu
 
 /** A client with the organisation API key kept here (or in the environment), for the cloud it was checked against. */
 function apiClient(ctx: Ctx): FleetClient {
-  return fleetClient(ctx.io.env, ctx.config().cloud, storedApiCredentials(ctx.paths, ctx.io.env));
+  return fleetClient(ctx.io.env, ctx.config().cloud, storedApiCredentials(ctx.paths, ctx.io.env), { client: "cli" });
+}
+
+/** What get_billing says, for a person: the plan, its renewal, every limit against its use, what the next plan adds. */
+function describeBilling(data: Record<string, unknown>): string {
+  const b = data as {
+    plan?: { name?: string; status?: string | null; interval?: string | null; cancel_at_period_end?: boolean };
+    renews_at?: string | null;
+    ends_at?: string | null;
+    usage?: Record<string, { used?: number; limit?: number | null; remaining?: number | null; reached?: boolean }>;
+    enforced?: boolean;
+    next_plan?: { name?: string; price?: { monthly?: number | null } | null; raises?: Record<string, { from?: number | null; to?: number | null }>; checkout_url?: string | null } | null;
+    checkout_url?: string;
+    billing_url?: string;
+    note?: string;
+  };
+  if (!b.plan || !b.usage) return renderResult(data);
+  const when = b.ends_at ? `ends ${b.ends_at.slice(0, 10)}` : b.renews_at ? `renews ${b.renews_at.slice(0, 10)}` : "";
+  const lines = [`${b.plan.name ?? "?"}${b.plan.interval ? `, billed ${b.plan.interval === "year" ? "yearly" : "monthly"}` : ""}${b.plan.status ? ` (${b.plan.status})` : ""}${when ? `, ${when}` : ""}`, ""];
+  const rows = Object.entries(b.usage).map(([name, state]) => [name.replaceAll("_", " "), String(state.used ?? 0), state.limit === null ? "unlimited" : String(state.limit ?? ""), state.reached ? "full" : state.remaining === null ? "" : String(state.remaining ?? "")]);
+  lines.push(table(rows, ["limit", "used", "of", "left"]));
+  if (b.enforced === false) lines.push("", b.note ?? "Plans are not enforced on this cloud.");
+  const next = b.next_plan;
+  if (next?.name) {
+    const raises = Object.entries(next.raises ?? {}).map(([name, change]) => `${name.replaceAll("_", " ")} ${change.from ?? "∞"} → ${change.to ?? "unlimited"}`);
+    lines.push("", `${next.name}${next.price?.monthly ? ` ($${next.price.monthly} a month)` : ""} adds: ${raises.join(", ") || "more of everything"}`);
+    if (next.checkout_url) lines.push(`Upgrade: skillhook cloud upgrade --plan ${next.name.toLowerCase()} (or open ${next.checkout_url})`);
+  }
+  if (b.billing_url) lines.push(`Billing page (switch, cancel, invoices): ${b.billing_url}`);
+  return lines.join("\n");
 }
 
 /**

@@ -140,7 +140,16 @@ describe("skillhook mcp --cloud", () => {
     const polls = gatedPolls();
     const client = await connectMcp(buildCloudMcpServer(paths, env, await connectCloud(paths, env), { openUrl: (url) => opened.push(url) > 0, sleep: polls.sleep }));
     clients.push(client);
-    expect(await client.tools()).toEqual(["skillhook_cloud_setup"]);
+    expect(await client.tools()).toEqual(["create_checkout_link", "get_pricing", "skillhook_cloud_setup"]);
+    // The plans and a link that buys one need no sign-in: the cloud's public API, without a key.
+    const pricing = await client.call("get_pricing");
+    expect(pricing.data).toMatchObject({ product: "skillhook-cloud", plans: expect.arrayContaining([expect.objectContaining({ id: "pro", checkout_url: `${fake.url}/checkout?plan=pro&interval=month&ref=agent-mcp` })]) });
+    const link = await client.call("create_checkout_link", { plan: "pro", interval: "year" });
+    expect(link.data).toMatchObject({ kind: "signup", url: `${fake.url}/checkout?plan=pro&interval=year&ref=agent-mcp` });
+    expect(fake.apiRequests.filter((request) => request.path.startsWith("/api/v1/pricing") || request.path === "/api/v1/billing/checkout")).toEqual([
+      { method: "GET", path: "/api/v1/pricing?ref=agent-mcp", authorization: undefined, client: "mcp" },
+      { method: "POST", path: "/api/v1/billing/checkout", authorization: undefined, client: "mcp" },
+    ]);
     const instructions = String((client.init.result as { instructions: string }).instructions);
     expect(instructions).toContain("Skillhook Cloud is not connected on this computer: No organisation API key.");
     expect(instructions).toContain("To connect, call skillhook_cloud_setup: it signs in with the browser");
@@ -212,7 +221,8 @@ describe("skillhook mcp --cloud", () => {
     expect(instructions).toContain("In a terminal, `skillhook cloud login` does the same (with `--url https://…` for a Skillhook Cloud other than https://skillhook.dev)");
     expect(instructions).not.toContain("https://<");
     const listed = ((await client.request("tools/list")).result as { tools: { name: string; description: string; annotations: { readOnlyHint: boolean } }[] }).tools;
-    expect(listed).toEqual([expect.objectContaining({ name: "skillhook_cloud_setup", description: expect.stringContaining("signs in with the browser"), annotations: expect.objectContaining({ readOnlyHint: false }) })]);
+    expect(listed.find((tool) => tool.name === "skillhook_cloud_setup")).toEqual(expect.objectContaining({ description: expect.stringContaining("signs in with the browser"), annotations: expect.objectContaining({ readOnlyHint: false }) }));
+    expect(listed.map((tool) => tool.name).sort()).toEqual(["create_checkout_link", "get_pricing", "skillhook_cloud_setup"]);
   });
 
   it("says what is wrong when the cloud cannot be used: the kill switch, plain http, an older cloud", async () => {

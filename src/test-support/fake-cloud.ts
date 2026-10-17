@@ -85,7 +85,7 @@ export class FakeCloud {
   /** The organisation API key `/api/v1` accepts (a placeholder: nothing here is a real credential). */
   readonly apiKey = "shc_placeholder-organisation-key-0123456789abc";
   /** Every `/api/v1` request: method, path with its query, and the bearer it carried. */
-  readonly apiRequests: { method: string; path: string; authorization: string | undefined }[] = [];
+  readonly apiRequests: { method: string; path: string; authorization: string | undefined; client?: string }[] = [];
   /** `forbidden` answers every `/api/v1` read with 403, as for a key without the scope. */
   apiMode: "ok" | "forbidden" = "ok";
   /** The scopes of `apiKey`: what the catalogue allows it and `/me` says. */
@@ -412,8 +412,31 @@ export class FakeCloud {
   }
 
   private async handleApi(req: IncomingMessage, res: import("node:http").ServerResponse, url: URL): Promise<void> {
-    this.apiRequests.push({ method: req.method ?? "GET", path: `${url.pathname}${url.search}`, authorization: req.headers.authorization });
+    const client = req.headers["x-skillhook-client"];
+    this.apiRequests.push({ method: req.method ?? "GET", path: `${url.pathname}${url.search}`, authorization: req.headers.authorization, ...(typeof client === "string" ? { client } : {}) });
     this.notify();
+    // The routes that answer anyone: the pricing document and, without a key, a plan's checkout link.
+    if (req.method === "GET" && url.pathname === "/api/v1/pricing") {
+      const ref = url.searchParams.get("ref") ?? "agent-api";
+      const link = (plan: string) => `${this.url}/checkout?plan=${plan}&interval=month&ref=${ref}`;
+      return this.reply(res, 200, {
+        product: "skillhook-cloud",
+        currency: "usd",
+        updated_at: "2026-10-04",
+        plans: [
+          { id: "free", name: "Free", price: { monthly: 0, yearly: 0 }, limits: { machines: 2, members: 3, hosted_urls: 3, hosted_deliveries_per_month: 1000, payload_retention_days: 7 }, features: ["2 machines"], checkout_url: null, signup_url: `${this.url}/login?next=%2F` },
+          { id: "pro", name: "Pro", price: { monthly: 29, yearly: 290 }, limits: { machines: 10, members: 10, hosted_urls: 25, hosted_deliveries_per_month: 50000, payload_retention_days: 30 }, features: ["10 machines"], checkout_url: link("pro") },
+          { id: "enterprise", name: "Enterprise", price: null, limits: { machines: null, members: null, hosted_urls: null, hosted_deliveries_per_month: null, payload_retention_days: 365 }, features: ["As agreed"], checkout_url: null, contact: "mailto:support@example.test" },
+        ],
+        pricing_url: `${this.url}/pricing`,
+        enforced: true,
+      });
+    }
+    if (req.method === "POST" && url.pathname === "/api/v1/billing/checkout" && !req.headers.authorization) {
+      const body = (await readJson(req)) as { plan?: string; interval?: string; ref?: string };
+      if (body.plan !== "pro" && body.plan !== "business") return this.problem(res, 400, "invalid_request", "plan: pro or business");
+      return this.reply(res, 200, { kind: "signup", url: `${this.url}/checkout?plan=${body.plan}&interval=${body.interval ?? "month"}&ref=${body.ref ?? "agent-api"}`, plan: body.plan, interval: body.interval ?? "month", price: "$29 a month", note: "Open the link in a browser." });
+    }
     if (!req.headers.authorization) return this.problem(res, 401, "unauthorized", "Send an organisation API key as Authorization: Bearer shc_…", { "www-authenticate": `Bearer realm="Skillhook Cloud"` });
     if (req.headers.authorization !== `Bearer ${this.apiKey}`) return this.problem(res, 401, "invalid_key", "The API key is unknown, revoked or expired.");
     if (this.apiMode === "forbidden") return this.problem(res, 403, "forbidden", "This key may not read the fleet.");

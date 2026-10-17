@@ -20,6 +20,7 @@ import { exposeCommand, EXPOSE_USAGE, urlCommand, URL_USAGE } from "./expose.js"
 import { serviceCommand, SERVICE_USAGE } from "./service.js";
 import { doctorCommand, DOCTOR_USAGE } from "./doctor.js";
 import { cloudCommand, CLOUD_USAGE } from "./cloud.js";
+import { pricingCommand, PRICING_USAGE } from "./pricing.js";
 import { configCommand, CONFIG_USAGE } from "./config.js";
 import { mcpCommand, MCP_USAGE } from "./mcp.js";
 import { updateCommand, UPDATE_USAGE } from "./update.js";
@@ -80,6 +81,8 @@ Agents
   cloud overview | machines | jobs [--waiting] … | job <id>   What needs a person across the organisation; its machines and jobs
   cloud tools [tool] | <tool> [args] [--param value]…      Everything the dashboard shows and does, by name (answer_job, run_skill, get_stats, …)
   cloud secret <machine> <skill|NAME> [--force]            A skill's secret generated on a machine, opened only here
+  cloud billing [--portal] | upgrade --plan pro|business [--yearly] [--open]   The organisation's plan and usage; a link to buy a plan (nothing is charged here)
+  pricing                                                  Skillhook Cloud's plans: prices, limits and the link that buys each, no key needed
 
 Global options: --dir <path> (default $SKILLHOOK_HOME or ~/.skillhook), --json, --help, --version
 skillhook <command> --help (or skillhook help <command>) prints its usage and runs nothing; a mistake prints it too.
@@ -115,6 +118,7 @@ export const COMMANDS: Record<string, Command> = {
   stats: { run: statsCommand, usage: STATS_USAGE },
   config: { run: configCommand, usage: CONFIG_USAGE },
   cloud: { run: cloudCommand, usage: CLOUD_USAGE },
+  pricing: { run: pricingCommand, usage: PRICING_USAGE },
   mcp: { run: mcpCommand, usage: MCP_USAGE },
   update: { run: updateCommand, usage: UPDATE_USAGE },
   upgrade: { run: updateCommand, usage: UPDATE_USAGE },
