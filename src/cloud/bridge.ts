@@ -18,6 +18,7 @@ import { API_KEY_RE, CloudApiError, fleetClient, keepApiKey, storedApiCredential
 import { CLOUD_API_KEY_ENV, DEFAULT_CLOUD_URL, resolveCloudUrl } from "./config.js";
 import { browserLogin, openBrowser, type SignInPrompt } from "./login.js";
 import { generateRemoteSecret, secretNameFor } from "./remote-secret.js";
+import { fetchPricing, publicCheckoutLink } from "./pricing.js";
 import { callTool, fetchCatalog, type Catalog } from "./tools.js";
 
 type ToolResult = { content: { type: "text"; text: string }[]; structuredContent?: Record<string, unknown>; isError?: boolean };
@@ -60,7 +61,7 @@ const CATALOG_TIMEOUT_MS = 8_000;
 /** The key and URL this home keeps, and the catalogue the cloud offers that key; or why there is none. */
 export async function connectCloud(paths: Paths, env: NodeJS.ProcessEnv): Promise<CloudConnection> {
   try {
-    const client = fleetClient(env, loadConfig(paths).cloud, storedApiCredentials(paths, env));
+    const client = fleetClient(env, loadConfig(paths).cloud, storedApiCredentials(paths, env), { client: "mcp" });
     return { client, catalog: await fetchCatalog(client, { timeoutMs: CATALOG_TIMEOUT_MS }) };
   } catch (error) {
     return { problem: errorMessage(error), ...(error instanceof CloudApiError ? { ...(error.code ? { code: error.code } : {}), ...(error.status !== undefined ? { status: error.status } : {}) } : {}) };
@@ -92,10 +93,14 @@ export function buildCloudMcpServer(paths: Paths, env: NodeJS.ProcessEnv, connec
   const connected = "catalog" in connection;
   const server = new McpServer(
     { name: "skillhook-cloud", version: VERSION },
-    { capabilities: { tools: {} }, instructions: connected ? instructionsFor(connection.catalog) : `Skillhook Cloud is not connected on this computer: ${connection.problem}\n${LOGIN_HINT}` },
+    { capabilities: { tools: {} }, instructions: connected ? instructionsFor(connection.catalog) : `Skillhook Cloud is not connected on this computer: ${connection.problem}\n${LOGIN_HINT}\nBefore signing in, get_pricing lists the plans and create_checkout_link gives a person the link that buys one (it signs them up first).` },
   );
 
+  // Before anyone signed in: the plans and the link that buys one, from the cloud's public API (no key). The catalogue's
+  // own get_pricing and create_checkout_link replace them once the tools load.
+  const beforeSignIn: { remove(): void }[] = [];
   const install = (client: FleetClient, catalog: Catalog) => {
+    for (const tool of beforeSignIn.splice(0)) tool.remove();
     for (const tool of catalog.tools) {
       if (tool.allowed === false || LOCAL_TOOLS.has(tool.name)) continue;
       try {
@@ -198,6 +203,44 @@ export function buildCloudMcpServer(paths: Paths, env: NodeJS.ProcessEnv, connec
       `Signing in to ${current.url}. ${current.opened ? "The sign-in page is open in the person's browser on this computer" : "Give the person this link, to open in a browser where they can sign in"}: ${prompt.url}\nIt must show the code ${prompt.code}; they check that and approve (an admin or owner of the organisation, choosing the access). The code expires in ${minutes} minutes, and the key goes straight into skillhook's .env, never through this conversation. Call skillhook_cloud_setup again once they approved (wait_seconds: 60 waits for it); the Skillhook Cloud tools load as soon as they do.`,
     );
   };
+
+  const publicOptions = () => ({ keptUrl: storedApiCredentials(paths, env).url, client: "mcp" as const });
+  beforeSignIn.push(
+    server.registerTool(
+      "get_pricing",
+      {
+        title: "Skillhook Cloud plans and prices",
+        description: "Every Skillhook Cloud plan (Free, Pro, Business, Enterprise): its price a month and a year in USD, the limits (machines, people, hosted URLs, hosted deliveries a month, notification channels, API keys), the features, and a checkout_url a person opens to buy it (it signs them in or up first). Needs no sign-in.",
+        inputSchema: z.object({}),
+        annotations: { readOnlyHint: true, openWorldHint: true },
+      },
+      async () => {
+        try {
+          const { raw } = await fetchPricing(env, loadConfig(paths).cloud, publicOptions());
+          return ok(raw as Record<string, unknown>);
+        } catch (error) {
+          return fail(error);
+        }
+      },
+    ),
+    server.registerTool(
+      "create_checkout_link",
+      {
+        title: "A link to buy a Skillhook Cloud plan",
+        description: "The link a person opens in a browser to buy Pro or Business: it signs them in (the first sign-in makes the account), asks for an organisation name when they have none, and goes to Stripe Checkout, where they pay. It charges nothing. Confirm the plan and price with the person first; never ask for card details. Once signed in (skillhook_cloud_setup), the same tool makes the Checkout link for the organisation.",
+        inputSchema: z.object({ plan: z.enum(["pro", "business"]).describe("pro or business"), interval: z.enum(["month", "year"]).optional().describe("month (default) or year (two months free)") }),
+        annotations: { readOnlyHint: true, openWorldHint: true },
+      },
+      async ({ plan, interval }) => {
+        try {
+          const { raw } = await publicCheckoutLink(env, loadConfig(paths).cloud, { plan, interval: interval ?? "month" }, publicOptions());
+          return ok(raw as Record<string, unknown>);
+        } catch (error) {
+          return fail(error);
+        }
+      },
+    ),
+  );
 
   const setup = server.registerTool(
     "skillhook_cloud_setup",

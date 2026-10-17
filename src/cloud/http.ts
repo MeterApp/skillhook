@@ -29,6 +29,8 @@ export interface CloudRequestOptions {
   /** Decoded response bytes; sync supplies its smaller protocol limit. */
   maxResponseBytes?: number;
   fetchImpl?: typeof fetch;
+  /** More request headers (the public API's `x-skillhook-client`). */
+  headers?: Record<string, string>;
 }
 
 export interface CloudResponse<T = unknown> {
@@ -46,7 +48,7 @@ export async function cloudRequest<T = unknown>(baseUrl: string, path: string, o
   // The runtime quotes a header value it refuses in its error; a token that could not be a header never gets that far.
   if (options.token && !/^[\x21-\x7e]+$/.test(options.token)) throw new CloudHttpError(0, "invalid_credentials", "the token is not one line of printable characters");
   const fetchImpl = options.fetchImpl ?? fetch;
-  const headers: Record<string, string> = { accept: "application/json", "user-agent": `skillhook/${VERSION} (cloud link)`, "x-skillhook-protocol": String(PROTOCOL_VERSION), ...(options.raw?.headers ?? {}) };
+  const headers: Record<string, string> = { accept: "application/json", "user-agent": `skillhook/${VERSION} (cloud link)`, "x-skillhook-protocol": String(PROTOCOL_VERSION), ...(options.headers ?? {}), ...(options.raw?.headers ?? {}) };
   if (options.token) headers.authorization = `Bearer ${options.token}`;
   type FetchBody = NonNullable<Parameters<typeof fetch>[1]>["body"];
   let body: FetchBody | undefined;

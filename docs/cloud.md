@@ -188,6 +188,9 @@ The fixed views:
 | `cloud tools [tool]` | `GET /api/v1/tools` |
 | `cloud machines` | `GET /api/v1/machines`: name, status, mode, skillhook version, last seen |
 | `cloud jobs [--machine M] [--skill S] [--status ST] [--outcome O] [--waiting] [--limit N] [--before CURSOR]` | `GET /api/v1/jobs` with those filters (newest first; `--before` pages), and for the table `GET /api/v1/machines` for the machines' names |
+| `cloud billing [--portal]` | `POST /api/v1/tools/get_billing` (`--portal`: `get_billing_link`): the plan, its renewal, every limit against its use, what the next plan adds |
+| `cloud upgrade --plan pro\|business [--yearly] [--open]` | `POST /api/v1/tools/create_checkout_link` with a key; without one, `POST /api/v1/billing/checkout` with no credential (the plan's link, which signs the person in or up first). `--open` opens the link in the browser. Nothing is charged |
+| `pricing [--json]` | `GET /api/v1/pricing?ref=agent-cli` with no credential, to the key's cloud or else the machine's |
 | `cloud job <id>` | `GET /api/v1/jobs/{id}` (the machine's job id or the cloud's): status, outcome, the question waiting for a person, the answer, the result excerpt; and for the text `GET /api/v1/machines` for the machine's name |
 
 Nothing from the machine goes with these requests beyond what the command or tool was given. A refused key (`401`) says

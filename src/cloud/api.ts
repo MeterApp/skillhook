@@ -66,6 +66,10 @@ export type FleetJob = z.infer<typeof FleetJobSchema>;
 export const JobListSchema = z.object({ jobs: z.array(FleetJobSchema), next_before: text }).loose();
 export const JobDetailSchema = z.object({ job: FleetJobSchema }).loose();
 
+/** Which front end of skillhook calls (`skillhook cloud …` or `skillhook mcp --cloud`): the cloud attributes its checkout links to it (ref=agent-cli, agent-mcp). */
+export type SkillhookClient = "cli" | "mcp";
+export const CLIENT_HEADER = "x-skillhook-client";
+
 export interface ApiCredentials {
   key: string | undefined;
   /** The cloud the key was checked against at login; unset for a key kept by skillhook 0.6 or given without one. */
@@ -110,7 +114,7 @@ export interface FleetClient {
  * `SKILLHOOK_NO_CLOUD`, without a well-formed key, or to a URL that is not https. A key login kept never follows a
  * `cloud.url` changed after it.
  */
-export function fleetClient(env: NodeJS.ProcessEnv, cloud: { url?: string }, credentials: ApiCredentials, options: { fetchImpl?: typeof fetch; url?: string } = {}): FleetClient {
+export function fleetClient(env: NodeJS.ProcessEnv, cloud: { url?: string }, credentials: ApiCredentials, options: { fetchImpl?: typeof fetch; url?: string; client?: SkillhookClient } = {}): FleetClient {
   const { key } = credentials;
   if (cloudDisabledByEnv(env)) throw new CloudApiError("SKILLHOOK_NO_CLOUD is set: nothing goes to Skillhook Cloud from this environment. Unset it to use the fleet.", undefined, "disabled");
   const url = resolveCloudUrl(env, cloud, options.url ?? credentials.url);
@@ -120,7 +124,7 @@ export function fleetClient(env: NodeJS.ProcessEnv, cloud: { url?: string }, cre
   const send = async <T,>(method: "GET" | "POST", path: string, schema: z.ZodType<T>, body: unknown, timeoutMs: number) => {
     let response;
     try {
-      response = await cloudRequest(url, `/api/v1${path}`, { method, token: key, body, fetchImpl: options.fetchImpl, timeoutMs });
+      response = await cloudRequest(url, `/api/v1${path}`, { method, token: key, body, fetchImpl: options.fetchImpl, timeoutMs, headers: options.client ? { [CLIENT_HEADER]: options.client } : undefined });
     } catch (error) {
       if (error instanceof CloudHttpError) throw new CloudApiError(describeApiFailure(error, url, method), error.status, error.code);
       throw error;
