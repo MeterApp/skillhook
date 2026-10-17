@@ -58,6 +58,17 @@ hooks:
     model: haiku
 ```
 
+A top-level `claude:` block holds [Claude Code options](skills.md#claude-options) for every hook in the file; `config_dir` is the one it is for: the Claude login this repository's hooks run as, so one machine can run each repository under a different account ([details](runners.md#several-claude-accounts-on-one-machine)).
+
+```yaml
+claude:
+  config_dir: ~/.claude-acme   # `CLAUDE_CONFIG_DIR=~/.claude-acme claude login` once, as the user that runs the server
+hooks:
+  # …
+```
+
+A hook's own `claude:` keys win over the file's, key by key, and so do those of the SKILL.md a `skill` hook names. A relative `config_dir` in `skillhook.yaml` is resolved against the repository. `run` hooks get it too: a shell command that starts `claude` uses the same login.
+
 `hooks` is a map from webhook name to hook. The name follows the skill naming rule (1-64 lowercase letters, digits and single hyphens) and becomes the URL: `POST <public_url>/hooks/<name>`. `skillhook.yml` is accepted too. Unknown keys are rejected, so a typo cannot silently disable a filter.
 
 ## What a hook accepts

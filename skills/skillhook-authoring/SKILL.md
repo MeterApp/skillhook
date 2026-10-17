@@ -40,7 +40,7 @@ Start from an example when one is close — `skillhook skills examples`, then `s
 | `dedupe` | `{ path: … }` or `{ header: … }`: the value that identifies a delivery; `in_flight: false` lets identical payloads run at the same time | the provider's delivery id; in-flight de-duplication on |
 | `env` | names of `.env` variables the agent may see, e.g. `[GRANOLA_API_KEY]` | none |
 | `concurrency` | jobs of this skill allowed at once | 1 |
-| `claude` | `permission_mode`, `allowed_tools`, `disallowed_tools`, `add_dirs`, `max_budget_usd`, `append_system_prompt`, `args` | server `runners.claude` |
+| `claude` | `permission_mode`, `allowed_tools`, `disallowed_tools`, `add_dirs`, `max_budget_usd`, `append_system_prompt`, `args`, `config_dir` (the Claude login to run as: `CLAUDE_CONFIG_DIR`) | server `runners.claude` |
 | `codex` | `sandbox` (`read-only` \| `workspace-write` \| `danger-full-access`), `network_access`, `profile`, `add_dirs`, `args` | `workspace-write`, network on |
 | `shell` | `{ command: "…" }` — a script instead of an agent; payload on stdin, `SKILLHOOK_*` variables set | — |
 | `response` | `{ mode: text \| file \| structured, schema? }`: how the task outcome (`completed`, `partial`, `needs_human`, `nothing_to_do`, `failed`) is reported: `response.json` in the job directory, or a JSON answer forced through `claude --json-schema` / `codex --output-schema` | `text`: the agent may write `response.json`; otherwise the outcome is `unknown` |
@@ -167,6 +167,7 @@ Guardrails are added for you: the agent already knows it runs unattended, that a
 - `concurrency: 1` (default) serializes runs of a skill — right for anything that edits a repository. Raise it only for read-only skills.
 - Under Codex, `workspace-write` confines writes to `cwd` plus the skill and job directories; desktop automation (`osascript`, GUI apps) may need `danger-full-access`.
 - `fallback: { runners: [codex] }` keeps a skill running when Claude Code is logged out (the job runs on Codex and says so in `runner_reason`); the triggers beyond `not_ready`, and `retry`, repeat a failed run and belong on idempotent skills only.
+- `claude.config_dir` runs a skill as another `claude login` (`CLAUDE_CONFIG_DIR=<dir> claude login` once); a top-level `claude: { config_dir: … }` in `skillhook.yaml` sets it for every hook of a repository.
 - `claude.max_budget_usd` caps spend per run for API-key users; `claude.allowed_tools` with `permission_mode: acceptEdits` narrows what an unattended agent may do.
 
 ## Test loop

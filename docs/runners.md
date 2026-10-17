@@ -22,6 +22,26 @@ Both agent runners use whatever login the CLI already has on the machine:
 
 Log in as the same user that runs the server (the launchd LaunchAgent / systemd user unit runs as you). Any variable in `~/.skillhook/.env` starting with `ANTHROPIC_`, `CLAUDE_`, `OPENAI_` or `CODEX_` (for example `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK`, `OPENAI_BASE_URL`) is forwarded, so gateway and enterprise setups work unchanged. From the server's own environment only `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and the proxy/CA variables are copied.
 
+### Several Claude accounts on one machine
+
+Claude Code keeps its login in its configuration directory (`~/.claude` unless `CLAUDE_CONFIG_DIR` says otherwise), so a machine can hold several logins side by side: `CLAUDE_CONFIG_DIR=~/.claude-acme claude login`, `CLAUDE_CONFIG_DIR=~/.claude-globex claude login`, … A skill picks one with `claude.config_dir`, and a repository picks one for all its hooks with a top-level `claude:` block in its [`skillhook.yaml`](projects.md#the-file):
+
+```yaml
+claude:
+  config_dir: ~/.claude-acme
+hooks:
+  # …
+```
+
+For such a skill:
+
+- the run gets `CLAUDE_CONFIG_DIR=<config_dir>` (whatever the runner: a shell command that starts `claude` uses it too), and `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` are dropped from its environment, because Claude Code would use them instead of the login; list one in the skill's `env:` to keep it;
+- the readiness check before the job probes that directory, so a logged-out account sends its skills to their `fallback:` while the other accounts keep running;
+- `skillhook health` shows one `claude <dir>` row per directory, with the account it is logged in to and the skills that use it;
+- the job's `resume_command` sets the same `CLAUDE_CONFIG_DIR`, since the session is stored there.
+
+Skills without `config_dir` keep using `CLAUDE_CONFIG_DIR` from `.env` or the server environment, as before.
+
 ## Claude runner
 
 Command built for every job (`runners.claude.command` defaults to `claude`; set an absolute path or `["node", "/path/to/cli.js"]` when needed):

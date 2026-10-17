@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { compileHook, loadProject, parseProjectFile, PROJECT_FILE_NAMES, renderProjectTemplate, resolveProject } from "./projects.js";
@@ -127,6 +128,39 @@ describe("skillhook.yaml", () => {
     expect(noWay.errors[0]).toMatchObject({ name: "x" });
     expect(noWay.errors[0]?.error).toContain("needs a `schedule`");
     expect(loadProject(project(`hooks:\n  y:\n    run: ls\n    schedule: "99 * * * *"\n`)).errors[0]?.error).toContain("out of range");
+  });
+
+  it("applies the file's claude options (config_dir above all) to every hook; a hook or its SKILL.md wins key by key", () => {
+    const yaml = [
+      "claude:",
+      "  config_dir: ../profiles/acme",
+      "  permission_mode: acceptEdits",
+      "hooks:",
+      "  triage:",
+      "    prompt: Triage it.",
+      "  pull:",
+      "    run: git pull",
+      "  other:",
+      "    prompt: Other account.",
+      "    claude: { config_dir: ~/.claude-other }",
+      "  notes:",
+      "    skill: .claude/skills/notes",
+      "",
+    ].join("\n");
+    const dir = project(yaml, (d) => {
+      mkdirSync(path.join(d, ".claude", "skills", "notes"), { recursive: true });
+      writeFileSync(path.join(d, ".claude", "skills", "notes", "SKILL.md"), `---\nname: notes\ndescription: Notes.\nskillhook:\n  claude:\n    permission_mode: plan\n---\nWrite notes.\n`);
+    });
+    const loaded = loadProject(dir);
+    expect(loaded.errors).toEqual([]);
+    const byName = Object.fromEntries(loaded.hooks.map((h) => [h.name, h]));
+    const acme = path.resolve(dir, "../profiles/acme");
+    expect(byName.triage?.config.claude).toEqual({ config_dir: acme, permission_mode: "acceptEdits" });
+    expect(byName.pull?.config.claude).toEqual({ config_dir: acme, permission_mode: "acceptEdits" }); // a shell hook that runs `claude` uses it too
+    expect(byName.other?.config.claude).toEqual({ config_dir: path.join(homedir(), ".claude-other"), permission_mode: "acceptEdits" });
+    expect(byName.notes?.config.claude).toEqual({ config_dir: acme, permission_mode: "plan" });
+    expect(() => parseProjectFile("claude: { config_dir: '' }\nhooks: {}\n", "x.yaml")).toThrow();
+    expect(() => parseProjectFile("claude: { nope: 1 }\nhooks: {}\n", "x.yaml")).toThrow();
   });
 
   it("compileHook validates names", () => {

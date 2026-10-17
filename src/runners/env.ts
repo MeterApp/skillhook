@@ -3,6 +3,7 @@ import path from "node:path";
 import type { Config } from "../config.js";
 import type { Secrets } from "../env.js";
 import type { Skill } from "../skills.js";
+import { expandTilde } from "../util.js";
 
 /** Always copied from the server's own environment. */
 const BASE_KEYS = ["HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TERM", "TZ", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "SSH_AUTH_SOCK", "COLORTERM"];
@@ -74,9 +75,29 @@ export function baseRunEnv(input: Pick<RunEnvInput, "secrets" | "fileSecrets" | 
   return env;
 }
 
+/** Credentials Claude Code prefers to the login in its configuration directory: dropped when a skill names one. */
+const CLAUDE_LOGIN_OVERRIDES = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"];
+
+/** The skill's `claude.config_dir` as an absolute path (`~` expanded, relative to the skill's directory), if it names one. */
+export function claudeConfigDir(skill: Pick<Skill, "dir" | "config">): string | undefined {
+  const dir = skill.config.claude?.config_dir;
+  return dir ? path.resolve(skill.dir, expandTilde(dir)) : undefined;
+}
+
+/**
+ * `env` with Claude Code pointed at `configDir`: `CLAUDE_CONFIG_DIR` set and the variables that would authenticate as
+ * someone else instead (an API key, an OAuth token) removed, unless `keep` names them.
+ */
+export function withClaudeConfigDir(env: Record<string, string>, configDir: string | undefined, keep: readonly string[] = []): Record<string, string> {
+  if (!configDir) return env;
+  const out: Record<string, string> = { ...env, CLAUDE_CONFIG_DIR: configDir };
+  for (const key of CLAUDE_LOGIN_OVERRIDES) if (!keep.includes(key)) delete out[key];
+  return out;
+}
+
 export function buildRunEnv(input: RunEnvInput): Record<string, string> {
-  const env = baseRunEnv(input);
   const explicit = [...input.config.env_passthrough, ...(input.skill.config.env ?? [])];
+  const env = withClaudeConfigDir(baseRunEnv(input), claudeConfigDir(input.skill), explicit);
   for (const key of explicit) {
     if (NEVER_EXPLICIT.test(key)) continue;
     const value = input.secrets[key];

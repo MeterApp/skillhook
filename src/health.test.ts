@@ -141,6 +141,29 @@ describe("cloud link check", () => {
   });
 });
 
+describe("claude.config_dir", () => {
+  it("checks the login of every Claude Code configuration directory a skill names, with the account and its skills", async () => {
+    const paths = home();
+    const acme = path.join(paths.home, "claude-acme");
+    const gone = path.join(paths.home, "claude-gone");
+    mkdirSync(acme, { recursive: true });
+    mkdirSync(gone, { recursive: true });
+    writeFileSync(path.join(acme, "account"), "ops@acme.example\n");
+    writeFileSync(path.join(gone, "logged-out"), "");
+    writeSkill(paths, "acme-one", `description: a1\nskillhook:\n  claude:\n    config_dir: ${acme}`);
+    writeSkill(paths, "acme-two", `description: a2\nskillhook:\n  claude:\n    config_dir: ${acme}`);
+    writeSkill(paths, "gone", `description: g\nskillhook:\n  claude:\n    config_dir: ${gone}`);
+    writeSkill(paths, "missing", `description: m\nskillhook:\n  claude:\n    config_dir: ${path.join(paths.home, "nowhere")}`);
+    const report = await runHealth(paths, OFFLINE);
+    const ok = report.checks.find((c) => c.name.startsWith("claude ") && c.name.endsWith("claude-acme"));
+    expect(ok).toMatchObject({ group: "runners", status: "ok", detail: "logged in (claude.ai) as ops@acme.example (2 skill(s): acme-one, acme-two)", data: { config_dir: acme, account: "ops@acme.example" } });
+    expect(report.checks.find((c) => c.name.endsWith("claude-gone"))).toMatchObject({ status: "fail", hint: `run: CLAUDE_CONFIG_DIR=${gone} claude login` });
+    expect(report.checks.find((c) => c.name.endsWith("nowhere"))).toMatchObject({ status: "fail", detail: expect.stringContaining("does not exist") });
+    expect(byName(report, "skill acme-one")?.data).toMatchObject({ claude_config_dir: acme });
+    expect(byName(report, "claude")?.status).toBe("ok"); // the default login is a row of its own
+  });
+});
+
 describe("HealthCache", () => {
   it("reuses a report within the TTL, shares one run between concurrent callers and emits health.changed on changes", async () => {
     const paths = home();
