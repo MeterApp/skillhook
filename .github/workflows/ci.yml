@@ -61,7 +61,7 @@ jobs:
           node dist/cli.js skills validate --dir "$RUNNER_TEMP/skillhook" --json
           node dist/cli.js link . --dir "$RUNNER_TEMP/skillhook" --json
           node dist/cli.js projects --dir "$RUNNER_TEMP/skillhook" --json
-          node dist/cli.js run pull-after-merge --dir "$RUNNER_TEMP/skillhook" --payload '{}' --dry-run --json > /dev/null
+          node dist/cli.js run skillhook-repo-sync --dir "$RUNNER_TEMP/skillhook" --payload '{}' --dry-run --json > /dev/null
           node dist/cli.js run --file examples/skills/hello/SKILL.md --dir "$RUNNER_TEMP/skillhook" --payload '{"name":"ci"}' --dry-run --json > /dev/null
           node dist/cli.js deliveries list --dir "$RUNNER_TEMP/skillhook" --json > /dev/null
           node dist/cli.js jobs list --waiting --dir "$RUNNER_TEMP/skillhook" --json > /dev/null
