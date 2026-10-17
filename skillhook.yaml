@@ -1,19 +1,123 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/MeterApp/skillhook/main/schema/skillhook.yaml.schema.json
-# The webhooks of this repository, version-controlled with it. Serve them from a checkout with:
-#   skillhook link .            (then: skillhook secret set GITHUB_WEBHOOK_SECRET; skillhook url pull-after-merge)
-# Reference: docs/projects.md
-
+# This repository's own operating hooks (the skillhook CLI). Reference: docs/projects.md.
+#
+# Served on the Mac mini from a dedicated clone of main (~/dev/skillhook, `skillhook link ~/dev/skillhook`)
+# that skillhook-repo-sync and pushes to main keep fast-forwarded; agents work in private worktrees
+# under ~/dev/skillhook-wt; host state (merge queue, health state, dispatch receipts) lives in
+# ~/.skillhook/skillhook-cli. Scheduled hooks are dispatched by Skillhook Cloud from
+# scripts/skillhook/cloud-schedules.json. The scripts are dependency-free Node (scripts/skillhook/).
+#
+# Company operations of the Skillhook product (support, CEO, SEO) live in skillhook-cloud and the
+# host operator, not here.
+#
+# The Claude login every hook below runs as on the Mac mini (jonathan@skillhook.dev):
+#   CLAUDE_CONFIG_DIR=~/.claude-skillhook claude login
+claude: { config_dir: ~/.claude-skillhook }
 hooks:
-  # GitHub → Settings → Webhooks: payload URL from `skillhook url pull-after-merge`, content type
-  # application/json, event "Pull requests". Fast-forwards the branch this checkout is on; a checkout
-  # with local changes or a diverged branch makes the job fail instead of touching anything.
-  pull-after-merge:
-    description: Fast-forward this checkout when a pull request merges into main.
-    run: git pull --ff-only
+  # ---------------------------------------------------------------- shell
+  # Fast-forward the served checkout to origin/main; a dirty or off-main checkout fails the job and is
+  # left untouched. Pushes to main also sync through skillhook-github-ingress; this is the backstop.
+  skillhook-repo-sync:
+    run: node scripts/skillhook/sync.mjs
     timeout_seconds: 120
-    auth: { type: github, secret_env: GITHUB_WEBHOOK_SECRET }
+    webhook: true
+    auth:
+      type: bearer
+      allow_ips:
+        - localhost
+    concurrency: 1
+    response: &file
+      mode: file
+    fallback: &nofallback
+      runners:
+        - codex
+      on: []
+  # Squash-merges reviewed agent PRs whose head is unchanged and whose required checks are green.
+  # Runs from host state, not the checkout: an agent holding the checkout while it waits for CI must
+  # never hold back delivery.
+  skillhook-merge-queue:
+    cwd: ~/.skillhook/skillhook-cli
+    run: node "$SKILLHOOK_SKILL_DIR/scripts/skillhook/merge-queue.mjs"
+    timeout_seconds: 300
+    webhook: true
+    auth:
+      type: bearer
+      allow_ips:
+        - localhost
+    concurrency: 1
+    response: *file
+    fallback: *nofallback
+  # Daily: CI on main, npm's latest against package.json on main, open incident issues. Opens one
+  # `incident` issue when a check fails (which routes to skillhook-agent) and closes it on recovery.
+  skillhook-health:
+    cwd: ~/.skillhook/skillhook-cli
+    run: node "$SKILLHOOK_SKILL_DIR/scripts/skillhook/health.mjs"
+    timeout_seconds: 300
+    webhook: true
+    auth:
+      type: bearer
+      allow_ips:
+        - localhost
+    concurrency: 1
+    response: *file
+    fallback: *nofallback
+
+  # ---------------------------------------------------------------- ingress
+  # GitHub → Settings → Webhooks: payload URL from `skillhook url skillhook-github-ingress`, content
+  # type application/json, events: pushes, issues, issue comments, pull request reviews and review
+  # comments. Push to main → sync; `incident` / `ceo-task` labels and maintainer @claude mentions →
+  # skillhook-agent (scripts/skillhook/ingress.mjs).
+  skillhook-github-ingress:
+    run: node scripts/skillhook/ingress.mjs
+    auth:
+      type: github
+      secret_env: SKILLHOOK_GITHUB_WEBHOOK_SECRET
     when:
-      - { header: x-github-event, equals: pull_request }
-      - { path: action, equals: closed }
-      - { path: pull_request.merged, equals: true }
-      - { path: pull_request.base.ref, equals: main }
+      - path: repository.full_name
+        equals: MeterApp/skillhook
+    timeout_seconds: 120
+    concurrency: 1
+    env: []
+    response: *file
+    fallback: *nofallback
+
+  # ---------------------------------------------------------------- agents
+  # Queued only by skillhook-github-ingress on this host (POST /skills/skillhook-agent/run).
+  skillhook-agent:
+    skill: .claude/skills/skillhook-task
+    runner: claude
+    model: opus
+    effort: medium
+    fallback:
+      runners:
+        - runner: codex
+          model: gpt-6.1-sol
+          effort: medium
+      on:
+        - not_ready
+        - auth
+        - usage_limit
+        - rate_limit
+    timeout_seconds: 3600
+    webhook: true
+    auth:
+      type: none
+      allow_ips:
+        - localhost
+    env: []
+    response: *file
+    concurrency: 1
+    codex:
+      add_dirs:
+        - ~/dev/skillhook-wt
+        - ~/dev/skillhook/.git
+        - ~/.skillhook/skillhook-cli
+      args:
+        - -c
+        - approval_policy="on-request"
+        - -c
+        - approvals_reviewer="auto_review"
+    claude:
+      add_dirs:
+        - ~/dev/skillhook-wt
+        - ~/.skillhook/skillhook-cli

@@ -43,7 +43,7 @@ is `skillhook`. User docs: `README.md`, `docs/`, `llms.txt`.
 | `examples/skills/` | Bundled webhook skills; `skillhook skills add <name>` copies them. Shipped in the npm package. |
 | `skills/` | Agent-facing plugin skills (setup, authoring). This repo is itself a Claude Code / Codex / Cursor plugin via the manifests at the root. |
 | `schema/skillhook.schema.json`, `schema/skillhook.yaml.schema.json` | Generated from `src/config.ts` and `src/projects.ts` by `npm run schema`. Never edit by hand. |
-| `skillhook.yaml` | This repository's own hooks (a `pull-after-merge` shell hook); the dogfood example of `docs/projects.md`. Not shipped in the package. |
+| `skillhook.yaml`, `scripts/skillhook/`, `.claude/skills/` | This repository's own operating hooks, served on the Mac mini from `~/dev/skillhook` (dogfood of `docs/projects.md`): `skillhook-repo-sync`, `skillhook-github-ingress` (push to main → sync; `incident` / `ceo-task` labels and maintainer `@claude` mentions → `skillhook-agent`, which runs `.claude/skills/skillhook-task` in a worktree under `~/dev/skillhook-wt`), `skillhook-merge-queue` and `skillhook-health`. Dependency-free Node scripts with `node --test` tests (part of `npm test`); schedules in `scripts/skillhook/cloud-schedules.json`, dispatched by Skillhook Cloud. Not shipped in the package. |
 | `test/fixtures/` | `fake-claude.mjs` / `fake-codex.mjs` emulate the real CLIs' output formats. |
 
 Runtime state lives outside the repo in `~/.skillhook` (`SKILLHOOK_HOME`):
@@ -68,7 +68,7 @@ Runtime state lives outside the repo in `~/.skillhook` (`SKILLHOOK_HOME`):
 
 ```bash
 npm run typecheck          # tsc --noEmit (strict)
-npm test                   # vitest: unit + HTTP integration (src/server.test.ts) + CLI (src/cli.test.ts)
+npm test                   # node --test scripts/skillhook (repo-ops hooks), then vitest: unit + HTTP integration (src/server.test.ts) + CLI (src/cli.test.ts)
 npm run build              # tsc -p tsconfig.build.json → dist/
 npm run schema -- --check  # schema/skillhook.schema.json and schema/skillhook.yaml.schema.json are current
 npm run release -- --check # package.json, package-lock.json, plugin manifests and CHANGELOG.md agree on the version
