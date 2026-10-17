@@ -89,7 +89,7 @@ async function collect() {
   const pkg = ghJson(["api", `repos/${REPO}/contents/package.json?ref=main`]);
   const mainVersion = JSON.parse(Buffer.from(pkg.content, "base64").toString("utf8")).version;
   const changedAt = ghJson(["api", `repos/${REPO}/commits?path=package.json&sha=main&per_page=1`])[0]?.commit?.committer?.date;
-  const response = await fetch(`https://registry.npmjs.org/${PACKAGE.replace("/", "%2F")}`, { headers: { accept: "application/vnd.npm.install-v1+json" }, signal: AbortSignal.timeout(15_000) });
+  const response = await fetch(`https://registry.npmjs.org/${PACKAGE.replaceAll("/", "%2F")}`, { headers: { accept: "application/vnd.npm.install-v1+json" }, signal: AbortSignal.timeout(15_000) });
   if (!response.ok) throw new Error(`npm registry answered ${response.status}`);
   const npmVersion = (await response.json())["dist-tags"]?.latest;
   const incidents = ghJson(["issue", "list", "-R", REPO, "--label", "incident", "--state", "open", "--json", "number,title,url,createdAt"]);
