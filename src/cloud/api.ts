@@ -114,7 +114,19 @@ export interface FleetClient {
  * `SKILLHOOK_NO_CLOUD`, without a well-formed key, or to a URL that is not https. A key login kept never follows a
  * `cloud.url` changed after it.
  */
-export function fleetClient(env: NodeJS.ProcessEnv, cloud: { url?: string }, credentials: ApiCredentials, options: { fetchImpl?: typeof fetch; url?: string; client?: SkillhookClient } = {}): FleetClient {
+/** A request the cloud refused or failed, as `skillhook feedback report --last` attaches it. */
+export interface ApiFailure {
+  at: string;
+  url: string;
+  method: "GET" | "POST";
+  path: string;
+  status: number;
+  code: string;
+  message: string;
+  request_id?: string;
+}
+
+export function fleetClient(env: NodeJS.ProcessEnv, cloud: { url?: string }, credentials: ApiCredentials, options: { fetchImpl?: typeof fetch; url?: string; client?: SkillhookClient; onFailure?: (failure: ApiFailure) => void } = {}): FleetClient {
   const { key } = credentials;
   if (cloudDisabledByEnv(env)) throw new CloudApiError("SKILLHOOK_NO_CLOUD is set: nothing goes to Skillhook Cloud from this environment. Unset it to use the fleet.", undefined, "disabled");
   const url = resolveCloudUrl(env, cloud, options.url ?? credentials.url);
@@ -126,7 +138,14 @@ export function fleetClient(env: NodeJS.ProcessEnv, cloud: { url?: string }, cre
     try {
       response = await cloudRequest(url, `/api/v1${path}`, { method, token: key, body, fetchImpl: options.fetchImpl, timeoutMs, headers: options.client ? { [CLIENT_HEADER]: options.client } : undefined });
     } catch (error) {
-      if (error instanceof CloudHttpError) throw new CloudApiError(describeApiFailure(error, url, method), error.status, error.code);
+      if (error instanceof CloudHttpError) {
+        try {
+          options.onFailure?.({ at: new Date().toISOString(), url, method, path: `/api/v1${path}`, status: error.status, code: error.code, message: error.message.slice(0, 500), ...(error.requestId ? { request_id: error.requestId } : {}) });
+        } catch {
+          // Remembering a failure never hides it.
+        }
+        throw new CloudApiError(describeApiFailure(error, url, method), error.status, error.code);
+      }
       throw error;
     }
     const parsed = schema.safeParse(response.body);
