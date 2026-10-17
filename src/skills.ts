@@ -104,6 +104,22 @@ export const ScheduleObjectSchema = z
 export const ScheduleSchema = z.union([z.string().min(1), z.literal(false), ScheduleObjectSchema]);
 export type ScheduleConfig = z.infer<typeof ScheduleSchema>;
 
+/** Claude Code options of a skill (the `claude:` key of the `skillhook:` block), and of a whole `skillhook.yaml`. */
+export const ClaudeOptionsSchema = z
+  .object({
+    permission_mode: ClaudePermissionModeSchema.optional(),
+    allowed_tools: z.array(z.string()).optional(),
+    disallowed_tools: z.array(z.string()).optional(),
+    add_dirs: z.array(z.string()).optional(),
+    max_budget_usd: z.number().positive().optional(),
+    append_system_prompt: z.string().optional(),
+    args: z.array(z.string()).optional(),
+    /** The Claude Code configuration directory the run uses (`CLAUDE_CONFIG_DIR`), and so the account it is logged in to: one machine can run each repository's hooks as a different `claude login`. `~` is expanded; a relative path is resolved against the skill's directory (a hook's: its repository). */
+    config_dir: z.string().min(1).optional(),
+  })
+  .strict();
+export type ClaudeOptions = z.infer<typeof ClaudeOptionsSchema>;
+
 export const SkillhookBlockSchema = z
   .object({
     runner: RunnerNameSchema.optional(),
@@ -134,18 +150,7 @@ export const SkillhookBlockSchema = z
       })
       .strict()
       .optional(),
-    claude: z
-      .object({
-        permission_mode: ClaudePermissionModeSchema.optional(),
-        allowed_tools: z.array(z.string()).optional(),
-        disallowed_tools: z.array(z.string()).optional(),
-        add_dirs: z.array(z.string()).optional(),
-        max_budget_usd: z.number().positive().optional(),
-        append_system_prompt: z.string().optional(),
-        args: z.array(z.string()).optional(),
-      })
-      .strict()
-      .optional(),
+    claude: ClaudeOptionsSchema.optional(),
     codex: z
       .object({
         sandbox: CodexSandboxSchema.optional(),

@@ -103,7 +103,9 @@ export const claudeRunner: Runner = {
     if (io.exitCode === 0) return { ok: true, result: io.state.lastMessage ?? io.stdout.trim(), sessionId: io.state.sessionId };
     return { ok: false, sessionId: io.state.sessionId, error: lastLines(io.stderr) || lastLines(io.stdout) || `claude exited with code ${io.exitCode}${io.signal ? ` (${io.signal})` : ""}` };
   },
-  resumeCommand(sessionId, cwd) {
-    return `cd ${shellQuote(cwd)} && claude --resume ${shellQuote(sessionId)}`;
+  resumeCommand(sessionId, cwd, env) {
+    // The session lives in the configuration directory the run used: resume it with the same one.
+    const configDir = env?.CLAUDE_CONFIG_DIR ? `CLAUDE_CONFIG_DIR=${shellQuote(env.CLAUDE_CONFIG_DIR)} ` : "";
+    return `cd ${shellQuote(cwd)} && ${configDir}claude --resume ${shellQuote(sessionId)}`;
   },
 };

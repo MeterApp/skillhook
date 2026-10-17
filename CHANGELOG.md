@@ -4,6 +4,10 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.11.0 (2026-10-17)
+
+- Run each repository's hooks as a different Claude login: `claude.config_dir` on a skill or hook, or a top-level `claude:` block in `skillhook.yaml` for every hook of the file, sets `CLAUDE_CONFIG_DIR` for the run (and drops `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` unless listed in `env:`). Readiness and the `fallback:` decision probe that directory, `skillhook health` shows a `claude <dir>` row per directory with the logged-in account, and `resume_command` resumes with the same directory.
+
 ## 0.10.5 (2026-10-16)
 
 - Bound graceful restart attempts without terminating active jobs: keep intake and cloud sync available, resume dispatch on timeout, and drain queued work safely for automatic upgrades. Preserve exact pending dispatch order across graceful exits, including jobs created within the same second.

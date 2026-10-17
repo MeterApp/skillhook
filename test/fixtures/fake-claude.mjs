@@ -30,7 +30,9 @@ if (args[0] === "--version") {
 }
 if (args[0] === "auth" && args[1] === "status") {
   const loggedIn = process.env.FAKE_CLAUDE_AUTH !== "out" && stateFile("logged-out") === undefined;
-  process.stdout.write(`${JSON.stringify({ loggedIn, authMethod: loggedIn ? "claude.ai" : "none", apiProvider: "firstParty", analyticsDisabled: false }, null, 2)}\n`);
+  // The real CLI adds the account; a file named `account` in CLAUDE_CONFIG_DIR stands in for one here.
+  const email = loggedIn ? stateFile("account") : undefined;
+  process.stdout.write(`${JSON.stringify({ loggedIn, authMethod: loggedIn ? "claude.ai" : "none", apiProvider: "firstParty", analyticsDisabled: false, ...(email ? { email: email.trim() } : {}) }, null, 2)}\n`);
   process.exit(0); // the real CLI exits 0 either way
 }
 if (args[0] === "mcp" && args[1] === "list") {
@@ -77,7 +79,7 @@ const out = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
 
 out({ type: "system", subtype: "init", session_id: sessionId, model: model ?? "default", cwd: process.cwd(), tools: [] });
 if (process.env.FAKE_CLAUDE_RECORD) {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("SKILLHOOK_") || k.startsWith("FAKE_") || k.startsWith("ANTHROPIC_") || k === "PATH" || k === "HOME"));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("SKILLHOOK_") || k.startsWith("FAKE_") || k.startsWith("ANTHROPIC_") || k === "CLAUDE_CONFIG_DIR" || k === "PATH" || k === "HOME"));
   writeFileSync(process.env.FAKE_CLAUDE_RECORD, JSON.stringify({ args, prompt, env, cwd: process.cwd() }, null, 2));
 }
 const sleepMs = Number(process.env.FAKE_CLAUDE_SLEEP_MS ?? 0);

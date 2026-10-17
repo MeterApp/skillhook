@@ -17,5 +17,5 @@ export function getRunner(name: RunnerName): Runner {
 }
 
 export * from "./types.js";
-export { buildRunEnv, mergedPath } from "./env.js";
+export { buildRunEnv, claudeConfigDir, mergedPath, withClaudeConfigDir } from "./env.js";
 export { claudeRunner, codexRunner, shellRunner };

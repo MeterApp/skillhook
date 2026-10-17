@@ -102,6 +102,7 @@ Precedence for `runner`, `model`, `effort` and `cwd`: an explicit override (`ski
 | `max_budget_usd` | number > 0 | — | `--max-budget-usd N`. |
 | `append_system_prompt` | string | — | Appended after skillhook's own guardrails in `--append-system-prompt`. |
 | `args` | list of strings | — | Extra argv appended after `runners.claude.args`. |
+| `config_dir` | path (`~` allowed; relative to the skill directory) | `CLAUDE_CONFIG_DIR` from `.env` or the server environment, else `~/.claude` | `CLAUDE_CONFIG_DIR=<dir>` in the run's environment. See [Several Claude accounts on one machine](runners.md#several-claude-accounts-on-one-machine). |
 
 ### `codex` options
 

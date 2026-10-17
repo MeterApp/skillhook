@@ -86,7 +86,7 @@ export interface Runner {
   onLine?(line: string, state: StreamState): void;
   parse(io: RunnerIO, ctx: RunContext): RunnerOutcome;
   /** Shell command a human can run to continue the agent session. */
-  resumeCommand?(sessionId: string, cwd: string): string;
+  resumeCommand?(sessionId: string, cwd: string, env?: Record<string, string>): string;
 }
 
 /** Splits a config `command` into executable + leading args. */

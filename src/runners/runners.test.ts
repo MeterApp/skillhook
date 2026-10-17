@@ -1,11 +1,13 @@
+import { homedir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../config.js";
 import { parseSkillDocument } from "../skills.js";
 import { claudeRunner } from "./claude.js";
 import { codexRunner } from "./codex.js";
-import { buildRunEnv, mergedPath } from "./env.js";
+import { buildRunEnv, claudeConfigDir, mergedPath } from "./env.js";
 import { shellRunner } from "./shell.js";
-import type { RunContext, StreamState } from "./types.js";
+import { shellQuote, type RunContext, type StreamState } from "./types.js";
 
 function ctx(frontmatter = "", overrides: Partial<RunContext> = {}): RunContext {
   const skill = parseSkillDocument(`---\nname: demo\ndescription: d\n${frontmatter}\n---\nbody`, "/skills/demo");
@@ -232,6 +234,23 @@ describe("buildRunEnv", () => {
     expect(env.CLAUDECODE).toBeUndefined();
     expect(env.CLAUDE_CODE_SESSION_ID).toBeUndefined();
     expect(env.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
+  });
+
+  it("points Claude Code at the skill's config_dir and drops credentials that would log in as someone else", () => {
+    const skill = parseSkillDocument(`---\nname: demo\ndescription: d\nskillhook:\n  claude:\n    config_dir: ~/.claude-acme\n---\nb`, "/skills/demo");
+    const fileSecrets = { ANTHROPIC_API_KEY: "file", ANTHROPIC_AUTH_TOKEN: "tok", CLAUDE_CONFIG_DIR: "/global", ANTHROPIC_BASE_URL: "https://gateway" };
+    const env = buildRunEnv({ secrets: fileSecrets, fileSecrets, skill, config: defaultConfig(), jobVars: {}, processEnv: { HOME: "/h", PATH: "/bin", CLAUDE_CODE_OAUTH_TOKEN: "proc" } });
+    expect(env.CLAUDE_CONFIG_DIR).toBe(path.join(homedir(), ".claude-acme"));
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(env.ANTHROPIC_BASE_URL).toBe("https://gateway");
+    // Listed in env: the skill wants the key after all; a relative config_dir is the skill's.
+    const keeps = parseSkillDocument(`---\nname: demo\ndescription: d\nskillhook:\n  env: [ANTHROPIC_API_KEY]\n  claude:\n    config_dir: profile\n---\nb`, "/skills/demo");
+    const kept = buildRunEnv({ secrets: fileSecrets, fileSecrets, skill: keeps, config: defaultConfig(), jobVars: {}, processEnv: {} });
+    expect(kept).toMatchObject({ CLAUDE_CONFIG_DIR: "/skills/demo/profile", ANTHROPIC_API_KEY: "file" });
+    expect(claudeConfigDir(parseSkillDocument(`---\nname: demo\ndescription: d\n---\nb`, "/skills/demo"))).toBeUndefined();
+    expect(claudeRunner.resumeCommand?.("s1", "/w", env)).toBe(`cd /w && CLAUDE_CONFIG_DIR=${shellQuote(path.join(homedir(), ".claude-acme"))} claude --resume s1`);
   });
 
   it("passes runner credentials and explicit names only", () => {
