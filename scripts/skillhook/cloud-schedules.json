@@ -1,5 +1,6 @@
 [
   { "name": "skillhook-repo-sync", "skill": "skillhook-repo-sync", "cron": "11-59/15 * * * *", "timezone": "UTC" },
   { "name": "skillhook-merge-queue", "skill": "skillhook-merge-queue", "cron": "13-59/15 * * * *", "timezone": "UTC" },
+  { "name": "skillhook-task-sweep", "skill": "skillhook-task-sweep", "cron": "*/30 * * * *", "timezone": "UTC" },
   { "name": "skillhook-health", "skill": "skillhook-health", "cron": "36 5 * * *", "timezone": "UTC" }
 ]

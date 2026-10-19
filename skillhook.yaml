@@ -81,6 +81,23 @@ hooks:
     response: *file
     fallback: *nofallback
 
+  # Every 30 minutes (Skillhook Cloud schedule): re-dispatches open incident / ceo-task issues that no
+  # open PR references and no dispatch younger than skillhook-agent's timeout covers, at most three per
+  # run, and reports the delivery numbers (tasks_unworked, agent PRs, issue-to-merge time) in `data`.
+  # `partial` when a task has been unworked for more than 2 h (fleet docs/autonomous-delivery.md).
+  skillhook-task-sweep:
+    run: node scripts/skillhook/ingress.mjs --sweep
+    timeout_seconds: 120
+    webhook: true
+    auth:
+      type: bearer
+      allow_ips:
+        - localhost
+    concurrency: 1
+    env: []
+    response: *file
+    fallback: *nofallback
+
   # ---------------------------------------------------------------- agents
   # Queued only by skillhook-github-ingress on this host (POST /skills/skillhook-agent/run).
   skillhook-agent:
