@@ -7,7 +7,9 @@ description: Handle an incident on the skillhook CLI opened by the skillhook-hea
 
 Reached from `skillhook-task` for an issue labelled `incident`. `skillhook-health` opens one when a
 daily check fails and closes it after a healthy run. Order: restore, then root cause, then prevention.
-Read `.claude/skills/delivery.md` first. Never hide the failure.
+Read `.claude/skills/delivery.md` first. Never hide the failure. You own the incident until main and the
+package are healthy again and the cause is fixed: restore and fix in this run, don't hand it back as a
+recommendation.
 
 ## 1. Read
 
@@ -41,3 +43,10 @@ npm view @meterapp/skillhook dist-tags versions --json
 test that would have caught it, per `AGENTS.md`. Never "fix" by deleting or skipping a test, loosening a
 check or editing `scripts/skillhook/health.mjs` to stop the alert. Summarize cause, fix and prevention
 on the incident issue; the health hook closes it once a run passes.
+
+## 4. Measure and verify
+
+The fix PR carries the `## Measure` block from `delivery.md`, usually `metric: skillhook-health <check>`,
+`baseline: failing (<date>, incident #<n>)`, `target: passing by <next daily run>`, `read with: gh run list
+-R MeterApp/skillhook --workflow ci.yml --branch main --limit 1` (or `npm view @meterapp/skillhook version`).
+After the merge, confirm CI on main is green with that command and say so on the incident.

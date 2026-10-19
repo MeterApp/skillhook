@@ -5,10 +5,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { route } from "./ingress.mjs";
+import { readReceipts, referencedIssues, route, sweepKey, sweepPlan } from "./ingress.mjs";
 import { DEFAULT_REQUIRED_CHECKS, isRelease, mergeDecision, requiredChecks, requiredChecksFromRules } from "./merge-queue.mjs";
 import { ciCheck, compareVersions, healthTransition, publishCheck } from "./health.mjs";
 import { MARKER, stateDir } from "./runtime.mjs";
+import { validLane } from "./prepare-agent.mjs";
 
 const repository = { full_name: "MeterApp/skillhook" };
 const maintainer = { user: { type: "User" }, author_association: "OWNER" };
@@ -45,6 +46,62 @@ describe("ingress route", () => {
     assert.equal(route(comment("@claude", { user: { type: "Bot" } }), "issue_comment"), null);
     assert.equal(route({ ...comment("@claude"), action: "edited" }, "issue_comment"), null);
     assert.equal(route({ repository, action: "submitted", pull_request: { labels: [], state: "open" }, review: { ...maintainer, body: "@claude fix the nits" } }, "pull_request_review"), "task");
+  });
+});
+
+describe("task sweep", () => {
+  const now = new Date("2026-10-19T12:00:00Z");
+  const ago = (h) => new Date(now.getTime() - h * 3600 * 1000).toISOString();
+  const issue = (number, h, labels = ["ceo-task"]) => ({ number, createdAt: ago(h), labels: labels.map((name) => ({ name })) });
+  it("finds the issues a PR references", () => {
+    assert.deepEqual([...referencedIssues({ title: "Fix #12", body: "Fixes #7, see MeterApp/other#9 and &#38;", closingIssuesReferences: [{ number: 3 }] })].sort((a, b) => a - b), [3, 7, 12]);
+    assert.deepEqual([...referencedIssues({ body: null })], []);
+  });
+  it("dispatches unworked tasks oldest first, at most three", () => {
+    const issues = [issue(1, 1), issue(2, 30, ["incident"]), issue(3, 5), issue(4, 3), issue(5, 50, ["ceo-task", "needs-human"]), issue(6, 9, ["bug"])];
+    const plan = sweepPlan({ issues, openPrs: [], receipts: [], now });
+    assert.deepEqual(plan.due.map((i) => i.number), [2, 3, 4]);
+    assert.deepEqual(plan.stalled, [2, 3, 4]);
+    assert.equal(plan.data.tasks_open, 4);
+    assert.equal(plan.data.tasks_unworked, 4);
+    assert.equal(plan.data.oldest_unworked_hours, 30);
+  });
+  it("skips tasks with an open PR or a dispatch younger than the agent timeout", () => {
+    const issues = [issue(1, 10), issue(2, 10), issue(3, 10)];
+    const openPrs = [{ body: `${MARKER}\nFixes #1` }, { title: "unrelated", body: "" }];
+    const receipts = [{ issue: 2, at: ago(0.5) }, { issue: 3, at: ago(2) }, { key: "old-delivery", job: "x" }];
+    const plan = sweepPlan({ issues, openPrs, receipts, now });
+    assert.deepEqual(plan.due.map((i) => i.number), [3]);
+    assert.equal(plan.data.agent_prs_open, 1);
+    assert.equal(sweepPlan({ issues: [issue(9, 1)], openPrs: [], receipts: [], now }).stalled.length, 0);
+  });
+  it("reports agent PRs merged in seven days and the median time from issue to merge", () => {
+    const mergedPrs = [
+      { body: `${MARKER}\nFixes #1`, mergedAt: ago(1) },
+      { body: `${MARKER}\nFixes #2`, mergedAt: ago(2) },
+      { body: `${MARKER}\nFixes #3`, mergedAt: ago(200) },
+      { body: "Fixes #4 by hand", mergedAt: ago(1) },
+    ];
+    const taskIssues = new Map([[1, ago(5)], [2, ago(12)], [3, ago(300)], [4, ago(2)]]);
+    const { data } = sweepPlan({ issues: [], openPrs: [], mergedPrs, taskIssues, receipts: [], now });
+    assert.equal(data.agent_prs_merged_7d, 2);
+    assert.equal(data.median_issue_to_merge_hours_7d, 7);
+    assert.equal(sweepPlan({ issues: [], openPrs: [], receipts: [], now }).data.median_issue_to_merge_hours_7d, null);
+  });
+  it("keys a sweep dispatch by issue and UTC hour", () => {
+    assert.equal(sweepKey(42, new Date("2026-10-19T07:59:00Z")), "sweep-42-2026101907");
+    assert.match(sweepKey(42, now), /^[a-zA-Z0-9-]+$/);
+  });
+  it("reads dispatch receipts and ignores broken ones", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "skillhook-cli-receipts-"));
+    try {
+      fs.writeFileSync(path.join(dir, "sweep-1-2026101912.json"), JSON.stringify({ state: "dispatched", job: "j", issue: 1, at: now.toISOString() }));
+      fs.writeFileSync(path.join(dir, "broken.json"), "{");
+      fs.writeFileSync(path.join(dir, "notes.txt"), "x");
+      assert.deepEqual(readReceipts(dir), [{ key: "sweep-1-2026101912", state: "dispatched", job: "j", issue: 1, at: now.toISOString() }]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -120,6 +177,13 @@ describe("health", () => {
 });
 
 describe("runtime", () => {
+  it("gives the task and each subagent a lane of its own", () => {
+    assert.equal(validLane("task"), true);
+    assert.equal(validLane("sub-docs"), true);
+    assert.equal(validLane("sub-"), false);
+    assert.equal(validLane("sub-../x"), false);
+    assert.equal(validLane(undefined), false);
+  });
   it("keeps host state under SKILLHOOK_HOME", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "skillhook-cli-ops-"));
     try {
