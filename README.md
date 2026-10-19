@@ -1,5 +1,7 @@
 # skillhook
 
+**Website: [skillhook.dev](https://skillhook.dev)**
+
 **Make your skills reactive. Webhook in, agent out.** skillhook turns a Mac (or a Linux box) into a permanent, secure webhook endpoint that runs [Agent Skills](https://agentskills.io) (`SKILL.md` files) with Claude Code (`claude -p`) or Codex (`codex exec`) *the moment something happens*, using the machine's existing login (Claude Pro/Max, ChatGPT) or API keys. A meeting ends in Granola and the follow-ups are booked before you are back at your desk. Sentry opens an issue and a fix branch is waiting for review. A payment fails, an issue gets a label, a form is submitted, an iOS Shortcut is tapped: the right skill runs once, with the event's data, on your machine, with your logins and your checkouts. Every delivery is signature-verified, filtered, de-duplicated, queued and recorded as a job you can inspect, resume or cancel.
 
 ## Why not a scheduled task?
