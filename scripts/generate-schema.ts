@@ -1,7 +1,7 @@
 // Writes schema/skillhook.schema.json (server config) and schema/skillhook.yaml.schema.json (a project's hooks)
 // from the zod schemas.
-//   npm run schema            regenerate
-//   npm run schema -- --check fail when a committed file is stale (CI)
+//   pnpm run schema            regenerate
+//   pnpm run schema --check fail when a committed file is stale (CI)
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,7 +41,7 @@ for (const { file, schema } of schemas) {
   if (check) {
     const current = existsSync(target) ? readFileSync(target, "utf8") : "";
     if (current !== next) {
-      console.error(`${target} is stale. Run: npm run schema`);
+      console.error(`${target} is stale. Run: pnpm run schema`);
       stale = true;
     }
   } else {

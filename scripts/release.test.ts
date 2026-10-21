@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -98,6 +98,18 @@ describe("release script", () => {
     expect(readFileSync(path.join(root, "CHANGELOG.md"), "utf8")).toContain("## 0.2.1 (2026-10-02)\n\n- Maintenance release.");
   });
 
+  it("releases pnpm checkouts without changing their dependency lock", () => {
+    const root = fakeRepo();
+    unlinkSync(path.join(root, "package-lock.json"));
+    const lock = "lockfileVersion: '9.0'\nimporters:\n  .: {}\n";
+    writeFileSync(path.join(root, "pnpm-lock.yaml"), lock);
+    expect(checkRelease(root).problems).toEqual([]);
+    const result = bumpRelease(root, "minor", { date: "2026-10-21" });
+    expect(result.files).toEqual(["CHANGELOG.md", "package.json", ...VERSIONED_MANIFESTS]);
+    expect(readFileSync(path.join(root, "pnpm-lock.yaml"), "utf8")).toBe(lock);
+    expect(checkRelease(root).problems).toEqual([]);
+  });
+
   it("drives everything from the command line", () => {
     const root = fakeRepo();
     const v = io();
@@ -119,6 +131,6 @@ describe("release script", () => {
     expect(runRelease(["--root", root], none.io, "/nowhere")).toBe(2);
     const help = io();
     expect(runRelease(["--help"], help.io, root)).toBe(0);
-    expect(help.out()).toContain("npm run release -- --check");
+    expect(help.out()).toContain("pnpm run release --check");
   });
 });

@@ -1,10 +1,10 @@
-// Keeps the version in package.json, package-lock.json, the plugin manifests and CHANGELOG.md in step.
+// Keeps the version in package.json, legacy npm lockfiles (when present), the plugin manifests and CHANGELOG.md in step.
 //
-//   npm run release -- --check              verify that they agree (runs in CI and in `npm run check`)
-//   npm run release -- patch|minor|major    bump everything and move the "Unreleased" changelog entries under the new version
-//   npm run release -- 1.2.3                set an explicit version (must be higher than the current one)
-//   npm run release -- --notes [version]    print the changelog section of a version (the GitHub release body)
-//   npm run release -- --version            print the current version
+//   pnpm run release --check              verify that they agree (runs in CI and in `pnpm run check`)
+//   pnpm run release patch|minor|major    bump everything and move the "Unreleased" changelog entries under the new version
+//   pnpm run release 1.2.3                set an explicit version (must be higher than the current one)
+//   pnpm run release --notes [version]    print the changelog section of a version (the GitHub release body)
+//   pnpm run release --version            print the current version
 //
 // Options: --root <dir> (default: the repository), --date YYYY-MM-DD (default: today, UTC),
 //          --allow-empty (bump even when "Unreleased" has no entries).
@@ -141,7 +141,7 @@ export function checkRelease(root: string): { version: string; problems: string[
     const sections = parseChangelog(readFileSync(changelogFile, "utf8"));
     if (!sections.unreleased) problems.push(`${CHANGELOG} needs a "## Unreleased" section at the top`);
     const matching = sections.versions.filter((s) => s.version === version);
-    if (matching.length === 0) problems.push(`${CHANGELOG} has no "## ${version}" section (run: npm run release -- ${version}, or write it)`);
+    if (matching.length === 0) problems.push(`${CHANGELOG} has no "## ${version}" section (run: pnpm run release ${version}, or write it)`);
     else if (matching.length > 1) problems.push(`${CHANGELOG} lists ${version} ${matching.length} times`);
     else if (!matching[0]?.body) problems.push(`${CHANGELOG} section "## ${matching[0]?.heading}" is empty`);
     if (sections.versions[0] && sections.versions[0].version !== version) problems.push(`${CHANGELOG} lists ${sections.versions[0].version} before ${version}; newest first`);
@@ -244,7 +244,7 @@ export function runRelease(argv: string[], io: ReleaseIO, defaultRoot: string): 
           io.stderr(`Release metadata for ${version} is inconsistent:\n${problems.map((p) => `  - ${p}`).join("\n")}\n`);
           return 1;
         }
-        io.stdout(`release metadata ok: ${version} in package.json, package-lock.json, ${VERSIONED_MANIFESTS.length} plugin manifests and ${CHANGELOG}\n`);
+        io.stdout(`release metadata ok: ${version} in package.json, ${VERSIONED_MANIFESTS.length} plugin manifests and ${CHANGELOG}\n`);
         return 0;
       }
       case "notes": {
