@@ -138,7 +138,7 @@ skillhook:
   env: [SENTRY_AUTH_TOKEN, GH_TOKEN]
   claude:
     permission_mode: acceptEdits
-    allowed_tools: ["Read", "Grep", "Glob", "Edit", "Write", "Bash(git:*)", "Bash(gh:*)", "Bash(npm test:*)"]
+    allowed_tools: ["Read", "Grep", "Glob", "Edit", "Write", "Bash(git:*)", "Bash(gh:*)", "Bash(pnpm test:*)"]
     max_budget_usd: 5
 ---
 
@@ -420,10 +420,10 @@ git clone https://github.com/MeterApp/skillhook.git && cd skillhook && npm insta
 ```
 
 ```bash
-npm run check          # typecheck, vitest, build, schema check
+pnpm run check          # typecheck, vitest, build, schema check
 ```
 
-`npm test` runs the vitest suites (unit, HTTP integration with fake runners, CLI); `npm run dev -- <command> --dir /tmp/skillhook-dev` runs the CLI from source with tsx without touching `~/.skillhook`. Read [`AGENTS.md`](AGENTS.md) for the layout and hard rules and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the pull-request checklist, the branch rules and how releases are cut (`npm run release`, then a pull request; CI tags, publishes to npm with provenance and creates the GitHub release). Security issues: see [`SECURITY.md`](SECURITY.md).
+`pnpm test` runs the vitest suites (unit, HTTP integration with fake runners, CLI); `pnpm run dev -- <command> --dir /tmp/skillhook-dev` runs the CLI from source with tsx without touching `~/.skillhook`. Read [`AGENTS.md`](AGENTS.md) for the layout and hard rules and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the pull-request checklist, the branch rules and how releases are cut (`pnpm run release`, then a pull request; CI tags, publishes to npm with provenance and creates the GitHub release). Security issues: see [`SECURITY.md`](SECURITY.md).
 
 ## License
 

@@ -1,6 +1,6 @@
 name: Release
 
-# When a version bump lands on main (a pull request prepared with `npm run release -- <patch|minor|major>`), tag it
+# When a version bump lands on main (a pull request prepared with `pnpm run release -- <patch|minor|major>`), tag it
 # as vX.Y.Z and hand the tag to the Publish workflow. The tag is created with GITHUB_TOKEN, and GitHub never starts
 # workflows for events caused by GITHUB_TOKEN, so Publish is dispatched explicitly instead of relying on `push: tags`.
 # "Run workflow" retries the same logic for the current main.
@@ -28,14 +28,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12.14.0
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Is this version tagged yet?
         id: state
@@ -53,7 +56,7 @@ jobs:
 
       - name: Release metadata is consistent
         if: steps.state.outputs.create == 'true'
-        run: npm run release -- --check
+        run: pnpm run release --check
 
       - name: Create and push the tag
         if: steps.state.outputs.create == 'true'

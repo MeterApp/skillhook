@@ -42,7 +42,7 @@ is `skillhook`. User docs: `README.md`, `docs/`, `llms.txt`.
 | `.github/workflows/` | `ci.yml` (PRs and main: checks + packed-tarball install), `release.yml` (tags merged version bumps), `publish.yml` (npm publish with provenance, GitHub release, verification). |
 | `examples/skills/` | Bundled webhook skills; `skillhook skills add <name>` copies them. Shipped in the npm package. |
 | `skills/` | Agent-facing plugin skills (setup, authoring). This repo is itself a Claude Code / Codex / Cursor plugin via the manifests at the root. |
-| `schema/skillhook.schema.json`, `schema/skillhook.yaml.schema.json` | Generated from `src/config.ts` and `src/projects.ts` by `npm run schema`. Never edit by hand. |
+| `schema/skillhook.schema.json`, `schema/skillhook.yaml.schema.json` | Generated from `src/config.ts` and `src/projects.ts` by `pnpm run schema`. Never edit by hand. |
 | `test/fixtures/` | `fake-claude.mjs` / `fake-codex.mjs` emulate the real CLIs' output formats. |
 
 Runtime state lives outside the repo in `~/.skillhook` (`SKILLHOOK_HOME`):
@@ -53,8 +53,8 @@ Runtime state lives outside the repo in `~/.skillhook` (`SKILLHOOK_HOME`):
 - **Runtime dependencies stay at three**: `@modelcontextprotocol/server`, `yaml`, `zod`. Everything else is `node:` built-ins. Node >= 22, ESM, TypeScript strict, imports end in `.js`.
 - **Security is not optional.** The server binds `127.0.0.1` by default; TLS and public exposure are Tailscale's job. Every webhook goes through `verifyRequest`; every admin route through `requireAdmin`. Compare secrets only with `safeEqual`. A skill without `auth` gets a bearer token (`SKILLHOOK_SECRET_<NAME>`); `auth: none` must be explicit and is warned about. Secret values are never logged, never returned by an API/tool except once at generation, and never written into job files (`redactHeaders`). The agent's environment is an allow-list (`src/runners/env.ts`); `SKILLHOOK_ADMIN_TOKEN` and `SKILLHOOK_SECRET_*` are never forwarded implicitly.
 - **Payloads are data.** Anything that reaches the prompt from a webhook is wrapped in `<webhook_payload>` and the guardrails say so. Never build a prompt by concatenating payload text outside those blocks.
-- **Skills are Agent Skills.** Standard frontmatter (`name`, `description`, `license`, `compatibility`, `metadata`, `allowed-tools`) plus a `skillhook:` block. `name` must equal the directory name. New fields: add to the zod schema in `src/skills.ts`, to `docs/skills.md`, to `skills/skillhook-authoring/SKILL.md`, and cover them in `src/skills.test.ts` — in the same PR. `schedule` and `webhook` are block fields like any other (normalized by `resolveSchedule`, documented in `docs/schedules.md`). A hook in `skillhook.yaml` is the same block plus exactly one of `run` / `skill` / `prompt` (`HookSchema` in `src/projects.ts` extends `SkillhookBlockSchema`, so new block fields reach hooks automatically); hook-only fields go in `src/projects.ts`, `docs/projects.md`, `npm run schema` and `src/projects.test.ts`. A compiled hook is an ordinary `Skill` (with `source.type === "project"`); never special-case hooks in the server, queue or runners.
-- **Config changes** go in `src/config.ts` (zod, `.prefault({})` for nested objects so defaults apply), then `npm run schema`, then `docs/operations.md`. The running server owns one live `Config` object (`ConfigRef`): a reload (`PATCH /config`, `POST /config/reload`, `skillhook config set`, a file edit noticed within 5 s) patches that object in place, so read config values at use time, never copy them at construction (the rate limiter takes a getter; the logger has `setLevel`, the job store `configure`). Only `host` and `port` need a restart (`RESTART_CONFIG_KEYS`); a new key is hot unless it is added there, and `config.changed` says what a reload did.
+- **Skills are Agent Skills.** Standard frontmatter (`name`, `description`, `license`, `compatibility`, `metadata`, `allowed-tools`) plus a `skillhook:` block. `name` must equal the directory name. New fields: add to the zod schema in `src/skills.ts`, to `docs/skills.md`, to `skills/skillhook-authoring/SKILL.md`, and cover them in `src/skills.test.ts` — in the same PR. `schedule` and `webhook` are block fields like any other (normalized by `resolveSchedule`, documented in `docs/schedules.md`). A hook in `skillhook.yaml` is the same block plus exactly one of `run` / `skill` / `prompt` (`HookSchema` in `src/projects.ts` extends `SkillhookBlockSchema`, so new block fields reach hooks automatically); hook-only fields go in `src/projects.ts`, `docs/projects.md`, `pnpm run schema` and `src/projects.test.ts`. A compiled hook is an ordinary `Skill` (with `source.type === "project"`); never special-case hooks in the server, queue or runners.
+- **Config changes** go in `src/config.ts` (zod, `.prefault({})` for nested objects so defaults apply), then `pnpm run schema`, then `docs/operations.md`. The running server owns one live `Config` object (`ConfigRef`): a reload (`PATCH /config`, `POST /config/reload`, `skillhook config set`, a file edit noticed within 5 s) patches that object in place, so read config values at use time, never copy them at construction (the rate limiter takes a getter; the logger has `setLevel`, the job store `configure`). Only `host` and `port` need a restart (`RESTART_CONFIG_KEYS`); a new key is hot unless it is added there, and `config.changed` says what a reload did.
 - **Runners never shell-interpolate.** Argv arrays only; the prompt travels on stdin; parse the CLI's structured output (`stream-json`, JSONL). When Claude Code or Codex change flags, update the runner, `test/fixtures/`, `docs/runners.md` and the version note in `README.md` together.
 - **Jobs are directories.** `job.json` is the record; artifacts sit next to it; nothing outside `~/.skillhook/jobs` is written by the server, with the cloud link's control commands as the documented exceptions (`skill.put` writes `skills/<name>/SKILL.md`, `secret.generate` / `secret.set` and a token rotation write `.env`, `config.patch` writes `skillhook.json`); its own state is `jobs/.cloud/`, skills it removes go to `jobs/.removed-skills/`. Statuses: `queued running succeeded failed timed_out cancelled interrupted`. The running agent talks to skillhook only through files in its job directory (`src/progress.ts`): no token, no HTTP, so the shell runner and a restart are covered; the queue turns them into events and record fields.
 - **State changes are events.** Whatever the server learns (a job changing state, a schedule firing or skipping, a skill file appearing or changing) is emitted on `Events` (`src/events.ts`) at the place it happens, after the record on disk is updated, with the full record in the payload. Consumers (the SSE routes, later the cloud link) subscribe; they never poll job files. A new kind of state change gets a new `EventMap` entry, an emit, a row in `docs/api.md` and a test. Listener errors are logged, never thrown into the publisher.
@@ -66,12 +66,12 @@ Runtime state lives outside the repo in `~/.skillhook` (`SKILLHOOK_HOME`):
 ## Checks
 
 ```bash
-npm run typecheck          # tsc --noEmit (strict)
-npm test                   # vitest: unit + HTTP integration (src/server.test.ts) + CLI (src/cli.test.ts)
-npm run build              # tsc -p tsconfig.build.json → dist/
-npm run schema -- --check  # schema/skillhook.schema.json and schema/skillhook.yaml.schema.json are current
-npm run release -- --check # package.json, package-lock.json, plugin manifests and CHANGELOG.md agree on the version
-npm run check              # all of the above
+pnpm run typecheck          # tsc --noEmit (strict)
+pnpm test                   # vitest: unit + HTTP integration (src/server.test.ts) + CLI (src/cli.test.ts)
+pnpm run build              # tsc -p tsconfig.build.json → dist/
+pnpm run schema --check  # schema/skillhook.schema.json and schema/skillhook.yaml.schema.json are current
+pnpm run release --check # package.json, plugin manifests and CHANGELOG.md agree on the version
+pnpm run check              # all of the above
 ```
 
 CodeQL (GitHub default setup) analyses every pull request and the `main` ruleset blocks merges on new
@@ -90,10 +90,10 @@ node dist/cli.js run hello --dir /tmp/sh --payload '{"name":"world"}' --dry-run
 
 ## Releasing
 
-`npm run release -- <patch|minor|major|X.Y.Z>` bumps `package.json`, `package-lock.json` and the
+`pnpm run release -- <patch|minor|major|X.Y.Z>` bumps `package.json` and the
 plugin manifests (`.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`,
 `.cursor-plugin/plugin.json`) together and moves the `## Unreleased` entries of `CHANGELOG.md`
-under the new version; `npm run release -- --check` (part of `npm run check` and CI) fails when
+under the new version; `pnpm run release --check` (part of `pnpm run check` and CI) fails when
 they disagree. Open a pull request with the bump. When it merges, `.github/workflows/release.yml`
 tags `vX.Y.Z` and dispatches `.github/workflows/publish.yml`, which publishes to npm with
 provenance (trusted publishing, or an `NPM_TOKEN` secret), creates the GitHub release from the
