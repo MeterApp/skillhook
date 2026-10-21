@@ -423,7 +423,7 @@ git clone https://github.com/MeterApp/skillhook.git && cd skillhook && npm insta
 pnpm run check          # typecheck, vitest, build, schema check
 ```
 
-`pnpm test` runs the vitest suites (unit, HTTP integration with fake runners, CLI); `pnpm run dev -- <command> --dir /tmp/skillhook-dev` runs the CLI from source with tsx without touching `~/.skillhook`. Read [`AGENTS.md`](AGENTS.md) for the layout and hard rules and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the pull-request checklist, the branch rules and how releases are cut (`pnpm run release`, then a pull request; CI tags, publishes to npm with provenance and creates the GitHub release). Security issues: see [`SECURITY.md`](SECURITY.md).
+`pnpm test` runs the vitest suites (unit, HTTP integration with fake runners, CLI); `pnpm run dev <command> --dir /tmp/skillhook-dev` runs the CLI from source with tsx without touching `~/.skillhook`. Read [`AGENTS.md`](AGENTS.md) for the layout and hard rules and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the pull-request checklist, the branch rules and how releases are cut (`pnpm run release`, then a pull request; CI tags, publishes to npm with provenance and creates the GitHub release). Security issues: see [`SECURITY.md`](SECURITY.md).
 
 ## License
 

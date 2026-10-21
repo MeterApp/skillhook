@@ -90,7 +90,7 @@ node dist/cli.js run hello --dir /tmp/sh --payload '{"name":"world"}' --dry-run
 
 ## Releasing
 
-`pnpm run release -- <patch|minor|major|X.Y.Z>` bumps `package.json` and the
+`pnpm run release <patch|minor|major|X.Y.Z>` bumps `package.json` and the
 plugin manifests (`.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`,
 `.cursor-plugin/plugin.json`) together and moves the `## Unreleased` entries of `CHANGELOG.md`
 under the new version; `pnpm run release --check` (part of `pnpm run check` and CI) fails when
