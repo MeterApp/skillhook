@@ -39,11 +39,13 @@ Cursor, Windsurf and other `mcp.json` clients:
 
 Non-default home: add `"--dir", "/path/to/home"` to `args` (or set `SKILLHOOK_HOME` in the client's environment). The MCP process must see the same home as your shell.
 
-The repository is also a plugin: its skills, this MCP server, and `skillhook-cloud`, the organisation's fleet through Skillhook Cloud (below):
+The repository is also a plugin: its skills, this MCP server, and `skillhook-cloud`, the organisation's fleet through Skillhook Cloud (below). One step in Claude Code 2.1.275 or later:
 
 ```text
-/plugin marketplace add MeterApp/skillhook
+/plugin install skillhook --marketplace MeterApp/skillhook
 ```
+
+The plugin starts both servers with `npx -y @meterapp/skillhook@<version>`, pinned to the plugin's own release (`pnpm run release` keeps `.mcp.json` in step). What they run and send: [README → What the plugin runs and sends](../README.md#what-the-plugin-runs-and-sends).
 
 Global options apply to the `mcp` command like any other (`--dir`); the server writes only to the home directory and never to the repository it is started from. If the home does not exist yet it prints a warning and creates what it needs on first use (or run `skillhook init`).
 
