@@ -1,6 +1,6 @@
 # AGENTS.md — conventions for humans and agents
 
-Read this before changing anything. `CLAUDE.md` points here.
+Read this before changing anything. `.claude/CLAUDE.md` points here (it lives there, not at the root, because the root is the plugin and the plugin directory warns about a root `CLAUDE.md`).
 
 ## What this is
 
@@ -38,7 +38,7 @@ is `skillhook`. User docs: `README.md`, `docs/`, `llms.txt`.
 | `src/tailscale.ts`, `src/service.ts` | Funnel/Serve, launchd/systemd. |
 | `src/health.ts`, `src/doctor.ts`, `src/tools.ts` | The grouped health report (`runHealth`, `HealthCache` behind `GET /health/checks`, `health.changed`); `doctor.ts` is its quick flavour printed flat; `tools.ts` probes `claude` / `codex` (version, login, `mcp list`, `plugin list`, `codex doctor`) with the job environment (`baseRunEnv`) and holds the pure parsers of their output. New checks: add them in `runHealth` with a group, a fixture answer in `test/fixtures/` when a CLI is involved, a row in `docs/operations.md`. |
 | `src/update.ts`, `src/commands/update.ts` | Updates: the registry lookup (1 h cache in `<home>/update-check.json`), install-method detection, the background update (`update --refresh`: the check and, with `auto_update`, the install, one at a time under `<home>/update.lock`), the plugin refresh of `update --install`, and `skillhook update`. `serve` restarts itself onto a newer installed version once no job runs. |
-| `scripts/release.ts` | Version bump / consistency check / release notes across `package.json`, the lockfile, the plugin manifests and `CHANGELOG.md`. |
+| `scripts/release.ts` | Version bump / consistency check / release notes across `package.json`, the lockfile, the plugin manifests, the pinned `npx` launchers in `.mcp.json` and `CHANGELOG.md`. |
 | `.github/workflows/` | `ci.yml` (PRs and main: checks + packed-tarball install), `release.yml` (tags merged version bumps), `publish.yml` (npm publish with provenance, GitHub release, verification). |
 | `examples/skills/` | Bundled webhook skills; `skillhook skills add <name>` copies them. Shipped in the npm package. |
 | `skills/` | Agent-facing plugin skills (setup, authoring). This repo is itself a Claude Code / Codex / Cursor plugin via the manifests at the root. |
@@ -70,7 +70,7 @@ pnpm run typecheck          # tsc --noEmit (strict)
 pnpm test                   # vitest: unit + HTTP integration (src/server.test.ts) + CLI (src/cli.test.ts)
 pnpm run build              # tsc -p tsconfig.build.json → dist/
 pnpm run schema --check  # schema/skillhook.schema.json and schema/skillhook.yaml.schema.json are current
-pnpm run release --check # package.json, plugin manifests and CHANGELOG.md agree on the version
+pnpm run release --check # package.json, plugin manifests, .mcp.json's pinned npx launchers and CHANGELOG.md agree on the version
 pnpm run check              # all of the above
 ```
 
@@ -90,13 +90,17 @@ node dist/cli.js run hello --dir /tmp/sh --payload '{"name":"world"}' --dry-run
 
 ## Releasing
 
-`pnpm run release <patch|minor|major|X.Y.Z>` bumps `package.json` and the
+`pnpm run release <patch|minor|major|X.Y.Z>` bumps `package.json`, the
 plugin manifests (`.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`,
-`.cursor-plugin/plugin.json`) together and moves the `## Unreleased` entries of `CHANGELOG.md`
+`.cursor-plugin/plugin.json`) and the pinned launchers in `.mcp.json`
+(`npx -y @meterapp/skillhook@X.Y.Z mcp`) together and moves the `## Unreleased` entries of `CHANGELOG.md`
 under the new version; `pnpm run release --check` (part of `pnpm run check` and CI) fails when
 they disagree. Open a pull request with the bump. When it merges, `.github/workflows/release.yml`
 tags `vX.Y.Z` and dispatches `.github/workflows/publish.yml`, which publishes to npm with
 provenance (trusted publishing, or an `NPM_TOKEN` secret), creates the GitHub release from the
-changelog section and installs the published package to verify it. `main` is protected by a
+changelog section and installs the published package to verify it. `.mcp.json` must
+always pin the exact version in `package.json`: Anthropic's plugin directory refuses an unpinned
+package launcher, and the plugin on `main` points at a version that exists on npm once Publish
+finishes. Check the plugin with `claude plugin validate . --strict --profile directory`. `main` is protected by a
 ruleset (pull requests only, CI green, linear history); the full procedure including the one-time
 first publish is in `CONTRIBUTING.md`.

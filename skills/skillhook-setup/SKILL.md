@@ -132,7 +132,7 @@ The person copies the code (and `--control` if they chose it) from their dashboa
 
 ## The same through MCP
 
-Install the plugin (`/plugin marketplace add MeterApp/skillhook`, then `/plugin install skillhook@meterapp-skillhook`) or add the server directly — `skillhook mcp --print-config` prints the command for Claude Code, Codex and mcp.json hosts. Tools map onto the CLI:
+Install the plugin (`/plugin install skillhook --marketplace MeterApp/skillhook` in Claude Code 2.1.275 or later; before that `/plugin marketplace add MeterApp/skillhook`, then `/plugin install skillhook@meterapp-skillhook`) or add the server directly — `skillhook mcp --print-config` prints the command for Claude Code, Codex and mcp.json hosts. Tools map onto the CLI:
 
 | Task | CLI | MCP tool |
 | --- | --- | --- |

@@ -2,15 +2,18 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "skillhook",
   "displayName": "skillhook",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "description": "Turn this machine into a permanent, secure webhook endpoint that runs Agent Skills with Claude Code or Codex, and run your whole Skillhook Cloud organisation from the agent. Three skills teach the agent to install and expose skillhook, to write good webhook skills and to operate the fleet; two MCP servers manage this machine (skills, secrets, jobs, exposure) and, with an organisation API key, every machine as the Skillhook Cloud dashboard does (what needs a person, failures, stats, answers, replays, runs, hosted URLs).",
   "author": {
     "name": "Meter",
     "email": "hello@meterapp.co",
     "url": "https://meterapp.co"
   },
-  "homepage": "https://github.com/MeterApp/skillhook",
+  "homepage": "https://skillhook.dev",
   "repository": "https://github.com/MeterApp/skillhook",
   "license": "MIT",
+  "icon": "./.claude-plugin/icon.png",
+  "privacyPolicyUrl": "https://skillhook.dev/privacy",
+  "termsOfServiceUrl": "https://skillhook.dev/terms",
   "keywords": ["webhook", "agent-skills", "claude-code", "codex", "mcp", "tailscale", "automation", "granola", "sentry", "github"]
 }

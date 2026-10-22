@@ -23,6 +23,12 @@ so you never touch your real `~/.skillhook`.
 - Update the docs that describe what you changed (`README.md`, `docs/`, the plugin
   skills under `skills/`) in the same PR, and run `pnpm run schema` after touching
   `src/config.ts`.
+- The repository root is the plugin folder that Claude Code and Anthropic's plugin directory install.
+  Keep every committed file under 256 KiB, the whole tree under 512 files, text and images only
+  (no binaries, archives, `.ico` or `.pdf`), no symlinks, and no `CLAUDE.md` at the root (contributor
+  context is `.claude/CLAUDE.md`). `.mcp.json` pins the package at the version in `package.json`;
+  `pnpm run release --check` fails otherwise. `claude plugin validate . --strict --profile directory`
+  checks the rest.
 - Describe the security impact of the change in the PR description when it touches
   `src/auth.ts`, `src/server.ts`, `src/runners/env.ts` or `src/prompt.ts`.
 
@@ -41,7 +47,8 @@ Versions are cut from `main` by pull request:
 
 1. Describe changes under `## Unreleased` in `CHANGELOG.md` as they land.
 2. Run `pnpm run release minor` (or `patch`, `major`, `1.2.3`). It bumps `package.json`,
-   the plugin manifests and moves the Unreleased entries under
+   the plugin manifests, the pinned `npx -y @meterapp/skillhook@X.Y.Z` launchers in `.mcp.json`
+   and moves the Unreleased entries under
    `## 1.2.0 (date)`. Nothing is committed; `pnpm run release --check` verifies the result.
 3. Commit on a branch, open a pull request, let CI pass, merge.
 4. The **Release** workflow sees the new version on `main`, tags `v1.2.0` and dispatches the

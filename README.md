@@ -328,13 +328,25 @@ Cursor, Windsurf and other `mcp.json` clients:
 }
 ```
 
-`skillhook mcp --print-config` prints these lines for your install (with `--dir` when the home is not the default). The repository is also a plugin with skills for setup, skill authoring and operating Skillhook Cloud, this MCP server, and `skillhook-cloud` (`skillhook mcp --cloud`): the whole organisation, as the Skillhook Cloud dashboard shows and runs it, for your agent once you ran `skillhook cloud login`:
+`skillhook mcp --print-config` prints these lines for your install (with `--dir` when the home is not the default).
+
+### The plugin
+
+The repository is also a Claude Code, Codex and Cursor plugin: three skills (setting up and exposing skillhook, writing webhook skills, operating Skillhook Cloud), this MCP server, and `skillhook-cloud` (`skillhook mcp --cloud`): the whole organisation, as the Skillhook Cloud dashboard shows and runs it, for your agent once you signed in. Install it in Claude Code in one step (Claude Code 2.1.275 or later):
 
 ```text
-/plugin marketplace add MeterApp/skillhook
+/plugin install skillhook --marketplace MeterApp/skillhook
 ```
 
-Claude Code updates the plugin by itself once auto-update is on for its marketplace (`/plugin` → Marketplaces → `meterapp-skillhook` → Enable auto-update); `skillhook update --install` also updates it, in Claude Code and Codex.
+On older versions: `/plugin marketplace add MeterApp/skillhook`, then `/plugin install skillhook@meterapp-skillhook`. Claude Code updates the plugin by itself once auto-update is on for its marketplace (`/plugin` → Marketplaces → `meterapp-skillhook` → Enable auto-update); `skillhook update --install` also updates it, in Claude Code and Codex.
+
+#### What the plugin runs and sends
+
+- **Two local MCP servers (stdio).** Claude Code starts them with `npx -y @meterapp/skillhook@<version> mcp` and `npx -y @meterapp/skillhook@<version> mcp --cloud` ([`.mcp.json`](.mcp.json)). The version is pinned to the plugin's own release: the first start downloads exactly that version of the [`@meterapp/skillhook`](https://www.npmjs.com/package/@meterapp/skillhook) npm package (this repository, published with provenance) from the npm registry, and Node.js 22 or newer must be installed. The `package.json` and `pnpm-lock.yaml` at the repository root are that package's sources; the plugin runs nothing from the checkout itself.
+- **`skillhook` (this machine).** Reads and writes `~/.skillhook` (configuration, skills, secrets in `.env` with mode 600, jobs) and talks to the local skillhook server on `127.0.0.1`. When your agent calls the matching tools, it runs skills with `claude`, `codex` or a shell command on this machine, sends signed test webhooks to your own server, installs the launchd/systemd service, and turns on **Tailscale Funnel** (`expose`), which makes this machine's webhook endpoint (`https://<machine>.<tailnet>.ts.net/hooks/<skill>`; each skill checks its sender unless it says `auth: none`) reachable from the public internet; nothing is exposed until that tool or `skillhook expose tailscale` runs, and `skillhook expose off` removes it. `cloud_report_issue` sends a problem report to the Skillhook team only when the person asks for one, from a machine that is paired already.
+- **`skillhook-cloud` (Skillhook Cloud).** Talks over HTTPS to [Skillhook Cloud](https://skillhook.dev) only. Before anyone signs in it offers only the public pricing and checkout-link routes, sent without a credential. `skillhook_cloud_setup` signs in with the browser (device code: this computer's name goes to the cloud, a person approves it there) and keeps the organisation API key in `~/.skillhook/.env`. With a key, the server reads the cloud's tool catalogue when it starts, and each tool call is one request with that key and acts on the organisation's machines with the rights of the person who created the key. It never pairs this machine: the link that uploads this machine's jobs and deliveries starts only when a person runs `skillhook cloud connect` in a terminal ([docs/cloud.md](docs/cloud.md) lists what it sends).
+- **Update check.** At most once an hour, a detached process asks the npm registry for the latest version of `@meterapp/skillhook`. A pinned `npx` copy never installs anything; the plugin moves to a new version when the plugin updates. `SKILLHOOK_NO_UPDATE_CHECK=1` turns the check off.
+- **Nothing else.** No telemetry or analytics. `SKILLHOOK_NO_CLOUD=1` refuses every request to Skillhook Cloud. Skillhook Cloud's [privacy policy](https://skillhook.dev/privacy) and [terms](https://skillhook.dev/terms) cover what reaches it.
 
 Skillhook Cloud also serves the organisation's tools as a hosted MCP server at `https://skillhook.dev/api/mcp` (Streamable HTTP; the claude.ai and ChatGPT connectors sign in with OAuth, other clients send an organisation API key as the bearer token), for clients that connect to a URL rather than run the plugin: [skillhook.dev/docs/mcp](https://skillhook.dev/docs/mcp).
 

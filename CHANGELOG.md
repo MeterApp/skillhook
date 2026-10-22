@@ -4,6 +4,9 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.13.1 (2026-10-22)
+
+- Ready for Anthropic's plugin directory: the plugin's MCP servers start a pinned `npx -y @meterapp/skillhook@<version>` (the plugin's own release) instead of whatever is latest, and `pnpm run release` bumps and `--check` verifies that pin with `package.json` and the plugin manifests. The Claude Code manifest gains a listing icon, the skillhook.dev homepage and links to Skillhook Cloud's privacy policy and terms; the README gains the one-step `/plugin install skillhook --marketplace MeterApp/skillhook` and a plain account of what the plugin runs and sends. The contributor pointer moved from `CLAUDE.md` to `.claude/CLAUDE.md`.
 - Upgrade the MCP server SDK to 2.3.1 to address the SDK request-isolation, validation-memory and bearer-token audience advisories.
 
 ## 0.13.0 (2026-10-17)
