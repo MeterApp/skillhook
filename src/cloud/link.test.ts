@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingHttpHeaders, type Server } from "node:http";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { AccountStateStore } from "../accounts.js";
 import { ConfigRef, loadConfig, type Config } from "../config.js";
 import { DeliveryLog } from "../delivery-log.js";
 import { loadSecrets, readEnvFile, upsertEnvVar } from "../env.js";
@@ -58,13 +59,15 @@ interface SetupOptions {
   extraEnv?: Record<string, string>;
   /** A readiness cache stand-in, built with the link's event bus. */
   readiness?: (events: Events) => ReadinessCache;
+  /** `accounts` of skillhook.json. */
+  accounts?: Record<string, unknown>;
 }
 
 async function setup(options: SetupOptions = {}) {
   const fake = await FakeCloud.start();
   cleanups.push(() => fake.close());
   const paths = tempHome("skillhook-link-");
-  writeConfigFile(paths, { runners: { claude: { command: FAKE_CLAUDE } }, cloud: { enabled: true, url: fake.url, machine_id: fake.machineId, ...options.cloud } });
+  writeConfigFile(paths, { runners: { claude: { command: FAKE_CLAUDE } }, cloud: { enabled: true, url: fake.url, machine_id: fake.machineId, ...options.cloud }, ...(options.accounts ? { accounts: options.accounts } : {}) });
   writeEnv(paths, { SKILLHOOK_CLOUD_TOKEN: fake.token, SKILLHOOK_SECRET_HELLO: SECRET, ...options.extraEnv });
   writeSkill(paths, "hello", "description: hello");
   const config = loadConfig(paths);
@@ -584,6 +587,83 @@ describe("CloudLink", () => {
     const changed = fake.requests.flatMap((r) => r.events).find((e) => e.type === "runners.changed")!;
     expect(changed.data).toMatchObject({ runner: "claude", readiness: { ready: false, authenticated: false } });
     expect(checks).toBe(1);
+  });
+
+  it("checks the accounts once it connects and uploads account events without directories, secrets or whole emails", async () => {
+    const asked: string[] = [];
+    const { fake, link, events } = await setup({
+      accounts: { work: { runner: "claude" }, ci: { runner: "claude", kind: "token" } },
+      readiness: (bus) =>
+        ({
+          all: async () => [],
+          get: async (_runner: string, options: { account?: { name: string; dir: string } }) => {
+            const account = options.account!;
+            asked.push(account.name);
+            const readiness = { runner: "claude", account: account.name, found: true, path: "/opt/claude/bin/claude", config_dir: account.dir, ready: false, authenticated: false, expired: true, identity: { email: "ada.lovelace@example.com", org: "Ada's Organization" }, detail: `login expired for ada.lovelace@example.com (${SECRET})`, hint: `skillhook accounts login ${account.name}`, checked_at: new Date().toISOString() };
+            bus.emit("account.changed", { account: account.name, runner: "claude", readiness } as never);
+            return readiness;
+          },
+          last: () => undefined,
+        }) as unknown as ReadinessCache,
+    });
+    link.start();
+    await fake.waitFor(() => fake.requests.flatMap((r) => r.events).filter((e) => e.type === "account.changed").length === 2);
+    expect(asked.sort()).toEqual(["ci", "work"]);
+    const changed = fake.requests.flatMap((r) => r.events).find((e) => e.type === "account.changed" && (e.data as { account: string }).account === "work")!;
+    expect(changed.data).toEqual({ account: "work", runner: "claude", readiness: { runner: "claude", account: "work", found: true, ready: false, authenticated: false, expired: true, identity: { email: "a…@example.com", org: "Ada's Organization" }, detail: "login expired for a…@example.com ([redacted])", hint: "skillhook accounts login work", checked_at: expect.any(String) } });
+
+    const resets = new Date(Date.now() + 3_600_000).toISOString();
+    events.emit("account.updated", {
+      account: "work",
+      reason: "limited",
+      state: {
+        last_used_at: resets,
+        last_job: "20261023T101500Z-a1b2c3",
+        last_failure: { kind: "usage_limit", at: resets, job: "20261023T101500Z-a1b2c3", message: `${"limit ".repeat(200)} ada@example.com`, stack: "dropped" },
+        limited_until: resets,
+        limited_reason: "5h limit reached",
+        identity: { email: "ada@example.com", plan: "max", checked_at: resets, token: SECRET },
+        usage: { fetched_at: resets, plan: "max", windows: [{ id: "five_hour", label: "5h", used_percent: 100, resets_at: resets, raw: { x: 1 } }], credits: { enabled: false } },
+        dir: "/Users/ada/.skillhook/accounts/work",
+      },
+    } as never);
+    await fake.waitFor(() => fake.requests.some((r) => r.events.some((e) => e.type === "account.updated")));
+    const updated = fake.requests.flatMap((r) => r.events).find((e) => e.type === "account.updated")!;
+    const state = (updated.data as { state: Record<string, unknown> }).state;
+    expect(updated.data).toMatchObject({ account: "work", reason: "limited" });
+    expect(state).toMatchObject({ limited_until: resets, limited_reason: "5h limit reached", identity: { email: "a…@example.com", plan: "max", checked_at: resets }, usage: { plan: "max", windows: [{ id: "five_hour", label: "5h", used_percent: 100, resets_at: resets }], credits: { enabled: false } } });
+    expect(Object.keys(state).sort()).toEqual(["identity", "last_failure", "last_job", "last_used_at", "limited_reason", "limited_until", "usage"]);
+    expect(Object.keys(state.last_failure as object).sort()).toEqual(["at", "job", "kind", "message"]);
+    expect(Buffer.byteLength((state.last_failure as { message: string }).message)).toBeLessThanOrEqual(500);
+    const text = JSON.stringify(updated.data);
+    for (const leaked of [SECRET, "ada@example.com", "accounts/work", "raw", "stack"]) expect(text).not.toContain(leaked);
+  });
+
+  it("answers accounts.get in observe mode with each account as the cloud may see it", async () => {
+    const { fake, link, paths } = await setup({
+      extraEnv: { SKILLHOOK_ACCOUNT_API_API_KEY: "sk-ant-account-key-123456" },
+      accounts: { api: { runner: "claude", kind: "api_key", label: "billing: ada@example.com" }, gone: { runner: "claude", dir: "/nonexistent/skillhook-accounts/gone" } },
+    });
+    new AccountStateStore(paths.jobsDir).update("api", { identity: { email: "ada@example.com", checked_at: new Date().toISOString() }, usage: { fetched_at: new Date().toISOString(), windows: [{ id: "seven_day", label: "weekly", used_percent: 42 }] } });
+    link.start();
+    const results = await runCommands(fake, [cmd("acc", "accounts.get", {}), cmd("one", "accounts.get", { account: "gone" }), cmd("nosuch", "accounts.get", { account: "nope" }), cmd("bad", "accounts.get", { usage: "yes" })]);
+    expect(results.acc).toMatchObject({ ok: true });
+    const report = results.acc!.result as { accounts: Record<string, unknown>[]; needs_attention: string[] };
+    const api = report.accounts.find((a) => a.name === "api")!;
+    const gone = report.accounts.find((a) => a.name === "gone")!;
+    expect(api).toMatchObject({ runner: "claude", kind: "api_key", label: "billing: a…@example.com", status: "ready", ready: true, secret_env: "SKILLHOOK_ACCOUNT_API_API_KEY", identity: { email: "a…@example.com" }, usage: { windows: [{ id: "seven_day", used_percent: 42 }] }, jobs_24h: { total: 0 } });
+    expect(gone).toMatchObject({ status: "needs_login", attention: expect.arrayContaining([expect.objectContaining({ code: "dir_missing", fix: "skillhook accounts login gone" })]) });
+    expect(report.needs_attention).toContain("gone");
+    for (const account of report.accounts) {
+      expect(account).not.toHaveProperty("dir");
+      expect(account.readiness).not.toHaveProperty("path");
+      expect(account.readiness).not.toHaveProperty("config_dir");
+    }
+    expect(JSON.stringify(results.acc)).not.toContain("sk-ant-account-key-123456");
+    expect(JSON.stringify(results.acc)).not.toContain("ada@example.com");
+    expect((results.one!.result as { accounts: { name: string }[] }).accounts.map((a) => a.name)).toEqual(["gone"]);
+    expect(results.nosuch).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(results.bad).toMatchObject({ ok: false, error: { code: "invalid_args" } });
   });
 
   it("says goodbye with link.stopped on the way out", async () => {

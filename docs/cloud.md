@@ -224,12 +224,24 @@ fixed views still work there).
 
 The running server opens HTTPS requests to `cloud.url` (`POST /api/agent/sync`); the cloud may hold a request up to 25 seconds when it has nothing to say, which makes the link both the heartbeat and the command channel ([cloud-protocol.md](cloud-protocol.md)). Each request carries:
 
-- **Events**: every delivery (the delivery record with redacted headers, and the body when `cloud.upload_payloads` allows it and it is at most 256 KiB), every job change (the job record without its command line; the result up to 8 KiB), progress lines (at most one per job every five seconds, questions and answers always), schedule and skill changes, configuration changes, health changes and runner readiness (checked once when the link connects, then whenever a job checks it), plus `link.started` / `link.stopped`.
+- **Events**: every delivery (the delivery record with redacted headers, and the body when `cloud.upload_payloads` allows it and it is at most 256 KiB), every job change (the job record without its command line; the result up to 8 KiB), progress lines (at most one per job every five seconds, questions and answers always), schedule and skill changes, configuration changes, health changes, runner readiness (checked once when the link connects, then whenever a job checks it) and the health of each [account](accounts.md) (`account.changed`, `account.updated`: checked once when the link connects, then whenever a job or a usage read learns something; [what travels](#accounts)), plus `link.started` / `link.stopped`.
 - **A snapshot** on connect and every `cloud.snapshot_interval_seconds`: skill summaries, projects, schedules, the effective configuration, the last health and readiness answers and a day of stats.
 - **A deep health report** every `cloud.health_interval_seconds`.
 - **Command results** and **hosted-ingress acknowledgements** (below).
 
 Every string is scrubbed of private values in `.env` before it leaves, `authorization`, cookie, signature and token headers never leave, and command lines, environments and `.env` itself never do. Events wait in `jobs/.cloud/outbox.jsonl` while the cloud is unreachable (at most `cloud.outbox_max_events`, oldest dropped first and counted); a server restart loses nothing that was spooled. On errors the link backs off exponentially up to a minute, is reported `degraded` after three failures, stops on a revoked token (`401`) or a disabled machine (`403`) until the configuration or the token changes, halves its batches on `413`, honours `429`'s retry delay and waits ten minutes on `426` (update skillhook).
+
+## Accounts
+
+The dashboard shows whether each Claude Code / Codex account of `skillhook accounts` ([accounts.md](accounts.md)) can run, who it is, how much of its plan is left and what needs a person, from the events `account.changed` (an account became usable or stopped being so) and `account.updated` (a run hit a usage limit, failed to log in or recovered, or its usage was read), and from the read command `accounts.get` (the same report as `skillhook accounts`, or `skillhook accounts usage` with `usage: true`). For each account exactly this travels, through an allow-list (a field the accounts code adds later stays home until it is listed here):
+
+- its name, runner, kind (`login`, `token`, `api_key`), label, whether it is disabled, whether it uses the runner's own directory (`default_dir`) and lives under `~/.skillhook/accounts` (`managed`), and the *name* of the `.env` variable holding a token or key (`secret_env`), never its value;
+- its status (`ready`, `limited`, `expired`, `needs_login`, `missing_secret`, `not_installed`, `disabled`), the readiness answer (installed, version, logged in, method, expired, its detail and hint) and the attention items (`level`, `code`, `message`, `fix`: the command that fixes it);
+- who it is logged in as: the plan, the subscription's paid-until date, the organisation's name, and the email **masked** to its first letter and domain (`a…@example.com`), here and in every other text about the account;
+- its usage windows (`id`, `label`, `used_percent`, `resets_at`, `window_minutes`), credits (enabled, used, limit, balance, currency, unlimited), when they were read, and `limited_until` / `limited_reason`;
+- the last use, success and failure (`kind`, `at`, the job's id, the CLI's message cut to 500 bytes), the jobs of the last 24 hours on it (counts and cost), the skills whose pool names it and the runners it is the default for.
+
+Never: the account's directory or any other path (the CLI's binary, `CLAUDE_CONFIG_DIR`), its token, key or any `.env` value (every string is scrubbed like the rest of the link's uploads), a full email address, or anything the CLIs keep in the directory. `accounts.get` is a read command (allowed in `observe` mode); with `usage: true` it starts each subscription account's CLI once to read its usage, as `skillhook accounts usage` does, and keeps the answer.
 
 ## Hosted URLs
 
@@ -249,7 +261,7 @@ A skill can have a hosted webhook URL on the cloud (the dashboard creates it) in
 
 ## Commands the cloud may send
 
-Read commands (both modes): `ping`, `health.get`, `snapshot.get`, `runners.get`, `skills.list`, `skill.get`, `delivery.list`, `delivery.get`, `job.list`, `job.get`, `job.artifact`, `job.watch`, `job.unwatch`, `job.progress.get`, `stats.get`, `config.get`, `secret.list` (names only), `service.status`, `logs.tail`, `schedules.list`, `update.check`, `expose.status`.
+Read commands (both modes): `ping`, `health.get`, `snapshot.get`, `runners.get`, `accounts.get` (`{account?, refresh?, usage?}`, [what it answers](#accounts)), `skills.list`, `skill.get`, `delivery.list`, `delivery.get`, `job.list`, `job.get`, `job.artifact`, `job.watch`, `job.unwatch`, `job.progress.get`, `stats.get`, `config.get`, `secret.list` (names only), `service.status`, `logs.tail`, `schedules.list`, `update.check`, `expose.status`.
 
 Control commands (`mode: control` or an allow entry): `skill.put`, `skill.delete`, `skill.run`, `skill.test`, `delivery.replay`, `job.cancel`, `job.replay`, `job.answer`, `config.patch`, `secret.generate`, `service.restart`, `schedule.run`, `update.install`.
 

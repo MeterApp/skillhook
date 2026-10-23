@@ -217,6 +217,8 @@ These problems show up in several places:
 
   `serve` checks every account once when it starts, so a logged-out account is reported before a job trips over it.
   It also logs `account needs attention` with the fix.
+- **Skillhook Cloud**, on a paired machine, gets both events and can ask for this report (`accounts.get`), with emails
+  masked and no directories or secrets: [cloud.md](cloud.md#accounts) lists exactly what travels.
 - **`account_policy.notify: desktop`** makes `serve` show a desktop notification when an account stops working, hits a
   limit or recovers.
 
