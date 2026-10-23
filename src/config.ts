@@ -40,6 +40,38 @@ export const CodexRunnerConfigSchema = z
   })
   .strict();
 
+/** A name for an account: what `account:` in a skill and `skillhook accounts …` use. */
+export const AccountNameSchema = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,39}$/, "Expected lowercase letters, digits, - and _ (at most 40, starting with a letter or digit)");
+
+/**
+ * One login of Claude Code or Codex that runs can use (docs/accounts.md). A `login` account is a configuration
+ * directory of its own (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`) logged in with `skillhook accounts login`; a `token`
+ * account is a `claude setup-token` token and an `api_key` account an API key, both kept in `.env`.
+ */
+export const AccountConfigSchema = z
+  .object({
+    runner: z.enum(["claude", "codex"]),
+    /** `login` (default): a configuration directory with its own login; `token`: a long-lived `claude setup-token` token (Claude only); `api_key`: ANTHROPIC_API_KEY / OPENAI_API_KEY. */
+    kind: z.enum(["login", "token", "api_key"]).default("login"),
+    /** The configuration directory of a `login` account (`~` allowed). Default `<home>/accounts/<name>`; `~/.claude` / `~/.codex` is the machine's own login. */
+    dir: z.string().min(1).optional(),
+    /** Link the settings of this directory into the account's own (`~/.codex` / `~/.claude`): Codex shares everything but `auth.json` (config, MCP servers, skills, plugins, sessions), Claude Code shares `settings.json`, `CLAUDE.md`, agents, commands, skills and output styles. Its login stays its own. */
+    share_from: z.string().min(1).optional(),
+    /** The `.env` name holding the token or key of a `token` / `api_key` account. Default `SKILLHOOK_ACCOUNT_<NAME>_TOKEN` / `_API_KEY`. */
+    secret_env: z.string().regex(/^[A-Z_][A-Z0-9_]*$/).optional(),
+    /** For people: whose account this is, what pays for it. */
+    label: z.string().max(200).optional(),
+    /** Never picked for a run while true (a pool skips it, a skill naming only it fails fast). */
+    disabled: z.boolean().default(false),
+  })
+  .strict()
+  .refine((a) => !(a.runner === "codex" && a.kind === "token"), { message: "a token account is for Claude Code (`claude setup-token`); a Codex account is `login` or `api_key`" });
+export type AccountConfig = z.infer<typeof AccountConfigSchema>;
+
+/** One account, or a pool of accounts of the same runner tried in turn. */
+export const AccountRefSchema = z.union([AccountNameSchema, z.array(AccountNameSchema).min(1).max(20)]);
+export type AccountRef = z.infer<typeof AccountRefSchema>;
+
 export const ConfigSchema = z
   .object({
     $schema: z.string().optional(),
@@ -59,6 +91,27 @@ export const ConfigSchema = z
         cwd: z.string().optional(),
         /** Fallback runners for every skill that does not set its own `fallback:` (`{ runners: [codex], on: [not_ready] }`). */
         fallback: FallbackSchema.optional(),
+        /** The account (or pool) each runner uses when a skill names none: `{ "claude": ["work", "personal"], "codex": "pro" }`. */
+        accounts: z.object({ claude: AccountRefSchema.optional(), codex: AccountRefSchema.optional() }).strict().optional(),
+      })
+      .strict()
+      .prefault({}),
+    /** Named logins of Claude Code and Codex (`skillhook accounts`). A skill picks one or a pool with `account:`. */
+    accounts: z.record(AccountNameSchema, AccountConfigSchema).default({}),
+    account_policy: z
+      .object({
+        /** How a pool picks: `ordered` (the first usable account, in the order listed) or `balanced` (the usable account with the most usage left, then the one used least recently). */
+        strategy: z.enum(["ordered", "balanced"]).default("ordered"),
+        /** Try the pool's next account when a run fails for an account reason (`auth`, `usage_limit`) before the agent produced anything. */
+        failover: z.boolean().default(true),
+        /** How long an account that hit a usage limit is skipped when the limit's reset time is unknown. */
+        limited_cooldown_minutes: z.number().int().min(1).max(10_080).default(60),
+        /** Ask Anthropic / OpenAI for each subscription account's usage windows every so many minutes while `serve` runs (0: only when a person runs `skillhook accounts usage`). */
+        usage_poll_minutes: z.number().int().min(0).max(1440).default(0),
+        /** A usage window at or above this percentage makes the account need attention (warn). */
+        usage_warn_percent: z.number().int().min(1).max(100).default(85),
+        /** `desktop`: while `serve` runs, show a notification (macOS / Linux) when an account stops being usable (logged out, expired, limited, failing to authenticate) and when it recovers. */
+        notify: z.enum(["none", "desktop"]).default("none"),
       })
       .strict()
       .prefault({}),

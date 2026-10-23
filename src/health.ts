@@ -14,6 +14,9 @@ import type { Paths } from "./paths.js";
 import { configProjects, SkillRegistry } from "./registry.js";
 import { jobOutcome } from "./response.js";
 import { resolveRunSettings } from "./run.js";
+import { accountAttention } from "./account-report.js";
+import { AccountStateStore, listAccounts, poolFor, refNames } from "./accounts.js";
+import { checkAccountReadiness } from "./readiness.js";
 import { baseRunEnv, claudeConfigDir, withClaudeConfigDir } from "./runners/env.js";
 import { commandParts } from "./runners/types.js";
 import { nextRun } from "./schedule.js";
@@ -290,6 +293,33 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
       if (!isDirectory(dir)) check("runners", name, "fail", `${dir} does not exist (${used})`, `run: CLAUDE_CONFIG_DIR=${dir} claude login`, data);
       else if (probe.auth.loggedIn) check("runners", name, "ok", `${probe.auth.detail}${probe.auth.account ? ` as ${probe.auth.account}` : ""} (${used})`, undefined, data);
       else check("runners", name, "fail", `${probe.auth.detail} (${used})`, `run: CLAUDE_CONFIG_DIR=${dir} claude login`, data);
+    }
+  }
+  // Every named account is its own login: a logged-out, expired or limited one sends its skills to the pool's next account.
+  if (config) {
+    const accounts = listAccounts(config, paths.home);
+    const states = new AccountStateStore(paths.jobsDir).all();
+    const usedBy = new Map<string, string[]>();
+    for (const skill of loaded.skills) if (skill.enabled) for (const name of poolFor(skill, config, resolveRunSettings(skill, config).runner)) usedBy.set(name, [...(usedBy.get(name) ?? []), skill.name]);
+    const results = await Promise.all(accounts.map(async (account) => ({ account, readiness: await checkAccountReadiness(account, config, probeEnv, secrets) })));
+    for (const { account, readiness } of results) {
+      const state = states[account.name] ?? {};
+      const skills = usedBy.get(account.name) ?? [];
+      const defaultFor = (["claude", "codex"] as const).filter((runner) => refNames(config.defaults.accounts?.[runner]).includes(account.name));
+      const attention = accountAttention(account, readiness, state, config, { skills, defaultFor });
+      const worst = attention.find((a) => a.level === "fail") ?? attention.find((a) => a.level === "warn");
+      const who = readiness.identity?.email ?? state.identity?.email;
+      const data = { account: account.name, runner: account.runner, kind: account.kind, dir: account.dir, ready: readiness.ready, expired: readiness.expired ?? false, email: who ?? null, plan: state.identity?.plan ?? null, limited_until: state.limited_until ?? null, skills, attention: attention.map((a) => a.code) };
+      const used = skills.length ? ` (${skills.length} skill(s): ${skills.join(", ")})` : defaultFor.length ? ` (default for ${defaultFor.join(", ")})` : "";
+      if (account.disabled) check("runners", `account ${account.name}`, "skip", `disabled${used}`, `skillhook accounts enable ${account.name}`, data);
+      else if (worst) check("runners", `account ${account.name}`, worst.level === "fail" ? "fail" : "warn", `${worst.message}${used}`, worst.fix, data);
+      else check("runners", `account ${account.name}`, "ok", `${account.runner} ${readiness.detail}${used}`, undefined, data);
+    }
+    for (const skill of loaded.skills) {
+      if (!skill.enabled) continue;
+      const runner = resolveRunSettings(skill, config).runner;
+      const missing = refNames(skill.config.account).filter((name) => !Object.hasOwn(config.accounts, name) || (runner !== "shell" && config.accounts[name]!.runner !== runner));
+      if (missing.length) check("skills", `skill ${skill.name} account`, "fail", `names ${missing.map((n) => (Object.hasOwn(config.accounts, n) ? `"${n}" (a ${config.accounts[n]!.runner} account; the skill runs ${runner})` : `"${n}" (not defined)`)).join(", ")}: its jobs fail`, `skillhook accounts add ${missing[0]} --runner ${runner === "codex" ? "codex" : "claude"}, or change account: in the skill`, { skill: skill.name, accounts: missing });
     }
   }
   if (codex) {

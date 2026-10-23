@@ -86,6 +86,10 @@
                       },
                       "effort": {
                         "type": "string"
+                      },
+                      "account": {
+                        "type": "string",
+                        "minLength": 1
                       }
                     },
                     "required": [
@@ -114,6 +118,144 @@
             "runners"
           ],
           "additionalProperties": false
+        },
+        "accounts": {
+          "type": "object",
+          "properties": {
+            "claude": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9_-]{0,39}$"
+                },
+                {
+                  "minItems": 1,
+                  "maxItems": 20,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9][a-z0-9_-]{0,39}$"
+                  }
+                }
+              ]
+            },
+            "codex": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9_-]{0,39}$"
+                },
+                {
+                  "minItems": 1,
+                  "maxItems": 20,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9][a-z0-9_-]{0,39}$"
+                  }
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "accounts": {
+      "default": {},
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9_-]{0,39}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "runner": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "codex"
+            ]
+          },
+          "kind": {
+            "default": "login",
+            "type": "string",
+            "enum": [
+              "login",
+              "token",
+              "api_key"
+            ]
+          },
+          "dir": {
+            "type": "string",
+            "minLength": 1
+          },
+          "share_from": {
+            "type": "string",
+            "minLength": 1
+          },
+          "secret_env": {
+            "type": "string",
+            "pattern": "^[A-Z_][A-Z0-9_]*$"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "disabled": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "runner"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "account_policy": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "strategy": {
+          "default": "ordered",
+          "type": "string",
+          "enum": [
+            "ordered",
+            "balanced"
+          ]
+        },
+        "failover": {
+          "default": true,
+          "type": "boolean"
+        },
+        "limited_cooldown_minutes": {
+          "default": 60,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10080
+        },
+        "usage_poll_minutes": {
+          "default": 0,
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1440
+        },
+        "usage_warn_percent": {
+          "default": 85,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "notify": {
+          "default": "none",
+          "type": "string",
+          "enum": [
+            "none",
+            "desktop"
+          ]
         }
       },
       "additionalProperties": false

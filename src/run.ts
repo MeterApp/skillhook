@@ -1,6 +1,7 @@
 import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { getAccount, refNames, runnerOfAccounts, withAccountEnv } from "./accounts.js";
 import type { Config, RunnerName } from "./config.js";
 import type { Secrets } from "./env.js";
 import type { JobRecord, JobStore } from "./jobs.js";
@@ -42,6 +43,8 @@ export interface RunSettings {
 
 export interface RunOverrides {
   runner?: RunnerName;
+  /** An account (`skillhook accounts`) instead of the skill's pool; its runner unless `runner` says otherwise. */
+  account?: string;
   model?: string;
   effort?: string;
   cwd?: string;
@@ -49,7 +52,8 @@ export interface RunOverrides {
 
 /** Skill config wins over server defaults; explicit CLI/API overrides win over both. */
 export function resolveRunSettings(skill: Skill, config: Config, overrides: RunOverrides = {}): RunSettings {
-  const runner = overrides.runner ?? skill.config.runner ?? config.defaults.runner;
+  // A skill that names an account but no runner runs on the account's runner.
+  const runner = overrides.runner ?? runnerOfAccounts(config, overrides.account ? [overrides.account] : []) ?? skill.config.runner ?? runnerOfAccounts(config, refNames(skill.config.account)) ?? config.defaults.runner;
   const model = overrides.model ?? skill.config.model ?? config.defaults.model;
   const effort = overrides.effort ?? skill.config.effort ?? config.defaults.effort;
   const timeoutSeconds = skill.config.timeout_seconds ?? config.defaults.timeout_seconds;
@@ -119,11 +123,19 @@ export function prepareRun(input: PrepareRunInput): PreparedRun {
     SKILLHOOK_RESPONSE_PATH: paths.response,
     SKILLHOOK_TRIGGER: input.event.trigger,
     SKILLHOOK_RUNNER: settings.runner,
+    ...(job.account ? { SKILLHOOK_ACCOUNT: job.account } : {}),
     SKILLHOOK_HOME: home,
     SKILLHOOK_HUMAN_WAIT_SECONDS: String(humanWaitSeconds),
     ...(bin ? { SKILLHOOK_BIN: [bin.command, ...bin.args].map(shellQuote).join(" ") } : {}),
   };
-  const env = buildRunEnv({ secrets: input.secrets, fileSecrets: input.fileSecrets, skill, config, jobVars, processEnv: input.processEnv });
+  let env = buildRunEnv({ secrets: input.secrets, fileSecrets: input.fileSecrets, skill, config, jobVars, processEnv: input.processEnv });
+  // The account the queue picked: its directory and only its credential (whatever `.env` or `claude.config_dir` said).
+  if (job.account) {
+    const account = getAccount(config, home, job.account);
+    if (!account) throw new Error(`account "${job.account}" is not defined (skillhook accounts list)`);
+    if (settings.runner !== "shell" && account.runner !== settings.runner) throw new Error(`account "${job.account}" is a ${account.runner} account; this run uses ${settings.runner}`);
+    env = withAccountEnv(env, account, input.secrets);
+  }
   const runner = getRunner(settings.runner);
   const agentApi: AgentApiServer | undefined =
     agentApiMode === "mcp" && bin && settings.runner !== "shell"

@@ -55,6 +55,10 @@ export interface ToolAuth {
   provider?: string;
   /** Who is logged in, as the CLI reports it (Claude Code: the account's email and organisation). */
   account?: string;
+  email?: string;
+  org?: string;
+  /** Claude Code had a login that ran out (`claude auth status --text` says `Login: Expired`). */
+  expired?: boolean;
   detail: string;
 }
 
@@ -97,13 +101,23 @@ export function parseClaudeAuth(result: Pick<ToolExecResult, "code" | "stdout" |
       const method = typeof json.authMethod === "string" ? json.authMethod : undefined;
       const provider = typeof json.apiProvider === "string" ? json.apiProvider : undefined;
       const account = [json.email, json.orgName].filter((v): v is string => typeof v === "string" && v.length > 0).join(", ");
-      return { loggedIn: json.loggedIn, method, provider, ...(json.loggedIn && account ? { account } : {}), detail: json.loggedIn ? `logged in (${method ?? "unknown method"})` : "not logged in" };
+      const who = json.loggedIn ? { ...(account ? { account } : {}), ...(typeof json.email === "string" && json.email ? { email: json.email } : {}), ...(typeof json.orgName === "string" && json.orgName ? { org: json.orgName } : {}) } : {};
+      return { loggedIn: json.loggedIn, method, provider, ...who, detail: json.loggedIn ? `logged in (${method ?? "unknown method"})` : "not logged in" };
     }
   } catch {
     /* not JSON: an older CLI */
   }
   const firstLine = `${result.stdout}${result.stderr}`.trim().split("\n")[0] ?? "";
   return { loggedIn: result.code === 0, detail: firstLine || `claude auth status exited with code ${result.code ?? "?"} and printed nothing` };
+}
+
+/** `claude auth status --text` prints `Login: Expired — log in again` for a login that ran out. */
+export function claudeLoginExpired(text: string): boolean {
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim().toLowerCase();
+    if (trimmed.startsWith("login:") && trimmed.includes("expired")) return true;
+  }
+  return false;
 }
 
 const MCP_MARKS: { mark: string; state: McpServerState }[] = [
@@ -205,6 +219,8 @@ export interface ProbeOptions {
   deep?: boolean;
   /** For the slow listings (`claude mcp list` connects to every server); the quick calls get 15 s. */
   timeoutMs?: number;
+  /** When Claude Code is not logged in, also ask whether a login expired (one more process). */
+  explainLogout?: boolean;
 }
 
 export async function probeClaude(command: string | string[], options: ProbeOptions): Promise<ClaudeProbe> {
@@ -213,6 +229,11 @@ export async function probeClaude(command: string | string[], options: ProbeOpti
   const exec = (args: string[], timeoutMs: number) => execTool(resolved.path!, [...resolved.lead, ...args], { env: options.env, timeoutMs });
   const [version, auth] = await Promise.all([exec(["--version"], 15_000), exec(["auth", "status"], 15_000)]);
   const probe: ClaudeProbe = { found: true, path: resolved.path, version: parseVersion(version.stdout), auth: parseClaudeAuth(auth) };
+  // The JSON says only "not logged in"; the text form tells a login that expired from none at all.
+  if (!probe.auth.loggedIn && options.explainLogout) {
+    const text = await exec(["auth", "status", "--text"], 15_000);
+    if (claudeLoginExpired(text.stdout)) probe.auth = { ...probe.auth, expired: true, detail: "login expired" };
+  }
   if (options.deep) {
     const [mcp, plugins] = await Promise.all([exec(["mcp", "list"], options.timeoutMs ?? 20_000), exec(["plugin", "list", "--json"], 15_000)]);
     const listed = parseClaudeMcpList(mcp.stdout);

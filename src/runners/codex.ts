@@ -114,7 +114,9 @@ export const codexRunner: Runner = {
     if (!ok) outcome.error = io.state.failed || lastLines(io.stderr) || lastLines(io.stdout) || `codex exited with code ${io.exitCode}${io.signal ? ` (${io.signal})` : ""}`;
     return outcome;
   },
-  resumeCommand(sessionId, cwd) {
-    return `cd ${shellQuote(cwd)} && codex resume ${shellQuote(sessionId)}`;
+  resumeCommand(sessionId, cwd, env) {
+    if (env?.SKILLHOOK_ACCOUNT) return `cd ${shellQuote(cwd)} && skillhook accounts exec ${shellQuote(env.SKILLHOOK_ACCOUNT)} -- codex resume ${shellQuote(sessionId)}`;
+    const home = env?.CODEX_HOME ? `CODEX_HOME=${shellQuote(env.CODEX_HOME)} ` : "";
+    return `cd ${shellQuote(cwd)} && ${home}codex resume ${shellQuote(sessionId)}`;
   },
 };

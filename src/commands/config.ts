@@ -22,7 +22,7 @@ interface ReloadAnswer {
 }
 
 /** Tells the running server, if any, to re-read the file; returns what it said, or undefined without a server. */
-async function notifyServer(ctx: Ctx): Promise<(ReloadAnswer & { base_url: string }) | undefined> {
+export async function notifyServer(ctx: Ctx): Promise<(ReloadAnswer & { base_url: string }) | undefined> {
   const running = await findRunningServer(ctx.paths);
   if (!running) return undefined;
   try {
@@ -33,7 +33,7 @@ async function notifyServer(ctx: Ctx): Promise<(ReloadAnswer & { base_url: strin
   }
 }
 
-function describeReload(answer: (ReloadAnswer & { base_url: string }) | undefined): string {
+export function describeReload(answer: (ReloadAnswer & { base_url: string }) | undefined): string {
   if (!answer) return "";
   if (answer.ok === false || answer.error) return `\nThe server at ${answer.base_url} did not reload: ${answer.error ?? ""}${answer.message ? ` ${answer.message}` : ""}`.trimEnd();
   const parts: string[] = [];

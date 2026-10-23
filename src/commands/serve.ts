@@ -1,3 +1,4 @@
+import { AccountWatch } from "../account-watch.js";
 import { createControlHandlers } from "../cloud/control.js";
 import { CloudLink } from "../cloud/link.js";
 import { localBaseUrl } from "../client.js";
@@ -44,9 +45,10 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   const store = ctx.store();
   const deliveryLog = new DeliveryLog(ctx.paths.jobsDir, () => config.deliveries);
   const secrets = () => ctx.secrets();
-  const readiness = new ReadinessCache({ config: () => config, env: () => baseRunEnv({ secrets: secrets(), fileSecrets: readEnvFile(ctx.paths.envFile), processEnv: ctx.io.env }), ttlMs: () => config.health.readiness_cache_seconds * 1000, events });
+  const readiness = new ReadinessCache({ config: () => config, env: () => baseRunEnv({ secrets: secrets(), fileSecrets: readEnvFile(ctx.paths.envFile), processEnv: ctx.io.env }), secrets, ttlMs: () => config.health.readiness_cache_seconds * 1000, events });
   const queue = new JobQueue({ store, config, registry, secrets, fileSecrets: () => readEnvFile(ctx.paths.envFile), logger, events, readiness });
   const scheduler = new Scheduler({ registry, store, queue, config, logger, events });
+  const accounts = new AccountWatch({ config, paths: ctx.paths, events, logger, readiness, registry, store, secrets, baseEnv: () => baseRunEnv({ secrets: secrets(), fileSecrets: readEnvFile(ctx.paths.envFile), processEnv: ctx.io.env }) });
   const startedAt = new Date().toISOString();
   let link: CloudLink | undefined;
   const health = new HealthCache(ctx.paths, { ttlMs: () => config.health.cache_seconds * 1000, options: () => ({ env: ctx.io.env, timeoutMs: config.health.probe_timeout_seconds * 1000, live: () => ({ started_at: startedAt, queue: queue.stats() }), cloud: () => link?.status() }), events });
@@ -64,6 +66,7 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
     }
     events.emit("server.stopping", { reason, running: queue.stats().running });
     scheduler.stop();
+    accounts.stop();
     server.close();
     await link?.stop(reason);
     queue.preservePendingOrder();
@@ -94,6 +97,7 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   if (recovered.interrupted.length) logger.warn("marked jobs interrupted from a previous run", { jobs: recovered.interrupted.map((j) => j.id) });
   for (const job of recovered.queued) queue.enqueue(job);
   scheduler.start();
+  accounts.start();
 
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);

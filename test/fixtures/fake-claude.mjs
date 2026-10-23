@@ -28,12 +28,63 @@ if (args[0] === "--version") {
   process.stdout.write("2.1.270 (Claude Code)\n");
   process.exit(0);
 }
+// Account state under CLAUDE_CONFIG_DIR: `logged-out`, `expired` (a login that ran out), `account` (the email),
+// `usage.json` (what `get_usage` answers), `limited` (runs fail with a usage limit and a rejected rate_limit_event).
+const loggedIn = () => process.env.FAKE_CLAUDE_AUTH !== "out" && stateFile("logged-out") === undefined && stateFile("expired") === undefined && !(process.env.FAKE_CLAUDE_AUTH_TOKEN_ONLY && !process.env.CLAUDE_CODE_OAUTH_TOKEN);
+const accountEmail = () => (stateFile("account") ?? "").trim() || undefined;
 if (args[0] === "auth" && args[1] === "status") {
-  const loggedIn = process.env.FAKE_CLAUDE_AUTH !== "out" && stateFile("logged-out") === undefined;
+  if (args.includes("--text")) {
+    process.stdout.write(stateFile("expired") !== undefined ? "Login: Expired — log in again\nEmail: fake@example.com\n" : loggedIn() ? `Login: Claude Max account\nEmail: ${accountEmail() ?? "fake@example.com"}\n` : "Not logged in. Run claude auth login to authenticate.\n");
+    process.exit(0);
+  }
   // The real CLI adds the account; a file named `account` in CLAUDE_CONFIG_DIR stands in for one here.
-  const email = loggedIn ? stateFile("account") : undefined;
-  process.stdout.write(`${JSON.stringify({ loggedIn, authMethod: loggedIn ? "claude.ai" : "none", apiProvider: "firstParty", analyticsDisabled: false, ...(email ? { email: email.trim() } : {}) }, null, 2)}\n`);
+  const email = loggedIn() ? accountEmail() : undefined;
+  process.stdout.write(`${JSON.stringify({ loggedIn: loggedIn(), authMethod: loggedIn() ? "claude.ai" : "none", apiProvider: "firstParty", analyticsDisabled: false, ...(email ? { email } : {}) }, null, 2)}\n`);
   process.exit(0); // the real CLI exits 0 either way
+}
+if (args[0] === "auth" && args[1] === "login") {
+  if (!configDir) process.exit(0);
+  const { rmSync } = await import("node:fs");
+  rmSync(`${configDir}/logged-out`, { force: true });
+  rmSync(`${configDir}/expired`, { force: true });
+  writeFileSync(`${configDir}/account`, `${process.env.FAKE_CLAUDE_LOGIN_EMAIL ?? "fake@example.com"}\n`);
+  process.stdout.write("Login successful.\n");
+  process.exit(0);
+}
+if (args[0] === "auth" && args[1] === "logout") {
+  if (configDir) writeFileSync(`${configDir}/logged-out`, "");
+  process.stdout.write("Successfully logged out from your Anthropic account.\n");
+  process.exit(0);
+}
+if (args[0] === "setup-token") {
+  process.stdout.write(`Your OAuth token (valid for 1 year):\n\nsk-ant-oat01-${"x".repeat(80)}\n\nStore this token securely.\n`);
+  process.exit(0);
+}
+// The control protocol (`-p --input-format stream-json`): what the Agent SDK and skillhook's account probe speak.
+// Answers `initialize`, `get_usage` and `get_status` in the captured real shapes; never sends a prompt anywhere.
+if (args.includes("--input-format") && args[args.indexOf("--input-format") + 1] === "stream-json") {
+  if (process.env.FAKE_CLAUDE_RECORD) writeFileSync(process.env.FAKE_CLAUDE_RECORD, JSON.stringify({ args, env: { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? null, CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN ? "set" : null, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ? "set" : null } }, null, 2));
+  const { createInterface } = await import("node:readline");
+  const reply = (id, response) => process.stdout.write(`${JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: id, response } })}\n`);
+  for await (const line of createInterface({ input: process.stdin })) {
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (message.type !== "control_request") continue;
+    const subtype = message.request?.subtype;
+    const expired = stateFile("expired") !== undefined;
+    if (subtype === "initialize") reply(message.request_id, { commands: [], models: [], account: loggedIn() ? { email: accountEmail() ?? "fake@example.com", subscriptionType: "max", tokenSource: process.env.CLAUDE_CODE_OAUTH_TOKEN ? "CLAUDE_CODE_OAUTH_TOKEN" : "claude.ai", apiProvider: "firstParty" } : { tokenSource: "none", apiProvider: "firstParty" }, claude_code_version: "2.1.270" });
+    else if (subtype === "get_usage") {
+      const usage = stateFile("usage.json");
+      const reset = (hours) => new Date(Date.now() + hours * 3_600_000).toISOString();
+      reply(message.request_id, usage ? JSON.parse(usage) : loggedIn() ? { session: { total_cost_usd: 0 }, subscription_type: "max", rate_limits_available: true, rate_limits: { five_hour: { utilization: 42, resets_at: reset(2) }, seven_day: { utilization: 17, resets_at: reset(90) }, model_scoped: [{ display_name: "Opus", utilization: 5, resets_at: reset(90) }] }, behaviors: null } : { session: { total_cost_usd: 0 }, subscription_type: null, rate_limits_available: false, rate_limits: null, behaviors: null });
+    } else if (subtype === "get_status") reply(message.request_id, { sections: [{ title: "Session", rows: [{ label: "Version", value: "2.1.270" }, ...(expired ? [{ label: "Login", value: "Expired — log in again" }] : loggedIn() ? [{ label: "Login", value: "Claude Max account" }] : []), ...(loggedIn() || expired ? [{ label: "Email", value: accountEmail() ?? "fake@example.com" }] : [])] }] });
+    else reply(message.request_id, {});
+  }
+  process.exit(0);
 }
 if (args[0] === "mcp" && args[1] === "list") {
   process.stdout.write(
@@ -79,7 +130,7 @@ const out = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
 
 out({ type: "system", subtype: "init", session_id: sessionId, model: model ?? "default", cwd: process.cwd(), tools: [] });
 if (process.env.FAKE_CLAUDE_RECORD) {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("SKILLHOOK_") || k.startsWith("FAKE_") || k.startsWith("ANTHROPIC_") || k === "CLAUDE_CONFIG_DIR" || k === "PATH" || k === "HOME"));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("SKILLHOOK_") || k.startsWith("FAKE_") || k.startsWith("ANTHROPIC_") || k === "CLAUDE_CONFIG_DIR" || k === "CLAUDE_CODE_OAUTH_TOKEN" || k === "PATH" || k === "HOME"));
   writeFileSync(process.env.FAKE_CLAUDE_RECORD, JSON.stringify({ args, prompt, env, cwd: process.cwd() }, null, 2));
 }
 const sleepMs = Number(process.env.FAKE_CLAUDE_SLEEP_MS ?? 0);
@@ -123,7 +174,15 @@ if (process.env.FAKE_CLAUDE_FAIL) {
   out({ type: "result", subtype: "error", is_error: true, result: process.env.FAKE_CLAUDE_FAIL, session_id: sessionId, total_cost_usd: 0, num_turns: 1, duration_ms: 5 });
   process.exit(1);
 }
-const failKind = process.env.FAKE_CLAUDE_FAIL_KIND ?? (stateFile("logged-out") !== undefined ? "auth" : undefined);
+const failKind = process.env.FAKE_CLAUDE_FAIL_KIND ?? (stateFile("logged-out") !== undefined || stateFile("expired") !== undefined ? "auth" : stateFile("limited") !== undefined ? "limited" : undefined);
+if (failKind === "limited") {
+  // A limited account, as the real CLI reports it: a rejected window on the rate-limit notice, then the error result.
+  const resetsAt = Math.floor(Date.now() / 1000) + 7200;
+  out({ type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "five_hour", utilization: 1, resetsAt, isUsingOverage: false } });
+  out({ type: "assistant", is_api_error_message: true, error: "rate_limit", message: { model: "<synthetic>", content: [{ type: "text", text: "You've hit your session limit · resets 6pm (UTC)" }] } });
+  out({ type: "result", is_error: true, subtype: "success", result: "You've hit your session limit · resets 6pm (UTC)", session_id: sessionId, total_cost_usd: 0, num_turns: 1, duration_ms: 5 });
+  process.exit(1);
+}
 if (failKind) {
   // Captured shapes: the real CLI reports an auth failure as `subtype: success` with `is_error: true`.
   const canned = {
@@ -143,6 +202,7 @@ if (failKind) {
 }
 if (process.env.FAKE_CLAUDE_WRITE_RESPONSE && process.env.SKILLHOOK_JOB_DIR) writeFileSync(`${process.env.SKILLHOOK_JOB_DIR}/response.json`, process.env.FAKE_CLAUDE_WRITE_RESPONSE);
 const summary = `FAKE OK model=${model ?? "default"} prompt_chars=${prompt.length} cwd=${process.cwd()}${process.env.FAKE_CLAUDE_ASK ? ` answer=${humanAnswer ? humanAnswer.text : "none"}` : ""}${args.includes("--resume") ? ` resumed=${args[args.indexOf("--resume") + 1]}` : ""}`;
+out({ type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitType: "five_hour", utilization: 0.31, resetsAt: Math.floor(Date.now() / 1000) + 3600 } });
 out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: summary }] }, session_id: sessionId });
 const result = { type: "result", subtype: "success", is_error: false, result: summary, session_id: sessionId, total_cost_usd: 0.0123, num_turns: 1, duration_ms: 5, usage: { input_tokens: 10, output_tokens: 5 } };
 // With --json-schema the real CLI adds the validated answer as `structured_output`.

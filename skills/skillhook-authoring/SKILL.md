@@ -30,7 +30,8 @@ Start from an example when one is close — `skillhook skills examples`, then `s
 
 | Key | Meaning | Default |
 | --- | --- | --- |
-| `runner` | `claude` \| `codex` \| `shell` | server `defaults.runner` |
+| `runner` | `claude` \| `codex` \| `shell` | server `defaults.runner`, else the runner of `account` |
+| `account` | the Claude Code / Codex login to run as (`skillhook accounts`), or a pool `[work, personal]` that fails over on a usage limit | server `defaults.accounts.<runner>`, else the machine's own login |
 | `model` | passed to `claude --model` / `codex -m`: `opus`, `sonnet`, `haiku`, `gpt-5-codex`, full ids | server `defaults.model` |
 | `effort` | `low` \| `medium` \| `high` \| `xhigh` \| `max` | runner default |
 | `cwd` | working directory, `~` allowed — the repository the agent should read or edit | the skill directory |
@@ -167,6 +168,7 @@ Guardrails are added for you: the agent already knows it runs unattended, that a
 - `concurrency: 1` (default) serializes runs of a skill — right for anything that edits a repository. Raise it only for read-only skills.
 - Under Codex, `workspace-write` confines writes to `cwd` plus the skill and job directories; desktop automation (`osascript`, GUI apps) may need `danger-full-access`.
 - `fallback: { runners: [codex] }` keeps a skill running when Claude Code is logged out (the job runs on Codex and says so in `runner_reason`); the triggers beyond `not_ready`, and `retry`, repeat a failed run and belong on idempotent skills only.
+- `account: work` runs a skill as a named account (`skillhook accounts add work --runner claude --login` once; `skillhook accounts` shows each account's state, plan, usage left and what needs attention); `account: [work, personal]` is a pool: the first usable account runs, and a run that hits a usage limit or a failed login moves to the next. Prefer it to `claude.config_dir` for anything new; it works for Codex too.
 - `claude.config_dir` runs a skill as another `claude login` (`CLAUDE_CONFIG_DIR=<dir> claude login` once); a top-level `claude: { config_dir: … }` in `skillhook.yaml` sets it for every hook of a repository.
 - `claude.max_budget_usd` caps spend per run for API-key users; `claude.allowed_tools` with `permission_mode: acceptEdits` narrows what an unattended agent may do.
 

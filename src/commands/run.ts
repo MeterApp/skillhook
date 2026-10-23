@@ -5,13 +5,14 @@ import { RunnerNameSchema, type RunnerName } from "../config.js";
 import { JobStore, type JobRecord } from "../jobs.js";
 import { createLogger } from "../logger.js";
 import { buildManualEvent, createAdhocJob, createManualJob, createOps, runAdhocLocally, runSkillLocally } from "../ops.js";
+import { poolFor } from "../accounts.js";
 import { prepareRun } from "../run.js";
 import { formatCommand } from "../runners/types.js";
 import type { Skill } from "../skills.js";
 import { bool, CommandError, formatDuration, list, num, parseHeaderFlags, readPayloadArg, str, UsageError, type Ctx } from "./shared.js";
 
 export const RUN_USAGE = `Usage: skillhook run <skill> [--payload JSON|@file|-] [--header "Name: value"]... [--runner claude|codex|shell]
-                           [--model M] [--effort E] [--cwd DIR] [--wait S] [--dry-run] [--json]
+                           [--model M] [--effort E] [--account NAME] [--cwd DIR] [--wait S] [--dry-run] [--json]
        skillhook run --file SKILL.md | --stdin [same options]
 
 Runs the skill in this process exactly as a webhook would, without HTTP or authentication.
@@ -44,7 +45,9 @@ export async function runCommand(ctx: Ctx): Promise<number> {
   if (fromStdin && payloadArg === "-") throw new UsageError("--payload - cannot be combined with --stdin (both read standard input)", RUN_USAGE);
   const { payload } = await readPayloadArg(ctx, payloadArg);
   const headers = parseHeaderFlags(list(ctx.flags, "header", "H"));
-  const overrides = { runner: runner as RunnerName | undefined, model: str(ctx.flags, "model"), effort: str(ctx.flags, "effort"), cwd: str(ctx.flags, "cwd") };
+  const account = str(ctx.flags, "account");
+  if (account && !Object.hasOwn(ops.config.accounts, account)) throw new CommandError(`No account "${account}" (skillhook accounts list)`);
+  const overrides = { runner: runner as RunnerName | undefined, model: str(ctx.flags, "model"), effort: str(ctx.flags, "effort"), cwd: str(ctx.flags, "cwd"), account };
 
   if (bool(ctx.flags, "dry-run")) {
     const scratch = new JobStore(mkdtempSync(path.join(tmpdir(), "skillhook-dry-")), { maxJobs: 10, dedupeWindowSeconds: 1 });
@@ -58,11 +61,14 @@ export async function runCommand(ctx: Ctx): Promise<number> {
       skill = installed as Skill;
       job = createManualJob(ops, { skill, payload, headers, trigger: "cli", overrides }, scratch);
     }
+    // The account the queue would try first (it may pick another of the pool when that one is not usable then).
+    const firstAccount = poolFor(skill, ops.config, job.runner, account)[0];
+    if (firstAccount) job = { ...job, account: firstAccount };
     const event = skillMd !== undefined ? scratch.readEvent(job.id) : buildManualEvent({ skill, payload, headers, trigger: "cli" }, job.id);
     const prepared = prepareRun({ skill, config: ops.config, secrets: ops.secrets(), fileSecrets: ops.fileSecrets(), store: scratch, job, event, cwd: overrides.cwd, writePrompt: false });
     const envNames = Object.keys(prepared.invocation.env).sort();
     const human = [
-      `# dry run: ${skill.name} via ${prepared.runner.name}${prepared.ctx.model ? ` (${prepared.ctx.model})` : ""}${skillMd !== undefined ? " (ad-hoc SKILL.md)" : ""}`,
+      `# dry run: ${skill.name} via ${prepared.runner.name}${prepared.ctx.model ? ` (${prepared.ctx.model})` : ""}${job.account ? ` as account ${job.account}` : ""}${skillMd !== undefined ? " (ad-hoc SKILL.md)" : ""}`,
       `cwd: ${prepared.invocation.cwd}`,
       `timeout: ${prepared.ctx.timeoutSeconds}s`,
       `env: ${envNames.join(", ")}`,
@@ -75,13 +81,13 @@ export async function runCommand(ctx: Ctx): Promise<number> {
       prepared.runner.name === "codex" ? "" : "\nstdin (prompt):",
       prepared.invocation.stdin ?? "",
     ].join("\n");
-    ctx.print(human, { dry_run: true, skill: skill.name, adhoc: skillMd !== undefined, runner: prepared.runner.name, model: prepared.ctx.model ?? null, effort: prepared.ctx.effort ?? null, cwd: prepared.invocation.cwd, timeout_seconds: prepared.ctx.timeoutSeconds, command: [prepared.invocation.command, ...prepared.invocation.args], env_names: envNames, guardrails: prepared.built.guardrails, prompt: prepared.built.prompt, stdin: prepared.invocation.stdin });
+    ctx.print(human, { dry_run: true, skill: skill.name, adhoc: skillMd !== undefined, runner: prepared.runner.name, model: prepared.ctx.model ?? null, effort: prepared.ctx.effort ?? null, cwd: prepared.invocation.cwd, timeout_seconds: prepared.ctx.timeoutSeconds, command: [prepared.invocation.command, ...prepared.invocation.args], account: job.account ?? null, env_names: envNames, guardrails: prepared.built.guardrails, prompt: prepared.built.prompt, stdin: prepared.invocation.stdin });
     return 0;
   }
 
   const waitMs = num(ctx.flags, "wait") ? (num(ctx.flags, "wait") as number) * 1000 : undefined;
   const announce = (j: JobRecord, skillName: string) => {
-    if (!ctx.json) ctx.warn(`▶ job ${j.id}: ${skillName} via ${j.runner}${j.model ? ` (${j.model})` : ""}${j.adhoc ? " (ad-hoc SKILL.md)" : ""} — ${ops.store.pathsFor(j.id).dir}`);
+    if (!ctx.json) ctx.warn(`▶ job ${j.id}: ${skillName} via ${j.runner}${j.model ? ` (${j.model})` : ""}${j.account_requested ? ` as ${j.account_requested}` : ""}${j.adhoc ? " (ad-hoc SKILL.md)" : ""} — ${ops.store.pathsFor(j.id).dir}`);
   };
   const job =
     skillMd !== undefined
