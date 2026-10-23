@@ -131,6 +131,57 @@ A window at 100% marks the account as limited until that window resets. A window
 `account_policy.usage_poll_minutes` reads every account's usage that often (off by default, as t3code polls every 5
 minutes); `skillhook accounts` shows the last reading and when it was taken.
 
+## MCP servers, connectors and plugins
+
+Every account has its own configuration directory, so its runs can get different MCP servers, claude.ai or ChatGPT
+connectors and plugins than the machine's own login, and each one that uses OAuth needs logging in as that account.
+`skillhook accounts show <name> --mcp` (or `accounts --mcp`, `accounts check --mcp`, MCP `list_accounts {mcp: true}`,
+`GET /accounts?mcp=1`) asks each account's own CLI, with the account's environment, which servers its runs get and
+whether each one connects:
+
+```text
+$ skillhook accounts show work --mcp
+…
+MCP servers: 3/5 connected
+  server                    state       from       tools  target / problem
+  ------------------------  ----------  ---------  -----  ---------------------------------
+  sentry                    needs auth  user              needs authentication
+  slack                     failed      user              Connection closed
+  claude.ai Gmail           connected   connector  5      https://mcp-proxy.example/gmail (claudeai-proxy)
+  plugin:supabase:supabase  connected   plugin     2      https://mcp.supabase.example/mcp (http)
+  stitch                    connected   user       3      https://stitch.example/mcp (http)
+  plugins    supabase@claude-plugins-official@0.1.15 (+1 disabled)
+
+  ! MCP server needs authentication: sentry; its tools are missing from this account's runs
+      → skillhook accounts exec work -- claude   then /mcp and authenticate sentry
+```
+
+It is slow, so only on request: every server connects, one process per account (in parallel), each bounded by
+`health.probe_timeout_seconds`. No prompt is sent.
+
+- **Claude Code** answers the control protocol's `mcp_status` request (`claude -p --input-format stream-json`, as for
+  usage, but with the account's MCP configuration and claude.ai connectors left on and hooks off). It lists the
+  user-, local- and managed-scope servers, plugins' servers (`plugin:<plugin>:<server>`) and the claude.ai connectors
+  (`from: connector`) with their state (`connected`, `needs-auth`, `failed` with the CLI's reason, `disabled`), and
+  skillhook asks again until none is still `pending`. The run starts in a temporary directory, so a repository's own
+  `.mcp.json` is not part of it. `claude plugin list --json` lists the plugins. A Claude Code without `mcp_status`
+  falls back to `claude mcp list` (no connectors).
+- **Codex**: `codex mcp list --json` says what is configured and enabled, and `codex app-server`'s
+  `mcpServerStatus/list` what connected, with how many tools, or why not (an OAuth server that needs logging in is
+  `needs_auth`). Servers the configuration does not list come from plugins or are the ChatGPT apps (`codex_apps`,
+  `from: connector`). `codex plugin list` lists the installed plugins.
+- The probe runs with a job's environment (the allow-list, without any skill's `env:`), so a server whose command or
+  headers need a variable from `.env` fails here with "Environment variable … is not set" as it would in a run of a
+  skill that does not list it.
+- The CLIs' answers include each server's headers and environment, tokens among them. skillhook keeps only the URL or
+  the command line, as `claude mcp list` prints it.
+
+Each server is `{name, target, transport?, state: connected|needs_auth|failed|disabled|unknown, detail?, source?,
+plugin?, tools?}`; `unknown` is a server still connecting when the time ran out, or one Codex did not start. The
+summary in `skillhook accounts --mcp` is `connected/not disabled` (for example `7/9 (1 need auth, 1 failed)`).
+`skillhook health` (deep, the default) has an `account <name> mcp <server>` row per server of each account in the
+"tools" group (an account with the machine's own directory is already covered by the `claude mcp` / `codex mcp` rows).
+
 ## What needs attention
 
 Each account lists its problems in `attention`, each with a level and the command that fixes it:
@@ -146,6 +197,9 @@ Each account lists its problems in `attention`, each with a level and the comman
 | `usage_high` | warn | a window at or above `usage_warn_percent` | — |
 | `duplicate_login` | warn | logged in as the same person as another account: a pool of both adds no capacity | log one in as someone else |
 | `unused` | info | no skill uses it and it is no runner's default | `account: <name>` in a skill |
+| `mcp_needs_auth` | warn | (`--mcp`) MCP servers that need logging in as this account; their tools are missing from its runs | `skillhook accounts exec <name> -- claude`, then `/mcp`; `skillhook accounts exec <name> -- codex mcp login <server>` |
+| `mcp_failed` | warn | (`--mcp`) MCP servers that fail to connect, with the reason | `skillhook accounts exec <name> -- claude mcp get <server>` (or `codex mcp get`); for a missing environment variable, `skillhook secret set <VAR>` and `env:` in the skills that need it |
+| `mcp_missing` | info | (`--mcp`) servers the machine's own login has and this account lacks (connectors are not compared) | add them as the account (`accounts exec <name> -- claude mcp add --scope user …`), or for Codex share `~/.codex` |
 
 Skills that name an account that does not exist, or one of another runner, are in `problems`.
 
@@ -170,10 +224,10 @@ These problems show up in several places:
 
 | Command | What it does |
 | --- | --- |
-| `skillhook accounts [list] [--usage] [--refresh] [--local]` | Every account in one table, then what needs attention. Uses the running server when there is one, sharing the readiness cache that jobs use. |
-| `accounts show <name> [--usage]` | One account in full: directory or secret, who, plan, each window with its reset, credits, last use, jobs and cost of the last 24 h, skills, and every problem with its fix. |
+| `skillhook accounts [list] [--usage] [--mcp] [--refresh] [--local]` | Every account in one table, then what needs attention. Uses the running server when there is one, sharing the readiness cache that jobs use. `--mcp` adds how many of each account's MCP servers connect. |
+| `accounts show <name> [--usage] [--mcp]` | One account in full: directory or secret, who, plan, each window with its reset, credits, last use, jobs and cost of the last 24 h, skills, with `--mcp` its MCP servers, connectors and plugins, and every problem with its fix. |
 | `accounts usage [name]` | Reads the usage windows now and keeps them. |
-| `accounts check [--usage] [--notify]` | Exit 1 when something needs a person. |
+| `accounts check [--usage] [--mcp] [--notify]` | Exit 1 when something needs a person (with `--mcp`, also an MCP server that needs authentication or fails). |
 | `accounts add <name> --runner claude\|codex [--config-dir D] [--share [DIR]\|--no-share] [--token\|--api-key] [--secret-env NAME] [--label L] [--default] [--login]` | Registers an account and makes its directory (mode 700). |
 | `accounts login <name> [--device-auth] [--console] [--sso] [--email E] [--token]` | Logs in in this terminal, then says who it is and warns about a duplicate. Over SSH, use `--device-auth` (Codex) or `--token` (Claude Code). |
 | `accounts logout <name>` | `claude auth logout` / `codex logout` for that directory. |

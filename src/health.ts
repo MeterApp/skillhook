@@ -14,8 +14,9 @@ import type { Paths } from "./paths.js";
 import { configProjects, SkillRegistry } from "./registry.js";
 import { jobOutcome } from "./response.js";
 import { resolveRunSettings } from "./run.js";
+import { probeAccountMcp } from "./account-mcp.js";
 import { accountAttention } from "./account-report.js";
-import { AccountStateStore, listAccounts, poolFor, refNames } from "./accounts.js";
+import { AccountStateStore, listAccounts, poolFor, refNames, withAccountEnv } from "./accounts.js";
 import { checkAccountReadiness } from "./readiness.js";
 import { baseRunEnv, claudeConfigDir, withClaudeConfigDir } from "./runners/env.js";
 import { commandParts } from "./runners/types.js";
@@ -314,6 +315,28 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
       if (account.disabled) check("runners", `account ${account.name}`, "skip", `disabled${used}`, `skillhook accounts enable ${account.name}`, data);
       else if (worst) check("runners", `account ${account.name}`, worst.level === "fail" ? "fail" : "warn", `${worst.message}${used}`, worst.fix, data);
       else check("runners", `account ${account.name}`, "ok", `${account.runner} ${readiness.detail}${used}`, undefined, data);
+    }
+    // Each account's own MCP servers, connectors and plugins (its configuration directory); the machine's own login is
+    // the `claude mcp` / `codex mcp` rows below.
+    if (deep) {
+      const probed = results.filter(({ account, readiness }) => readiness.ready && !account.disabled && account.kind !== "api_key" && !account.defaultDir);
+      const listings = await Promise.all(probed.map(async ({ account }) => ({ account, mcp: await probeAccountMcp(account, { command: config.runners[account.runner].command, env: withAccountEnv(probeEnv, account, secrets), timeoutMs }) })));
+      for (const { account, mcp } of listings) {
+        const as = `skillhook accounts exec ${account.name} --`;
+        if (mcp.error && !mcp.servers.length) check("tools", `account ${account.name} mcp`, "skip", mcp.error, `skillhook accounts show ${account.name} --mcp`, { account: account.name });
+        else if (!mcp.servers.length) check("tools", `account ${account.name} mcp`, "skip", `no MCP servers configured for ${account.name}`, undefined, { account: account.name });
+        else if (mcp.error) check("tools", `account ${account.name} mcp`, "warn", `list incomplete: ${mcp.error}`, `skillhook accounts show ${account.name} --mcp`, { account: account.name, servers: mcp.servers.length });
+        for (const server of mcp.servers) {
+          const name = `account ${account.name} mcp ${server.name}`;
+          const target = `${server.target}${server.transport ? ` (${server.transport})` : ""}`;
+          const data = { account: account.name, name: server.name, target: server.target, transport: server.transport ?? null, source: server.source ?? null, tools: server.tools ?? null, state: server.state };
+          // A warning, not a failure: the account still runs, without that server's tools.
+          if (server.state === "connected") check("tools", name, "ok", `${target}: connected${server.tools !== undefined ? `, ${server.tools} tool(s)` : ""}`, undefined, data);
+          else if (server.state === "needs_auth") check("tools", name, "warn", `${target}: ${server.detail ?? "needs authentication"}`, account.runner === "claude" ? `${as} claude   then /mcp and authenticate ${server.name}` : `${as} codex mcp login ${server.name}`, data);
+          else if (server.state === "failed") check("tools", name, "warn", `${target}: ${server.detail ?? "failed to connect"}`, `${as} ${account.runner} mcp get ${server.name}`, data);
+          else check("tools", name, "skip", `${target}: ${server.detail ?? "state unknown"}`, undefined, data);
+        }
+      }
     }
     for (const skill of loaded.skills) {
       if (!skill.enabled) continue;

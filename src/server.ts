@@ -810,7 +810,7 @@ export function createServer(deps: ServerDeps): Server {
       if (only && !Object.hasOwn(config.accounts, only)) throw new HttpError(404, "account_not_found", `no account "${only}"`);
       const secrets = deps.secrets();
       const baseEnv = baseRunEnv({ secrets, fileSecrets: readEnvFile(deps.paths.envFile), processEnv: process.env });
-      const report = await collectAccounts({ config, home: deps.paths.home, secrets, baseEnv, skills: deps.registry.list().skills, store, states: new AccountStateStore(deps.paths.jobsDir), readiness: deps.readiness, refresh: url.searchParams.get("refresh") === "1", usage: url.searchParams.get("usage") === "1", only, events: deps.events });
+      const report = await collectAccounts({ config, home: deps.paths.home, secrets, baseEnv, skills: deps.registry.list().skills, store, states: new AccountStateStore(deps.paths.jobsDir), readiness: deps.readiness, refresh: url.searchParams.get("refresh") === "1", usage: url.searchParams.get("usage") === "1", mcp: url.searchParams.get("mcp") === "1", timeoutMs: config.health.probe_timeout_seconds * 1000, only, events: deps.events });
       return send(res, 200, report);
     }
     if (segments[0] === "events" && segments.length === 1) {

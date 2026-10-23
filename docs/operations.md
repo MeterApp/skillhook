@@ -299,6 +299,7 @@ The deep checks, in the `tools` and `skills` groups:
 | `claude mcp <name>` (one per server `claude mcp list` knows) | connected | needs authentication (hint: authenticate in an interactive session; unattended runs cannot) | failed to connect, with the CLI's reason |
 | `claude mcp config` | | the CLI's own diagnostics: missing environment variables, conflicting scopes | |
 | `claude plugins` | installed plugins with versions; disabled ones marked | `claude plugin list` failed | (`skip` when none) |
+| `account <name> mcp <server>` (deep; one per MCP server, connector and plugin server of each usable account with a directory of its own, from its CLI with the account's environment) | connected (tool count shown) | needs authentication as the account (hint: `skillhook accounts exec <name> -- claude` then `/mcp`, or `… -- codex mcp login <server>`); fails to connect (the account still runs, without its tools) | (`skip` when disabled or still connecting) |
 | `codex mcp <name>` (from `codex mcp list --json`) | configured (Codex does not connect at list time; `auth_status` shown) | not logged in (hint: `codex mcp login <name>`) | (`skip` when disabled) |
 | `codex doctor` | every check of `codex doctor --json` ok | it reports warnings (each listed, first remediation as the hint) | it reports errors |
 | `skill <name>` | as in the doctor, plus the last run (`status (outcome) finished_at`) | | |

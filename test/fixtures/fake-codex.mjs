@@ -44,8 +44,9 @@ if (args[0] === "logout") {
   process.stdout.write("Successfully logged out\n");
   process.exit(0);
 }
-// `codex app-server`: JSON-RPC lines, answering initialize, account/read and account/rateLimits/read in the captured
-// real shapes. State under CODEX_HOME: `logged-out`, `auth.json` (its `email`), `rate-limits.json` (the answer).
+// `codex app-server`: JSON-RPC lines, answering initialize, account/read, account/rateLimits/read and
+// mcpServerStatus/list in the captured real shapes. State under CODEX_HOME: `logged-out`, `auth.json` (its `email`),
+// `rate-limits.json` and `mcp-status.json` (the answers), `no-mcp-status` (an older Codex without the method).
 if (args[0] === "app-server") {
   const { createInterface } = await import("node:readline");
   const loggedOut = process.env.FAKE_CODEX_AUTH === "out" || stateFile("logged-out") !== undefined;
@@ -69,6 +70,25 @@ if (args[0] === "app-server") {
       const canned = stateFile("rate-limits.json");
       const snapshot = { limitId: "codex", limitName: null, primary: { usedPercent: 48, windowDurationMins: 10080, resetsAt: Math.floor(Date.now() / 1000) + 86400 * 3 }, secondary: null, credits: { hasCredits: false, unlimited: false, balance: "0" }, individualLimit: null, spendControlReached: false, planType: "pro", rateLimitReachedType: null };
       send({ id: message.id, result: canned ? JSON.parse(canned) : { ordinaryUsageAllowed: true, rateLimits: snapshot, rateLimitsByLimitId: { codex: snapshot }, rateLimitResetCredits: { availableCount: 0, credits: [] }, accountId: "acct", rateLimitUpsell: null } });
+    } else if (message.method === "mcpServerStatus/list" && stateFile("no-mcp-status") === undefined) {
+      const canned = stateFile("mcp-status.json");
+      const server = (name, extra) => ({ name, runtimeStatus: null, pluginId: null, httpOrigin: null, serverInfo: null, serverCapabilities: null, tools: {}, toolsError: null, resources: [], resourceTemplates: [], authStatus: "unsupported", ...extra });
+      const tools = (n) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`tool${i}`, { name: `tool${i}` }]));
+      send({
+        id: message.id,
+        result: canned
+          ? JSON.parse(canned)
+          : {
+              data: [
+                server("analytics-mcp", { serverInfo: { name: "Google Analytics MCP Server", version: "1.0.0" }, tools: tools(9) }),
+                server("codex_app", { pluginId: "codex-app-tools@openai-bundled" }),
+                server("linear", { httpOrigin: "https://mcp.linear.example", toolsError: "MCP startup failed: failed to refresh OAuth tokens for server linear: OAuth authorization required", authStatus: "notLoggedIn" }),
+                server("car-image-catalog", { pluginId: "car-image@meterapp", httpOrigin: "https://carimage.example", serverInfo: { name: "car-image-catalog", version: "1.33.0" }, tools: tools(7), authStatus: "notLoggedIn" }),
+                server("codex_apps", { httpOrigin: "https://chatgpt.com", serverInfo: { name: "plugin-runtime", version: "0.1.0" }, tools: tools(12), authStatus: "bearerToken" }),
+              ],
+              nextCursor: null,
+            },
+      });
     } else if (message.id !== undefined) send({ id: message.id, error: { code: -32601, message: "method not found" } });
   }
   process.exit(0);
@@ -82,6 +102,13 @@ if (args[0] === "mcp" && args[1] === "list") {
         { name: "codex_app", enabled: false, disabled_reason: "disabled in config", transport: { type: "stdio", command: "./launch", args: [], env: {}, env_vars: [], cwd: "." }, startup_timeout_sec: 10, tool_timeout_sec: 3600, auth_status: "unsupported" },
         { name: "linear", enabled: true, disabled_reason: null, transport: { type: "streamable_http", url: "https://mcp.linear.example/mcp", bearer_token_env_var: null, http_headers: null }, startup_timeout_sec: null, tool_timeout_sec: null, auth_status: "not_logged_in" },
       ])}\n`,
+  );
+  process.exit(0);
+}
+if (args[0] === "plugin" && args[1] === "list") {
+  process.stdout.write(
+    stateFile("plugin-list.txt") ??
+      ["Marketplace `openai-bundled`", "/tmp/marketplace.json", "", "PLUGIN                       STATUS               VERSION  SOURCE", "car-image@meterapp           installed, enabled   1.0.0    /tmp/car-image", "browser@openai-bundled       installed, disabled  2.0.0    /tmp/browser", "expo@openai-bundled          not installed                 /tmp/expo", ""].join("\n"),
   );
   process.exit(0);
 }

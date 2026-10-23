@@ -164,6 +164,23 @@ describe("claude.config_dir", () => {
   });
 });
 
+describe("runHealth: accounts", () => {
+  it("lists each account's own MCP servers in deep mode, with the fix run as the account", async () => {
+    const paths = home();
+    writeConfigFile(paths, { runners: { claude: { command: FAKE_CLAUDE }, codex: { command: FAKE_CODEX } }, accounts: { work: { runner: "claude" }, pro: { runner: "codex" }, off: { runner: "claude", disabled: true } } });
+    for (const name of ["work", "pro", "off"]) mkdirSync(path.join(paths.home, "accounts", name), { recursive: true });
+    const report = await runHealth(paths, { ...OFFLINE, deep: true });
+    expect(byName(report, "account work mcp claude.ai Gmail")).toMatchObject({ group: "tools", status: "ok", detail: "https://mcp-proxy.example/gmail (claudeai-proxy): connected, 5 tool(s)", data: { account: "work", source: "connector", tools: 5 } });
+    expect(byName(report, "account work mcp sentry")).toMatchObject({ status: "warn", hint: "skillhook accounts exec work -- claude   then /mcp and authenticate sentry" });
+    expect(byName(report, "account work mcp slack")).toMatchObject({ status: "warn", detail: "npx mcp-remote https://slack.example/mcp (stdio): Connection closed", hint: "skillhook accounts exec work -- claude mcp get slack" });
+    expect(byName(report, "account pro mcp linear")).toMatchObject({ status: "warn", hint: "skillhook accounts exec pro -- codex mcp login linear" });
+    expect(byName(report, "account pro mcp codex_app")).toMatchObject({ status: "skip" });
+    expect(report.checks.some((c) => c.name.startsWith("account off mcp"))).toBe(false);
+    // Not without deep: those probes connect to every server.
+    expect((await runHealth(paths, { ...OFFLINE, deep: false })).checks.some((c) => c.name.startsWith("account work mcp"))).toBe(false);
+  });
+});
+
 describe("HealthCache", () => {
   it("reuses a report within the TTL, shares one run between concurrent callers and emits health.changed on changes", async () => {
     const paths = home();

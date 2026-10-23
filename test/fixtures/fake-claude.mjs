@@ -61,10 +61,13 @@ if (args[0] === "setup-token") {
   process.exit(0);
 }
 // The control protocol (`-p --input-format stream-json`): what the Agent SDK and skillhook's account probe speak.
-// Answers `initialize`, `get_usage` and `get_status` in the captured real shapes; never sends a prompt anywhere.
+// Answers `initialize`, `get_usage`, `get_status` and `mcp_status` in the captured real shapes; never sends a prompt
+// anywhere. `mcp_status` answers `mcp-status.json` from CLAUDE_CONFIG_DIR, else a canned list whose first answer still
+// has a server `pending` (as the real CLI does while it connects); `no-mcp-status` there makes it refuse (an older CLI).
 if (args.includes("--input-format") && args[args.indexOf("--input-format") + 1] === "stream-json") {
   if (process.env.FAKE_CLAUDE_RECORD) writeFileSync(process.env.FAKE_CLAUDE_RECORD, JSON.stringify({ args, env: { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? null, CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN ? "set" : null, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ? "set" : null } }, null, 2));
   const { createInterface } = await import("node:readline");
+  let mcpAsked = 0;
   const reply = (id, response) => process.stdout.write(`${JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: id, response } })}\n`);
   for await (const line of createInterface({ input: process.stdin })) {
     let message;
@@ -81,6 +84,29 @@ if (args.includes("--input-format") && args[args.indexOf("--input-format") + 1] 
       const usage = stateFile("usage.json");
       const reset = (hours) => new Date(Date.now() + hours * 3_600_000).toISOString();
       reply(message.request_id, usage ? JSON.parse(usage) : loggedIn() ? { session: { total_cost_usd: 0 }, subscription_type: "max", rate_limits_available: true, rate_limits: { five_hour: { utilization: 42, resets_at: reset(2) }, seven_day: { utilization: 17, resets_at: reset(90) }, model_scoped: [{ display_name: "Opus", utilization: 5, resets_at: reset(90) }] }, behaviors: null } : { session: { total_cost_usd: 0 }, subscription_type: null, rate_limits_available: false, rate_limits: null, behaviors: null });
+    } else if (subtype === "mcp_status") {
+      mcpAsked++;
+      if (stateFile("no-mcp-status") !== undefined) {
+        process.stdout.write(`${JSON.stringify({ type: "control_response", response: { subtype: "error", request_id: message.request_id, error: "Unsupported control request subtype: mcp_status" } })}\n`);
+        continue;
+      }
+      const canned = stateFile("mcp-status.json");
+      const tools = (n) => Array.from({ length: n }, (_, i) => ({ name: `tool${i}` }));
+      reply(
+        message.request_id,
+        canned
+          ? JSON.parse(canned)
+          : {
+              mcpServers: [
+                // The real answer carries each server's headers and environment: a probe must never keep them.
+                { name: "stitch", status: mcpAsked > 1 ? "connected" : "pending", ...(mcpAsked > 1 ? { serverInfo: { name: "Stitch", version: "1" }, tools: tools(3) } : {}), config: { type: "http", url: "https://stitch.example/mcp", headers: { "X-Api-Key": "SECRET-HEADER-VALUE" } }, scope: "user", source: "user" },
+                { name: "sentry", status: "needs-auth", config: { type: "http", url: "https://mcp.sentry.example/mcp" }, scope: "user", source: "user" },
+                { name: "slack", status: "failed", error: "Connection closed", config: { type: "stdio", command: "npx", args: ["mcp-remote", "https://slack.example/mcp"], env: { SLACK_TOKEN: "SECRET-ENV-VALUE" } }, scope: "user", source: "user" },
+                { name: "plugin:supabase:supabase", status: "connected", serverInfo: { name: "supabase", version: "1" }, tools: tools(2), config: { type: "http", url: "https://mcp.supabase.example/mcp" }, scope: "dynamic", source: "plugin" },
+                { name: "claude.ai Gmail", status: "connected", serverInfo: { name: "gmail", version: "1" }, tools: tools(5), config: { type: "claudeai-proxy", url: "https://mcp-proxy.example/gmail", id: "mcpsrv_1" }, scope: "claudeai", source: "claudeai" },
+              ],
+            },
+      );
     } else if (subtype === "get_status") reply(message.request_id, { sections: [{ title: "Session", rows: [{ label: "Version", value: "2.1.270" }, ...(expired ? [{ label: "Login", value: "Expired — log in again" }] : loggedIn() ? [{ label: "Login", value: "Claude Max account" }] : []), ...(loggedIn() || expired ? [{ label: "Email", value: accountEmail() ?? "fake@example.com" }] : [])] }] });
     else reply(message.request_id, {});
   }

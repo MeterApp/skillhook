@@ -1,8 +1,10 @@
 // One view of every account for people and dashboards: is it usable, who is it, how much of its plan is left, what
-// ran on it, which skills use it, and what needs a person (each item with the command that fixes it). The same
+// ran on it, which skills use it, what needs a person (each item with the command that fixes it) and, when asked, the
+// MCP servers, connectors and plugins its runs get (src/account-mcp.ts). The same
 // `collectAccounts` answers `skillhook accounts`, `GET /accounts`, the MCP tool `list_accounts` and the health report.
+import { probeAccountMcp, type AccountMcp } from "./account-mcp.js";
 import { probeAccount } from "./account-probe.js";
-import { AccountStateStore, isLimited, listAccounts, peakUsage, poolFor, refNames, type AccountIdentity, type AccountKind, type AccountRunner, type AccountState, type AccountUsage, type ResolvedAccount } from "./accounts.js";
+import { AccountStateStore, defaultLoginDir, isLimited, listAccounts, peakUsage, poolFor, refNames, type AccountIdentity, type AccountKind, type AccountRunner, type AccountState, type AccountUsage, type ResolvedAccount } from "./accounts.js";
 import type { Config, RunnerName } from "./config.js";
 import type { Secrets } from "./env.js";
 import type { Events } from "./events.js";
@@ -17,7 +19,7 @@ export type AccountStatus = "ready" | "limited" | "expired" | "needs_login" | "m
 
 export interface AccountAttention {
   level: "fail" | "warn" | "info";
-  code: "disabled" | "not_installed" | "login_expired" | "not_logged_in" | "missing_secret" | "dir_missing" | "limited" | "usage_high" | "auth_failed" | "duplicate_login" | "unused" | "probe_failed";
+  code: "disabled" | "not_installed" | "login_expired" | "not_logged_in" | "missing_secret" | "dir_missing" | "limited" | "usage_high" | "auth_failed" | "duplicate_login" | "unused" | "probe_failed" | "mcp_needs_auth" | "mcp_failed" | "mcp_missing";
   message: string;
   /** The command that fixes it. */
   fix?: string;
@@ -60,6 +62,8 @@ export interface AccountView {
   default_for: RunnerName[];
   attention: AccountAttention[];
   readiness: RunnerReadiness;
+  /** Its MCP servers, connectors and plugins (only with `mcp`). */
+  mcp?: AccountMcp;
 }
 
 export interface AccountsReport {
@@ -86,6 +90,8 @@ export interface CollectAccountsInput {
   refresh?: boolean;
   /** Also ask each account's CLI for its identity and usage windows (one process per account) and keep the answer. */
   usage?: boolean;
+  /** Also ask each account's CLI which MCP servers, connectors and plugins its runs get, and whether they connect (slow: they all connect). */
+  mcp?: boolean;
   /** Only this account. */
   only?: string;
   events?: Events;
@@ -141,6 +147,44 @@ export function accountAttention(account: ResolvedAccount, readiness: RunnerRead
   if (context.duplicateOf) out.push({ level: "warn", code: "duplicate_login", message: `logged in as the same ${account.runner} account as "${context.duplicateOf}": a pool of both adds no capacity`, fix: `${login}  (as another account)` });
   if (!context.skills.length && !context.defaultFor.length && !account.disabled) out.push({ level: "info", code: "unused", message: "no skill uses it and it is no runner's default", fix: `account: ${account.name} in a skill, or skillhook accounts default ${account.name}` });
   return out;
+}
+
+function names(list: string[]): string {
+  return list.length > 4 ? `${list.slice(0, 4).join(", ")} and ${list.length - 4} more` : list.join(", ");
+}
+
+/**
+ * What needs a person about an account's MCP servers: servers that need authentication (their tools are missing from
+ * its runs until someone logs them in as this account), servers that fail to connect, and (info) servers the machine's
+ * own login has that this account lacks (`baseline`: that login's server names; connectors are per account, never compared).
+ */
+export function mcpAttention(account: Pick<ResolvedAccount, "name" | "runner">, mcp: AccountMcp, baseline?: string[]): AccountAttention[] {
+  const out: AccountAttention[] = [];
+  const as = `skillhook accounts exec ${account.name} --`;
+  const auth = mcp.servers.filter((s) => s.state === "needs_auth");
+  if (auth.length) {
+    const first = auth[0]!.name;
+    out.push({ level: "warn", code: "mcp_needs_auth", message: `MCP ${auth.length === 1 ? "server needs" : "servers need"} authentication: ${names(auth.map((s) => s.name))}; ${auth.length === 1 ? "its" : "their"} tools are missing from this account's runs`, fix: account.runner === "claude" ? `${as} claude   then /mcp and authenticate ${first}` : `${as} codex mcp login ${first}` });
+  }
+  const failed = mcp.servers.filter((s) => s.state === "failed");
+  if (failed.length) {
+    const first = failed[0]!;
+    // Runs get only the variables a skill lists (env:), and so does this probe: name the one the server misses.
+    const variable = failed.map((s) => /Environment variable (\S+) for MCP server/.exec(s.detail ?? "")?.[1]).find(Boolean);
+    out.push({ level: "warn", code: "mcp_failed", message: `MCP ${failed.length === 1 ? "server fails" : "servers fail"} to connect: ${failed.map((s) => `${s.name}${s.detail ? ` (${s.detail})` : ""}`).slice(0, 4).join(", ")}${failed.length > 4 ? ` and ${failed.length - 4} more` : ""}`, fix: variable ? `skillhook secret set ${variable}, and list it in env: of the skills that need the server` : `${as} ${account.runner} mcp get ${first.name}   (and check its command, URL or credentials)` });
+  }
+  if (baseline?.length && !mcp.error) {
+    const own = new Set(mcp.servers.map((s) => s.name));
+    const missing = baseline.filter((name) => !own.has(name));
+    if (missing.length) out.push({ level: "info", code: "mcp_missing", message: `lacks MCP ${missing.length === 1 ? "server" : "servers"} the machine's own ${account.runner} login has: ${names(missing)}`, fix: account.runner === "claude" ? `${as} claude mcp add --scope user ${missing[0]} …   (claude mcp get ${missing[0]} shows how the machine's login runs it)` : `${as} codex mcp add ${missing[0]} …, or share ~/.codex (share_from, skillhook accounts sync ${account.name})` });
+  }
+  return out;
+}
+
+/** Server names to compare accounts by: configured ones and plugins', not connectors (each account has its own). */
+function comparable(mcp: AccountMcp | undefined): string[] | undefined {
+  if (!mcp || mcp.error) return undefined;
+  return mcp.servers.filter((s) => s.source !== "connector").map((s) => s.name);
 }
 
 function statusOf(account: ResolvedAccount, readiness: RunnerReadiness, state: AccountState): AccountStatus {
@@ -220,10 +264,32 @@ export async function collectAccounts(input: CollectAccountsInput): Promise<Acco
     else byIdentity.set(key, account.name);
   }
 
+  // MCP servers, connectors and plugins: every account that can run (its CLI connects to all of them, so in parallel),
+  // and the machine's own login of each runner involved, to tell which servers an account lacks.
+  const mcp = new Map<string, AccountMcp>();
+  const ownDir = (runner: AccountRunner) => (runner === "claude" ? input.baseEnv.CLAUDE_CONFIG_DIR : input.baseEnv.CODEX_HOME) ?? defaultLoginDir(runner, input.baseEnv.HOME || undefined);
+  const baselines = new Map<AccountRunner, string[] | undefined>();
+  if (input.mcp) {
+    const probeMcp = (runner: AccountRunner, env: Record<string, string>) => probeAccountMcp({ runner }, { command: config.runners[runner].command, env, timeoutMs: input.timeoutMs });
+    const probed = views.filter(({ account, readiness }) => !account.disabled && account.kind !== "api_key" && readiness.ready);
+    const runners = [...new Set(probed.filter(({ account }) => account.dir !== ownDir(account.runner)).map(({ account }) => account.runner))];
+    await Promise.all([
+      ...probed.map(async ({ account }) => mcp.set(account.name, await probeMcp(account.runner, withAccountEnv(input.baseEnv, account, input.secrets)))),
+      ...runners.map(async (runner) => {
+        const registered = probed.find(({ account }) => account.runner === runner && account.dir === ownDir(runner));
+        if (!registered) baselines.set(runner, comparable(await probeMcp(runner, input.baseEnv)));
+      }),
+    ]);
+    for (const { account } of probed) if (account.dir === ownDir(account.runner)) baselines.set(account.runner, comparable(mcp.get(account.name)));
+    for (const { account, readiness } of views) if (!mcp.has(account.name) && !account.disabled && account.kind !== "api_key") mcp.set(account.name, { servers: [], error: readiness.ready ? "not probed" : `not probed: ${readiness.detail}`, checked_at: nowIso() });
+  }
+
   const out: AccountView[] = views.map(({ account, readiness, state }) => {
     const skills = usedBy.get(account.name) ?? [];
     const dflt = defaultFor(account.name);
+    const servers = mcp.get(account.name);
     const attention = accountAttention(account, readiness, state, config, { skills, defaultFor: dflt, duplicateOf: duplicates.get(account.name), now });
+    if (servers && readiness.ready) attention.push(...mcpAttention(account, servers, account.dir === ownDir(account.runner) ? undefined : baselines.get(account.runner)));
     const identity = state.identity ?? (readiness.identity ? { ...readiness.identity, checked_at: readiness.checked_at } : undefined);
     const status = statusOf(account, readiness, state);
     return {
@@ -250,6 +316,7 @@ export async function collectAccounts(input: CollectAccountsInput): Promise<Acco
       default_for: dflt,
       attention,
       readiness,
+      ...(servers ? { mcp: servers } : {}),
     };
   });
   return { accounts: out, problems, needs_attention: out.filter((v) => v.attention.some((a) => a.level !== "info")).map((v) => v.name), generated_at: nowIso() };

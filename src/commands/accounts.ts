@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { mcpSummary } from "../account-mcp.js";
 import { describeAccountDir, collectAccounts, nextResetText, STATUS_TEXT, untilText, usageText, type AccountsReport, type AccountView } from "../account-report.js";
 import { AccountStateStore, accountsDir, defaultAccountSecretEnv, defaultLoginDir, getAccount, prepareAccountDir, refNames, resolveAccount, withAccountEnv, type AccountRunner, type ResolvedAccount } from "../accounts.js";
 import { adminRequest, findRunningServer } from "../client.js";
@@ -14,13 +15,14 @@ import { notifyDesktop } from "../notify.js";
 import { describeReload, notifyServer } from "./config.js";
 import { bool, CommandError, promptHidden, relativeTime, str, table, UsageError, type Ctx } from "./shared.js";
 
-export const ACCOUNTS_USAGE = `Usage: skillhook accounts [list] [--usage] [--refresh] [--local]
+export const ACCOUNTS_USAGE = `Usage: skillhook accounts [list] [--usage] [--mcp] [--refresh] [--local]
 
 Several Claude Code and Codex logins on one machine, each a name skills run as (\`account:\` in a skill; docs/accounts.md).
-  accounts [list] [--usage] [--refresh] [--local]   every account: state, who it is, plan, usage windows, last use, jobs (24h), what needs attention
-  accounts show <name> [--usage]                    one account in full, with the fix for each problem
+  accounts [list] [--usage] [--mcp] [--refresh] [--local]   every account: state, who it is, plan, usage windows, last use, jobs (24h), what needs attention
+                                                    (--mcp: also how many of its MCP servers connect; slow, they all connect)
+  accounts show <name> [--usage] [--mcp]            one account in full, with the fix for each problem (--mcp: its MCP servers, connectors and plugins)
   accounts usage [name]                             ask each account's CLI for its usage windows now (5h, weekly, per model, credits) and keep them
-  accounts check [--usage] [--notify]               exit 1 when an account needs a person (logged out, expired, limited, high usage, failing runs); --notify also shows a desktop notification
+  accounts check [--usage] [--mcp] [--notify]               exit 1 when an account needs a person (logged out, expired, limited, high usage, failing runs); --notify also shows a desktop notification
   accounts add <name> --runner claude|codex [--config-dir D] [--share [DIR]|--no-share] [--token|--api-key] [--secret-env NAME] [--label L] [--default] [--login]
                                                     a new account: its own directory under ~/.skillhook/accounts/<name> (or --config-dir; ~/.claude or ~/.codex is this machine's own login)
   accounts login <name> [--device-auth] [--console] [--email E] [--sso] [--token]   log the account in, in this terminal (claude auth login / codex login with its directory; --token: claude setup-token, kept in .env)
@@ -56,10 +58,10 @@ async function writeAccounts(ctx: Ctx, set: Record<string, unknown>, unset: stri
 }
 
 /** The report, from the running server when there is one (its readiness cache, which the jobs use), else in this process. */
-async function report(ctx: Ctx, options: { usage?: boolean; refresh?: boolean; only?: string; local?: boolean } = {}): Promise<AccountsReport & { via: "server" | "local" }> {
+async function report(ctx: Ctx, options: { usage?: boolean; mcp?: boolean; refresh?: boolean; only?: string; local?: boolean } = {}): Promise<AccountsReport & { via: "server" | "local" }> {
   const running = options.local || bool(ctx.flags, "local") ? undefined : await findRunningServer(ctx.paths);
   if (running) {
-    const params = new URLSearchParams({ ...(options.usage ? { usage: "1" } : {}), ...(options.refresh ? { refresh: "1" } : {}), ...(options.only ? { account: options.only } : {}) });
+    const params = new URLSearchParams({ ...(options.usage ? { usage: "1" } : {}), ...(options.mcp ? { mcp: "1" } : {}), ...(options.refresh ? { refresh: "1" } : {}), ...(options.only ? { account: options.only } : {}) });
     const response = await adminRequest<AccountsReport & { error?: string; message?: string }>(running.baseUrl, ctx.secrets(), `/accounts${params.size ? `?${params.toString()}` : ""}`, { timeoutMs: 120_000 });
     // 404: a server older than accounts; this process answers instead.
     if (response.status !== 404) {
@@ -71,7 +73,7 @@ async function report(ctx: Ctx, options: { usage?: boolean; refresh?: boolean; o
   const config = loadConfig(ctx.paths);
   const secrets = ctx.secrets();
   const baseEnv = baseRunEnv({ secrets, fileSecrets: readEnvFile(ctx.paths.envFile), processEnv: ctx.io.env });
-  const result = await collectAccounts({ config, home: ctx.paths.home, secrets, baseEnv, skills: ctx.registry().list().skills, store: ctx.store(), states: new AccountStateStore(ctx.paths.jobsDir), usage: options.usage, refresh: options.refresh, only: options.only });
+  const result = await collectAccounts({ config, home: ctx.paths.home, secrets, baseEnv, skills: ctx.registry().list().skills, store: ctx.store(), states: new AccountStateStore(ctx.paths.jobsDir), usage: options.usage, mcp: options.mcp, timeoutMs: config.health.probe_timeout_seconds * 1000, refresh: options.refresh, only: options.only });
   return { ...result, via: "local" };
 }
 
@@ -86,10 +88,44 @@ function jobsCell(view: AccountView): string {
   return `${j.succeeded}/${j.total} ok${j.usage_limit ? `, ${j.usage_limit} limited` : ""}${j.auth ? `, ${j.auth} auth` : ""}`;
 }
 
+/** "mcp 7/9" plus what is wrong ("2 need auth, 1 failed"). */
+function mcpCell(view: AccountView): string {
+  const mcp = view.mcp;
+  if (!mcp) return "";
+  if (!mcp.servers.length && mcp.error) return "?";
+  const auth = mcp.servers.filter((s) => s.state === "needs_auth").length;
+  const failed = mcp.servers.filter((s) => s.state === "failed").length;
+  const problems = [auth ? `${auth} need auth` : "", failed ? `${failed} failed` : ""].filter(Boolean).join(", ");
+  return `${mcpSummary(mcp)}${problems ? ` (${problems})` : ""}`;
+}
+
+const MCP_STATE_TEXT = { connected: "connected", needs_auth: "needs auth", failed: "failed", disabled: "disabled", unknown: "?" } as const;
+
+/** The account's servers as a table, connectors and plugins' servers marked, then its plugins. */
+function formatMcp(view: AccountView): string[] {
+  const mcp = view.mcp;
+  if (!mcp) return [];
+  const lines = ["", `MCP servers${mcp.via === "list" ? " (listed; this CLI version reports no connection details)" : ""}: ${mcpSummary(mcp) || "none"}${mcp.servers.length ? " connected" : ""}`];
+  if (mcp.servers.length) {
+    const order = { needs_auth: 0, failed: 1, unknown: 2, connected: 3, disabled: 4 } as const;
+    const sorted = [...mcp.servers].sort((a, b) => order[a.state] - order[b.state] || a.name.localeCompare(b.name));
+    const clip = (text: string) => (text.length > 100 ? `${text.slice(0, 99)}…` : text);
+    lines.push(table(sorted.map((s) => [s.name, MCP_STATE_TEXT[s.state], s.source ?? "", s.tools !== undefined ? String(s.tools) : "", clip(s.state === "connected" || !s.detail ? `${s.target}${s.transport ? ` (${s.transport})` : ""}` : s.detail)]), ["server", "state", "from", "tools", "target / problem"]).split("\n").map((line) => `  ${line}`).join("\n"));
+  }
+  if (mcp.error) lines.push(`  (${mcp.error})`);
+  if (mcp.plugins) {
+    const enabled = mcp.plugins.filter((p) => p.enabled);
+    const disabled = mcp.plugins.length - enabled.length;
+    lines.push(`  plugins    ${enabled.map((p) => `${p.id}${p.version ? `@${p.version}` : ""}`).join(", ") || "none enabled"}${disabled ? ` (+${disabled} disabled)` : ""}`);
+  }
+  return lines;
+}
+
 function formatList(result: AccountsReport): string {
   if (!result.accounts.length) return ["No accounts yet. Every run uses this machine's own claude / codex login.", "", "  skillhook accounts discover          find logins already on this machine", "  skillhook accounts add work --runner claude --login", "", "Then `account: work` (or a pool: `account: [work, personal]`) in a skill, or skillhook accounts default work."].join("\n");
-  const rows = result.accounts.map((v) => [`${v.name}${v.default_for.length ? " *" : ""}`, v.runner, stateCell(v), v.identity?.email ?? (v.kind === "login" ? "" : v.kind), v.identity?.plan ?? "", usageText(v.usage), nextResetText(v.usage), relativeTime(v.last_used_at), jobsCell(v), v.skills.length ? String(v.skills.length) : ""]);
-  const lines = [table(rows, ["account", "runner", "state", "who", "plan", "usage", "next reset", "last used", "jobs 24h", "skills"])];
+  const withMcp = result.accounts.some((v) => v.mcp);
+  const rows = result.accounts.map((v) => [`${v.name}${v.default_for.length ? " *" : ""}`, v.runner, stateCell(v), v.identity?.email ?? (v.kind === "login" ? "" : v.kind), v.identity?.plan ?? "", usageText(v.usage), nextResetText(v.usage), relativeTime(v.last_used_at), jobsCell(v), v.skills.length ? String(v.skills.length) : "", ...(withMcp ? [mcpCell(v)] : [])]);
+  const lines = [table(rows, ["account", "runner", "state", "who", "plan", "usage", "next reset", "last used", "jobs 24h", "skills", ...(withMcp ? ["mcp"] : [])])];
   if (result.accounts.some((v) => v.default_for.length)) lines.push("(* a runner's default: defaults.accounts)");
   const attention = result.accounts.flatMap((v) => v.attention.filter((a) => a.level !== "info").map((a) => `  ${a.level === "fail" ? "✗" : "!"} ${v.name}: ${a.message}${a.fix ? `\n      → ${a.fix}` : ""}`));
   for (const problem of result.problems) attention.push(`  ✗ skill ${problem.skill}: ${problem.message}`);
@@ -111,6 +147,7 @@ function formatShow(view: AccountView): string {
   const j = view.jobs_24h;
   lines.push(`  jobs 24h   ${j.total ? `${j.total} (${j.succeeded} succeeded, ${j.failed} failed${j.usage_limit ? `, ${j.usage_limit} usage limit` : ""}${j.auth ? `, ${j.auth} auth` : ""}${j.cost_usd ? `, $${j.cost_usd}` : ""})` : "none"}`);
   lines.push(`  skills     ${view.skills.join(", ") || "none"}${view.default_for.length ? `; default for ${view.default_for.join(", ")}` : ""}`);
+  lines.push(...formatMcp(view));
   if (view.attention.length) lines.push("", ...view.attention.map((a) => `  ${a.level === "fail" ? "✗" : a.level === "warn" ? "!" : "·"} ${a.message}${a.fix ? `\n      → ${a.fix}` : ""}`));
   return lines.join("\n");
 }
@@ -248,14 +285,14 @@ export async function accountsCommand(ctx: Ctx): Promise<number> {
     case "list":
     case "ls":
     case "status": {
-      const result = await report(ctx, { usage: bool(ctx.flags, "usage"), refresh: bool(ctx.flags, "refresh") });
+      const result = await report(ctx, { usage: bool(ctx.flags, "usage"), mcp: bool(ctx.flags, "mcp"), refresh: bool(ctx.flags, "refresh") });
       ctx.print(formatList(result), result);
       return 0;
     }
     case "show":
     case "get": {
       accountOrThrow(ctx, name);
-      const result = await report(ctx, { usage: bool(ctx.flags, "usage"), refresh: true, only: name });
+      const result = await report(ctx, { usage: bool(ctx.flags, "usage"), mcp: bool(ctx.flags, "mcp"), refresh: true, only: name });
       const view = result.accounts[0];
       if (!view) throw new CommandError(`No account "${name}"`);
       ctx.print(formatShow(view), view);
@@ -270,7 +307,7 @@ export async function accountsCommand(ctx: Ctx): Promise<number> {
       return 0;
     }
     case "check": {
-      const result = await report(ctx, { usage: bool(ctx.flags, "usage"), refresh: true });
+      const result = await report(ctx, { usage: bool(ctx.flags, "usage"), mcp: bool(ctx.flags, "mcp"), refresh: true });
       const items = result.accounts.flatMap((v) => v.attention.filter((a) => a.level !== "info").map((a) => ({ account: v.name, ...a })));
       const problems = result.problems;
       const failing = items.some((i) => i.level === "fail") || problems.length > 0;
