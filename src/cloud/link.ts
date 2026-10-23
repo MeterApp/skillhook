@@ -5,6 +5,7 @@
 // `disconnect` take effect within seconds. See docs/cloud.md and docs/cloud-protocol.md.
 import { createHash, randomInt, randomUUID } from "node:crypto";
 import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { listAccounts } from "../accounts.js";
 import type { Config } from "../config.js";
 import { readDeliveryBody, type DeliveryLog } from "../delivery-log.js";
 import { upsertEnvVar, type Secrets } from "../env.js";
@@ -25,7 +26,7 @@ import { processIngressItem } from "./ingress.js";
 import { CommandLedger, IngressLedger, Outbox } from "./outbox.js";
 import { machineInfo } from "./pair.js";
 import { LIMITS, PROTOCOL_VERSION, SyncResponseSchema, type CloudEventType, type CommandType, type EventEnvelope, type Hints, type LinkReason, type LinkState, type LinkStatus, type SyncRequest, type SyncResponse } from "./protocol.js";
-import { capText, redactUpload, scrubSecrets, secretValues } from "./redact.js";
+import { accountStateForUpload, capText, readinessForUpload, redactUpload, scrubSecrets, secretValues } from "./redact.js";
 import { buildSnapshot } from "./snapshot.js";
 
 export interface CloudLinkDeps {
@@ -108,7 +109,7 @@ export interface LinkStatusView extends LinkStatus {
 const RESNAPSHOT: ReadonlySet<string> = new Set(["skill.put", "skill.delete", "config.patch", "secret.generate", "secret.set"]);
 
 /** Event types that travel; `server.*` stays local. */
-const UPLOADED: Set<string> = new Set(["delivery.received", "job.queued", "job.started", "job.updated", "job.finished", "job.cancelled", "job.progress", "job.waiting_human", "job.answered", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed", "config.changed", "health.changed", "runners.changed"]);
+const UPLOADED: Set<string> = new Set(["delivery.received", "job.queued", "job.started", "job.updated", "job.finished", "job.cancelled", "job.progress", "job.waiting_human", "job.answered", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed", "config.changed", "health.changed", "runners.changed", "account.changed", "account.updated"]);
 
 export class CloudLink {
   private state: LinkState = "disabled";
@@ -162,6 +163,7 @@ export class CloudLink {
       schedules: deps.schedules,
       health: deps.health,
       readiness: deps.readiness,
+      events: deps.events,
       serverState: deps.serverState,
       logger: deps.logger,
       policy: () => this.policy(),
@@ -495,6 +497,16 @@ export class CloudLink {
         data = { changed, summary: report.summary, ok: report.ok, deep: report.deep, generated_at: report.generated_at };
         break;
       }
+      case "account.changed": {
+        const { account, runner, readiness, previous } = as("account.changed").data;
+        data = { account, runner, readiness: readinessForUpload(readiness), ...(previous ? { previous: readinessForUpload(previous) } : {}) };
+        break;
+      }
+      case "account.updated": {
+        const { account, reason, state } = as("account.updated").data;
+        data = { account, reason, state: accountStateForUpload(state) };
+        break;
+      }
       default:
         data = redactUpload(event.data);
     }
@@ -624,6 +636,13 @@ export class CloudLink {
       // Nothing else checks the runners until a job starts; their first readiness becomes runners.changed events, which
       // is how the dashboard learns whether claude and codex are installed and signed in.
       void this.deps.readiness?.all().catch((error: unknown) => this.deps.logger.warn("runner readiness check for the cloud failed", { error: errorMessage(error) }));
+      // The same for the accounts of `skillhook accounts`: their first readiness becomes account.changed events.
+      const readiness = this.deps.readiness;
+      if (readiness) {
+        for (const account of listAccounts(this.deps.config, this.deps.paths.home)) {
+          void readiness.get(account.runner, { account }).catch((error: unknown) => this.deps.logger.warn("account readiness check for the cloud failed", { account: account.name, error: errorMessage(error) }));
+        }
+      }
     }
     const snapshotDue = now - this.lastSnapshotAt >= (this.hints.snapshot_interval_s ?? cloud.snapshot_interval_seconds) * 1000;
     if (this.deps.health && now - this.lastHealthAt >= (this.hints.health_interval_s ?? cloud.health_interval_seconds) * 1000) {
