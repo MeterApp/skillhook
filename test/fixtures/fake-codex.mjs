@@ -30,6 +30,49 @@ if (args[0] === "login" && args[1] === "status") {
   process.stdout.write("Logged in using ChatGPT\n");
   process.exit(0);
 }
+if (args[0] === "login" && args[1] !== "status") {
+  if (codexHome) {
+    const { rmSync } = await import("node:fs");
+    rmSync(`${codexHome}/logged-out`, { force: true });
+    writeFileSync(`${codexHome}/auth.json`, JSON.stringify({ auth_mode: "chatgpt", email: process.env.FAKE_CODEX_LOGIN_EMAIL ?? "codex@example.com" }));
+  }
+  process.stdout.write("Successfully logged in\n");
+  process.exit(0);
+}
+if (args[0] === "logout") {
+  if (codexHome) writeFileSync(`${codexHome}/logged-out`, "");
+  process.stdout.write("Successfully logged out\n");
+  process.exit(0);
+}
+// `codex app-server`: JSON-RPC lines, answering initialize, account/read and account/rateLimits/read in the captured
+// real shapes. State under CODEX_HOME: `logged-out`, `auth.json` (its `email`), `rate-limits.json` (the answer).
+if (args[0] === "app-server") {
+  const { createInterface } = await import("node:readline");
+  const loggedOut = process.env.FAKE_CODEX_AUTH === "out" || stateFile("logged-out") !== undefined;
+  let email = "codex@example.com";
+  try {
+    email = JSON.parse(stateFile("auth.json") ?? "{}").email ?? email;
+  } catch {
+    /* not JSON */
+  }
+  const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
+  for await (const line of createInterface({ input: process.stdin })) {
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (message.method === "initialize") send({ id: message.id, result: { userAgent: "skillhook/0.153.4", codexHome: codexHome ?? "~/.codex", platformFamily: "unix", platformOs: "macos" } });
+    else if (message.method === "account/read") send({ id: message.id, result: loggedOut ? { account: null, requiresOpenaiAuth: true } : { account: { type: "chatgpt", email, planType: "pro" }, requiresOpenaiAuth: true } });
+    else if (message.method === "account/rateLimits/read") {
+      const canned = stateFile("rate-limits.json");
+      const snapshot = { limitId: "codex", limitName: null, primary: { usedPercent: 48, windowDurationMins: 10080, resetsAt: Math.floor(Date.now() / 1000) + 86400 * 3 }, secondary: null, credits: { hasCredits: false, unlimited: false, balance: "0" }, individualLimit: null, spendControlReached: false, planType: "pro", rateLimitReachedType: null };
+      send({ id: message.id, result: canned ? JSON.parse(canned) : { ordinaryUsageAllowed: true, rateLimits: snapshot, rateLimitsByLimitId: { codex: snapshot }, rateLimitResetCredits: { availableCount: 0, credits: [] }, accountId: "acct", rateLimitUpsell: null } });
+    } else if (message.id !== undefined) send({ id: message.id, error: { code: -32601, message: "method not found" } });
+  }
+  process.exit(0);
+}
 if (args[0] === "mcp" && args[1] === "list") {
   process.stdout.write(
     process.env.FAKE_CODEX_MCP_LIST ??
@@ -71,7 +114,7 @@ const out = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
 out({ type: "thread.started", thread_id: threadId });
 out({ type: "turn.started" });
 if (process.env.FAKE_CODEX_RECORD) writeFileSync(process.env.FAKE_CODEX_RECORD, JSON.stringify({ args, prompt, cwd: process.cwd() }, null, 2));
-const failKind = process.env.FAKE_CODEX_FAIL_KIND ?? (stateFile("logged-out") !== undefined ? "auth" : undefined);
+const failKind = process.env.FAKE_CODEX_FAIL_KIND ?? (stateFile("logged-out") !== undefined ? "auth" : stateFile("limited") !== undefined ? "usage_limit" : undefined);
 const failMessage =
   process.env.FAKE_CODEX_FAIL ??
   (failKind

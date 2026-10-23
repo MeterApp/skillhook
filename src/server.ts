@@ -4,7 +4,10 @@ import path from "node:path";
 import { parseAuthorizationScheme, safeEqual, verifyRequest, type InboundRequest } from "./auth.js";
 import { ConfigError, configExists, HOT_CONFIG_KEYS, RESTART_CONFIG_KEYS, updateConfig, type Config, type ConfigRef } from "./config.js";
 import { DELIVERY_OUTCOMES, readDeliveryBody, type DeliveryLog, type DeliveryOutcome } from "./delivery-log.js";
-import { ADMIN_TOKEN_ENV, type Secrets } from "./env.js";
+import { collectAccounts } from "./account-report.js";
+import { AccountStateStore } from "./accounts.js";
+import { ADMIN_TOKEN_ENV, readEnvFile, type Secrets } from "./env.js";
+import { baseRunEnv } from "./runners/env.js";
 import { EVENT_TYPES, type Events } from "./events.js";
 import type { LinkStatusView } from "./cloud/link.js";
 import { INGRESS_ID_HEADER } from "./cloud/ingress.js";
@@ -526,7 +529,7 @@ export function createServer(deps: ServerDeps): Server {
     deliveryId?: string;
     fingerprint?: string;
     ingressKey?: string;
-    overrides?: { runner?: RunnerName; model?: string; effort?: string };
+    overrides?: { runner?: RunnerName; model?: string; effort?: string; account?: string };
   }
 
   function createJob(args: CreateJobArgs): JobRecord {
@@ -559,6 +562,7 @@ export function createServer(deps: ServerDeps): Server {
       delivery_id: args.deliveryId,
       fingerprint: args.fingerprint,
       skill_file: args.skill.file,
+      account_requested: args.overrides?.account,
       event,
       rawBody: args.rawBody,
     });
@@ -799,6 +803,16 @@ export function createServer(deps: ServerDeps): Server {
       const runners = await deps.readiness.all({ refresh: url.searchParams.get("refresh") === "1" });
       return send(res, 200, { runners, default_runner: config.defaults.runner });
     }
+    if (segments[0] === "accounts" && segments.length === 1) {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (method !== "GET") throw new HttpError(405, "method_not_allowed", "use GET");
+      const only = url.searchParams.get("account") ?? undefined;
+      if (only && !Object.hasOwn(config.accounts, only)) throw new HttpError(404, "account_not_found", `no account "${only}"`);
+      const secrets = deps.secrets();
+      const baseEnv = baseRunEnv({ secrets, fileSecrets: readEnvFile(deps.paths.envFile), processEnv: process.env });
+      const report = await collectAccounts({ config, home: deps.paths.home, secrets, baseEnv, skills: deps.registry.list().skills, store, states: new AccountStateStore(deps.paths.jobsDir), readiness: deps.readiness, refresh: url.searchParams.get("refresh") === "1", usage: url.searchParams.get("usage") === "1", only, events: deps.events });
+      return send(res, 200, report);
+    }
     if (segments[0] === "events" && segments.length === 1) {
       requireAdmin(headers, req, viaProxy, ip);
       if (method !== "GET") throw new HttpError(405, "method_not_allowed", "use GET");
@@ -878,7 +892,8 @@ export function createServer(deps: ServerDeps): Server {
         if (!isPlainObject(body)) throw new HttpError(400, "bad_request", "expected a JSON object body");
         const payload = body.payload ?? {};
         const extraHeaders = isPlainObject(body.headers) ? Object.fromEntries(Object.entries(body.headers).map(([k, v]) => [k.toLowerCase(), String(v)])) : {};
-        const overrides = { runner: body.runner as RunnerName | undefined, model: body.model as string | undefined, effort: body.effort as string | undefined };
+        if (body.account !== undefined && (typeof body.account !== "string" || !Object.hasOwn(config.accounts, body.account))) throw new HttpError(400, "bad_request", `no account ${JSON.stringify(body.account)} (GET /accounts)`);
+        const overrides = { runner: body.runner as RunnerName | undefined, model: body.model as string | undefined, effort: body.effort as string | undefined, account: body.account as string | undefined };
         const kind = typeof payload === "string" ? "text" : "json";
         const job = createJob({ skill, trigger: "api", payload, kind, headers: { ...extraHeaders, "user-agent": headers["user-agent"] ?? "skillhook-api" }, query: {}, ip, method: "POST", path: `/skills/${skill.name}/run`, overrides });
         const wait = Math.min(Number(body.wait ?? 0) || parseWait(url, headers, config.max_wait_seconds), config.max_wait_seconds);
@@ -901,7 +916,7 @@ export function createServer(deps: ServerDeps): Server {
         if (failure && !(FAILURE_KINDS as string[]).includes(failure)) throw new HttpError(400, "bad_request", `unknown failure kind "${failure}" (${FAILURE_KINDS.join(", ")})`);
         const waitingParam = url.searchParams.get("waiting");
         const waiting = waitingParam === "1" || waitingParam === "true" ? true : undefined;
-        const page = store.listPage({ skill: url.searchParams.get("skill") ?? undefined, status: status as JobStatus | undefined, trigger: trigger as Trigger | undefined, outcome: outcome as JobOutcome | undefined, failure: failure as FailureKind | undefined, waiting, since, after: url.searchParams.get("after") ?? undefined, limit: pageLimit(url) });
+        const page = store.listPage({ skill: url.searchParams.get("skill") ?? undefined, account: url.searchParams.get("account") ?? undefined, status: status as JobStatus | undefined, trigger: trigger as Trigger | undefined, outcome: outcome as JobOutcome | undefined, failure: failure as FailureKind | undefined, waiting, since, after: url.searchParams.get("after") ?? undefined, limit: pageLimit(url) });
         return send(res, 200, { jobs: page.jobs.map(publicJob), queue: queue.stats(), next_after: page.next_after });
       }
       const id = segments[1] as string;

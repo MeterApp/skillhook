@@ -24,6 +24,8 @@ Log in as the same user that runs the server (the launchd LaunchAgent / systemd 
 
 ### Several Claude accounts on one machine
 
+Named accounts ([accounts.md](accounts.md)) are the managed way to do this, for Codex too: `skillhook accounts add work --runner claude --login`, then `account: work` (or a pool, `account: [work, personal]`) in a skill. skillhook picks a usable account per job, fails over on a usage limit, reads each account's plan and usage windows, and says which one needs a person. `claude.config_dir`, below, keeps working for a single directory.
+
 Claude Code keeps its login in its configuration directory (`~/.claude` unless `CLAUDE_CONFIG_DIR` says otherwise), so a machine can hold several logins side by side: `CLAUDE_CONFIG_DIR=~/.claude-acme claude login`, `CLAUDE_CONFIG_DIR=~/.claude-globex claude login`, … A skill picks one with `claude.config_dir`, and a repository picks one for all its hooks with a top-level `claude:` block in its [`skillhook.yaml`](projects.md#the-file):
 
 ```yaml

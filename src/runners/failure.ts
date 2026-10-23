@@ -22,8 +22,8 @@ export type FallbackTrigger = "not_ready" | "auth" | "usage_limit" | "rate_limit
 export const FALLBACK_TRIGGERS: FallbackTrigger[] = ["not_ready", "auth", "usage_limit", "rate_limit", "crash"];
 export const FallbackSchema = z
   .object({
-    /** Runners in order of preference, or targets with their own model and effort; `shell` requires `shell.command`. */
-    runners: z.array(z.union([z.enum(["claude", "codex", "shell"]), z.object({ runner: z.enum(["claude", "codex", "shell"]), model: z.string().optional(), effort: z.string().optional() }).strict()])).min(1),
+    /** Runners in order of preference, or targets with their own model, effort and account; `shell` requires `shell.command`. */
+    runners: z.array(z.union([z.enum(["claude", "codex", "shell"]), z.object({ runner: z.enum(["claude", "codex", "shell"]), model: z.string().optional(), effort: z.string().optional(), /** An account (`skillhook accounts`) of that runner; default: the runner's `defaults.accounts`. */ account: z.string().min(1).optional() }).strict()])).min(1),
     /** When to fall back. Default `[not_ready]`: only before the run, when the runner is not installed or not logged in. The others re-run a failed job on the next runner and are safe only for idempotent skills. */
     on: z.array(z.enum(FALLBACK_TRIGGERS as [FallbackTrigger, ...FallbackTrigger[]])).optional(),
   })

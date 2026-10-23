@@ -215,6 +215,14 @@ Once the cause is fixed (a secret pasted, a filter corrected, a skill installed)
 | `jobs.dedupe_in_flight` | `true` | Fold a delivery identical to a queued or running job of the same skill into that job; skills override with `dedupe.in_flight`. |
 | `jobs.inline_payload_max_bytes` | `200000` | Payload size inlined in prompts. |
 | `defaults.fallback` | none | `{ "runners": ["codex"], "on": ["not_ready"] }`: fallback runners for every skill that sets no `fallback:` of its own ([runners.md](runners.md#fallback-and-retry)). |
+| `accounts.<name>` | `{}` | A Claude Code or Codex login skills run as: `{ "runner": "claude"\|"codex", "kind": "login"\|"token"\|"api_key", "dir", "share_from", "secret_env", "label", "disabled" }`. Managed with `skillhook accounts`; see [accounts.md](accounts.md). |
+| `defaults.accounts.claude` / `.codex` | unset | The account, or pool of accounts, a runner uses when a skill names none (`skillhook accounts default …`). |
+| `account_policy.strategy` | `"ordered"` | How a pool picks: `ordered` (first usable, in the order listed) or `balanced` (most usage left, then least recently used). |
+| `account_policy.failover` | `true` | Run the job again as the pool's next account when it failed with `auth` or `usage_limit` before the agent produced anything. |
+| `account_policy.limited_cooldown_minutes` | `60` | How long a limited account is skipped when the CLI did not say when its limit resets. |
+| `account_policy.usage_poll_minutes` | `0` | While `serve` runs, read every account's usage windows this often through its own CLI (0: only on `skillhook accounts usage`). |
+| `account_policy.usage_warn_percent` | `85` | A usage window at or above this needs attention. |
+| `account_policy.notify` | `"none"` | `desktop`: `serve` shows a desktop notification when an account stops working, hits a limit or recovers. |
 | `health.readiness_cache_seconds` | `60` | How long a runner's readiness (installed, logged in) is trusted before a job re-checks it. |
 | `health.cache_seconds` | `60` | How long the running server reuses a health report (`GET /health/checks`, `skillhook health`, MCP `get_health`) before probing again; `refresh` bypasses it. |
 | `health.probe_timeout_seconds` | `20` | How long one slow probe may take (`claude mcp list` connects to every server; `codex doctor`). |
@@ -270,6 +278,8 @@ skillhook config set defaults.model sonnet
 | `project <dir>` | the linked repository's `skillhook.yaml` parses; hooks listed | | file missing or invalid; a hook that does not compile (`skip` when nothing is linked) |
 | `claude` / `codex` | CLI found (version shown) and logged in, or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` present | | not on PATH; not logged in (checked only for runners a skill or the default uses; probed with the same environment the jobs get, so `CLAUDE_CONFIG_DIR` / `CODEX_HOME` in `.env` apply) |
 | `claude <dir>` | the Claude Code configuration directory that skills name in `claude.config_dir` is logged in (the account and the skills are shown) | | the directory does not exist; not logged in (hint: `CLAUDE_CONFIG_DIR=<dir> claude login`) |
+| `account <name>` | the account ([accounts.md](accounts.md)) is logged in, or has its token or key (who it is and the skills using it are shown) | usage limit reached (skipped until the reset); a usage window above `account_policy.usage_warn_percent`; a duplicate login | not logged in; login expired; token or key missing; a run failed to authenticate (hint: `skillhook accounts login <name>`) |
+| `skill <name> account` (skills group) | | | the skill names an account that is not defined or belongs to another runner |
 | `tailscale` | the configured port is exposed via Funnel or Serve (URL shown) | CLI missing; not running; port not exposed | |
 | `public url` | `<public_url>/health` answers | did not answer (certificate still provisioning, or the server is down) | |
 | `server` | running (version, queue) | not running | |
@@ -360,6 +370,10 @@ The directory name and `name:` differ, the name has uppercase letters or undersc
 ### Job ends as `interrupted` after a restart
 
 The server (or the machine) stopped while the agent was running; the process was terminated and the job marked `interrupted` with `server restarted while the job was running` or `server shut down while the job was running`. If a session id was captured, `skillhook jobs resume <id>` reopens the agent session; otherwise re-send the delivery (`skillhook send <skill> --payload @<home>/jobs/<id>/payload.json`).
+
+### Job fails at once with `no usable claude account` (or `codex`)
+
+Every account of the skill's pool was skipped, and the error gives each one's reason: not logged in, login expired, usage limit until a given time, disabled, or not defined. `skillhook accounts` shows the same with the fix for each (`skillhook accounts login <name>`, `accounts enable <name>`, `accounts reset <name>` once a limit is over). A `fallback:` with `on: [not_ready]` sends such jobs to another runner instead. See [accounts.md](accounts.md#how-a-pool-picks).
 
 ### Job fails at once with `<runner> is not ready`
 

@@ -1360,6 +1360,7 @@ describe("cli", () => {
       doctor: [[]],
       health: [[], ["--quick", "--local"]],
       runners: [[], ["--refresh", "--local"]],
+      accounts: [[], ["list", "--usage"], ["show", "work"], ["usage"], ["check", "--notify"], ["add", "fresh", "--runner", "claude", "--login"], ["login", "work", "--token"], ["logout", "work"], ["default", "work"], ["enable", "work"], ["disable", "work"], ["reset", "work"], ["discover", "--add"], ["sync"], ["exec", "work"], ["remove", "work", "--purge"]],
       stats: [[], ["--since", "7d"]],
       config: [[], ["show"], ["get", "port"], ["set", "port", "9999"], ["unset", "runners"], ["reload"], ["path"]],
       cloud: [[], ["connect", "--code", "ABCD-EFGH", "--control"], ["disconnect"], ["status"], ["report", "Broken", "--body", "details"], ["login", "--key", "shc_placeholder-other-key", "--url", "https://cloud.example.invalid"], ["login", "--no-browser"], ["logout"], ["overview"], ["machines"], ["jobs", "--waiting"], ["job", job], ["tools"], ["tools", "answer_job"], ["answer_job", job, "yes"], ["save-skill", "mac-mini", "hello", "--content-file", "SKILL.md"], ["secret", "mac-mini", "hello", "--force"], ["billing", "--portal"], ["upgrade", "--plan", "pro", "--yearly"]],

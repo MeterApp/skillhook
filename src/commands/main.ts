@@ -14,6 +14,7 @@ import { healthCommand, HEALTH_USAGE } from "./health.js";
 import { jobCommand, jobUsage } from "./job.js";
 import { jobsCommand, JOBS_USAGE } from "./jobs.js";
 import { runnersCommand, RUNNERS_USAGE } from "./runners.js";
+import { accountsCommand, ACCOUNTS_USAGE } from "./accounts.js";
 import { statsCommand, STATS_USAGE } from "./stats.js";
 import { deliveriesCommand, DELIVERIES_USAGE } from "./deliveries.js";
 import { exposeCommand, EXPOSE_USAGE, urlCommand, URL_USAGE } from "./expose.js";
@@ -39,6 +40,7 @@ Setup
   doctor                                                   Check node, config, secrets, skills, claude/codex login, Tailscale, server, service
   health [--quick] [--refresh] [--no-network] [--local]     Doctor plus MCP servers, plugins, codex doctor, disk and last runs, grouped; via the running server when there is one
   runners [--refresh] [--local]                            Is each runner installed and logged in: what every job checks before it starts
+  accounts [list|show|usage|check|add|login|logout|default|discover|exec|remove …]   Several Claude / Codex logins: state, plan, usage left, what needs attention
   serve [--port N] [--host H] [--log-level L] [--pretty]   Run the webhook server in the foreground
   service install|uninstall|status|restart|logs [--lines N] [--follow]   Run the server at login (launchd / systemd --user)
   expose tailscale [--serve] [--port N] | status | off     Permanent HTTPS URL via Tailscale Funnel (or tailnet-only Serve)
@@ -55,11 +57,11 @@ Projects (a repository's skillhook.yaml: webhook name → shell command, SKILL.m
   projects [list] | init [dir] [--force]                  List linked projects and their hooks; write a starter skillhook.yaml and link it
 
 Running
-  run <skill> [--payload JSON|@file|-] [--header "K: v"]... [--runner R] [--model M] [--effort E] [--cwd DIR] [--wait S] [--dry-run]
+  run <skill> [--payload JSON|@file|-] [--header "K: v"]... [--runner R] [--model M] [--effort E] [--account A] [--cwd DIR] [--wait S] [--dry-run]
   run --file SKILL.md | --stdin [same options]             Run a SKILL.md that is not installed (kept with the job)
   send <skill> [--payload …] [--wait S] [--url BASE|--public|--local] [--header "K: v"]...   POST a signed test webhook
   schedules list | next <name> [--count N] | run <name> [--wait S]   Skills with a schedule: next and last runs; fire one now
-  jobs list [--skill S] [--status ST] [--outcome O] [--failure K] [--trigger T] [--waiting] [--since ISO] [--after ID] [--limit N] | show <id> [--result|--prompt|--stdout|--stderr] | logs <id> [-f]
+  jobs list [--skill S] [--account A] [--status ST] [--outcome O] [--failure K] [--trigger T] [--waiting] [--since ISO] [--after ID] [--limit N] | show <id> [--result|--prompt|--stdout|--stderr] | logs <id> [-f]
   jobs answer <id> ["<answer>"] [--option X]... [--by NAME] [--no-resume] [--wait S]   Answer a job that asked (live) or ended needs_human (resumes the session)
   jobs cancel <id> | replay <id> [--skip-filters] [--wait S] | resume <id> [--exec] | path <id> | prune [--keep N]
   deliveries list [--skill S] [--outcome O] [--since ISO] [--after ID] [--limit N] | show <id> [--body]   Every webhook received, whatever became of it
@@ -118,6 +120,8 @@ export const COMMANDS: Record<string, Command> = {
   doctor: { run: doctorCommand, usage: DOCTOR_USAGE },
   health: { run: healthCommand, usage: HEALTH_USAGE },
   runners: { run: runnersCommand, usage: RUNNERS_USAGE },
+  accounts: { run: accountsCommand, usage: ACCOUNTS_USAGE },
+  account: { run: accountsCommand, usage: ACCOUNTS_USAGE },
   stats: { run: statsCommand, usage: STATS_USAGE },
   config: { run: configCommand, usage: CONFIG_USAGE },
   cloud: { run: cloudCommand, usage: CLOUD_USAGE },

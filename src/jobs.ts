@@ -75,6 +75,10 @@ export interface JobRecord {
   runner_reason?: string;
   /** The runner the skill asked for, when `runner` is a fallback that took over. */
   runner_requested?: RunnerName;
+  /** The account the run used (`skillhook accounts`), when it used a named one; set once the job starts. */
+  account?: string;
+  /** The account asked for explicitly (`skillhook run --account`, a replay with `--account`); otherwise the skill's pool decides. */
+  account_requested?: string;
   /** Why a job that did not succeed failed, classified from the runner's output (see docs/runners.md#failure-kinds). Set for `failed` and `timed_out` jobs. */
   failure?: JobFailure;
   /** Earlier attempts of this job (a retry, or a fallback after a failed run); the record itself is the last one. */
@@ -127,6 +131,7 @@ export interface CreateJobInput {
   question?: JobQuestion;
   answer?: JobAnswer;
   runner_reason?: string;
+  account_requested?: string;
   event: WebhookEvent;
   rawBody?: Buffer;
 }
@@ -157,6 +162,7 @@ export function jobPathsFor(jobsDir: string, id: string): JobPaths {
 
 export interface JobAttempt {
   runner: RunnerName;
+  account?: string;
   started_at: string;
   finished_at: string;
   status: JobStatus;
@@ -166,6 +172,8 @@ export interface JobAttempt {
 
 export interface JobFilter {
   skill?: string;
+  /** Only jobs that ran with this account (`skillhook accounts`). */
+  account?: string;
   status?: JobStatus | JobStatus[];
   trigger?: Trigger | Trigger[];
   /** Failure kind of jobs that did not succeed. */
@@ -245,6 +253,7 @@ export class JobStore {
       question: input.question,
       answer: input.answer,
       runner_reason: input.runner_reason,
+      account_requested: input.account_requested,
       source: input.source,
     };
     for (const key of Object.keys(record) as (keyof JobRecord)[]) if (record[key] === undefined) delete record[key];
@@ -325,6 +334,7 @@ export class JobStore {
       const job = this.get(id);
       if (!job) continue;
       if (filter.skill && job.skill !== filter.skill) continue;
+      if (filter.account && job.account !== filter.account) continue;
       if (statuses && !statuses.includes(job.status)) continue;
       if (triggers && !triggers.includes(job.trigger)) continue;
       if (outcomes) {

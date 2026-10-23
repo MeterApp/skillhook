@@ -21,6 +21,7 @@ Related: [security.md](security.md) (authentication), [skills.md](skills.md) (fi
 | `GET` | `/health/checks` | admin | The grouped health report (`skillhook health`), cached; `?deep=0`, `?network=1`, `?refresh=1`. |
 | `GET` | `/doctor` | admin | The quick report (`skillhook doctor`), cached; `?network=0`, `?refresh=1`. |
 | `GET` | `/runners` | admin | Is each runner installed and logged in (what a job checks before it starts); `?refresh=1`. |
+| `GET` | `/accounts` | admin | Every account ([accounts.md](accounts.md)): state, who, plan, usage windows, jobs of the last 24 h, what needs attention; `?usage=1`, `?refresh=1`, `?account=<name>`. |
 | `GET` | `/stats` | admin | Numbers over jobs and deliveries: by status, outcome, runner, failure kind; durations, cost, tokens; per skill (`?since=24h`, `?until=`, `?skill=`). |
 | `GET`, `PATCH` | `/config` | admin | The live `skillhook.json` (defaults applied) with what applies live and what needs a restart; change keys in one validated write. |
 | `POST` | `/config/reload` | admin | Re-read `skillhook.json` (after editing it by hand). |
@@ -197,6 +198,10 @@ The quick flavour, as `skillhook doctor` prints it: `GET /health/checks?deep=0` 
 
 `{runners: [{runner, found, path?, version?, authenticated, method?, detail, hint?, ready, checked_at}], default_runner}` for `claude`, `codex` and `shell`: whether each is installed and logged in or given an API key, as the queue checks before every job ([runners.md](runners.md#readiness)). Answers are cached for `health.readiness_cache_seconds`; `?refresh=1` probes again.
 
+## `GET /accounts`
+
+`{accounts: [AccountView], problems: [{skill, message}], needs_attention: [name], generated_at}`. An `AccountView` is `{name, runner, kind, label?, dir, default_dir, managed, secret_env?, disabled, status, ready, detail, identity?: {email?, org?, plan?, checked_at}, usage?: {fetched_at, windows: [{id, label, used_percent, resets_at?, window_minutes?}], credits?, plan?, error?}, limited_until?, limited_reason?, last_used_at?, last_success_at?, last_failure?: {kind, at, job?, message?}, jobs_24h: {total, succeeded, failed, usage_limit, auth, cost_usd}, skills, default_for, attention: [{level: fail|warn|info, code, message, fix?}], readiness}`. `status` is `ready`, `limited`, `expired`, `needs_login`, `missing_secret`, `not_installed` or `disabled`. Readiness comes from the queue's cache (`?refresh=1` probes again). `?usage=1` also asks each account's CLI for its identity and usage windows, keeps them in `jobs/.accounts.json` and emits `account.updated`. `?account=<name>` returns only that account (`404 account_not_found` for an unknown one).
+
 ## `GET /skills`
 
 ```json
@@ -262,6 +267,7 @@ Body: a JSON object (anything else is `400 bad_request`).
 | `headers` | object | Simulated request headers, for `when: header:` filters and `{{headers.*}}`. |
 | `runner` | `claude` \| `codex` \| `shell` | Override for this run. |
 | `model`, `effort` | string | Overrides for this run. |
+| `account` | string | Run as this account instead of the skill's pool ([accounts.md](accounts.md)); its runner unless `runner` says otherwise. An unknown name is `400 bad_request`. |
 | `wait` | number | Seconds to wait for the result (also accepted as `?wait=`); clamped to `max_wait_seconds`. |
 
 The job is recorded with `trigger: "api"` and answered with the same shapes as a webhook. No webhook signature is checked and no `when` filter or dedupe applies. This is what `skillhook run` (via the MCP `run_skill` tool) uses when a server is running.
@@ -291,7 +297,7 @@ curl -sS -X POST -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" -H "Content-T
 
 ## `GET /jobs`
 
-Query: `skill=<name>`, `status=<queued|running|succeeded|failed|timed_out|cancelled|interrupted>`, `outcome=<completed|partial|needs_human|nothing_to_do|failed|unknown>` (derived for jobs recorded before outcomes existed; queued and running jobs never match), `trigger=<webhook|api|cli|mcp|schedule|replay|test|resume>`, `failure=<auth|usage_limit|rate_limit|budget|max_turns|not_found|timeout|crash|unknown>` (jobs that failed that way, see [runners.md](runners.md#failure-kinds)), `waiting=1` (only jobs waiting for a person: an unanswered question, or a finished job with outcome `needs_human` that nobody answered or resumed yet), `since=<ISO-8601>` (created at or after; whole seconds), `after=<job id>` (only older jobs: the `next_after` of the previous page), `limit=<n>` (default 50, at most 500). Newest first. An unknown `status`, `outcome`, `trigger` or `since` value is `400 bad_request`.
+Query: `skill=<name>`, `account=<name>` (jobs that ran as that account), `status=<queued|running|succeeded|failed|timed_out|cancelled|interrupted>`, `outcome=<completed|partial|needs_human|nothing_to_do|failed|unknown>` (derived for jobs recorded before outcomes existed; queued and running jobs never match), `trigger=<webhook|api|cli|mcp|schedule|replay|test|resume>`, `failure=<auth|usage_limit|rate_limit|budget|max_turns|not_found|timeout|crash|unknown>` (jobs that failed that way, see [runners.md](runners.md#failure-kinds)), `waiting=1` (only jobs waiting for a person: an unanswered question, or a finished job with outcome `needs_human` that nobody answered or resumed yet), `since=<ISO-8601>` (created at or after; whole seconds), `after=<job id>` (only older jobs: the `next_after` of the previous page), `limit=<n>` (default 50, at most 500). Newest first. An unknown `status`, `outcome`, `trigger` or `since` value is `400 bad_request`.
 
 ```json
 {
@@ -388,6 +394,8 @@ A `text/event-stream` of the server's event bus. Each message carries `id` (the 
 | `skill.changed` | `{name, action, source}` with `action` `added`, `changed` or `removed`, noticed when a lookup or listing reads the changed file |
 | `health.changed` | `{report, changed}`: a fresh health report whose checks differ from the previous one of the same flavour (`changed` lists `{name, from, to}`; the first report of a flavour has `from: null`) |
 | `runners.changed` | `{runner, readiness, previous?}`: a runner became usable or stopped being so (installed, logged in), as the readiness check sees it |
+| `account.changed` | `{account, runner, readiness, previous?}`: an account became usable or stopped being so (logged in, logged out, expired, token missing), as the readiness check before jobs (and `serve` at start) sees it |
+| `account.updated` | `{account, reason: limited\|recovered\|auth_failed\|usage, state}`: a run hit a usage limit or failed to authenticate, the account works again, or its usage windows were read; `state` is its entry of `jobs/.accounts.json` |
 | `config.changed` | `{changed, applied, restart_required, pending_restart, config}`: `skillhook.json` was re-read; `applied` took effect now, `restart_required` at the next start |
 
 ```bash

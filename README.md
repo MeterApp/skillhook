@@ -253,7 +253,7 @@ skillhook schedules run weekly-review --wait 60   # fire one now, with a schedul
 | Default permissions | `bypassPermissions`; tighten with `claude.permission_mode: acceptEdits` + `allowed_tools` | `workspace-write` sandbox with network; `read-only` or `danger-full-access` per skill | your script |
 | Resume later | `claude --resume <session>` (printed by `skillhook jobs resume <id>`) | `codex resume <thread>` | n/a |
 
-Set the default once (`skillhook config set defaults.runner codex`, `skillhook config set defaults.model sonnet`) and override per skill with `skillhook.runner` / `skillhook.model` / `skillhook.effort`. Cheap models suit acknowledgement-style skills; put `opus` or a high `effort` on skills that read code. Details, environment allow-list and output parsing: [docs/runners.md](docs/runners.md).
+Set the default once (`skillhook config set defaults.runner codex`, `skillhook config set defaults.model sonnet`) and override per skill with `skillhook.runner` / `skillhook.model` / `skillhook.effort`. Several subscriptions on one machine (a work and a personal Claude Max, a ChatGPT Pro) are [accounts](docs/accounts.md): `skillhook accounts add work --runner claude --login`, then `account: work` or a pool `account: [work, personal]` that fails over when one hits its usage limit. Cheap models suit acknowledgement-style skills; put `opus` or a high `effort` on skills that read code. Details, environment allow-list and output parsing: [docs/runners.md](docs/runners.md).
 
 ## Security model
 
@@ -359,6 +359,7 @@ Agents reading this repository should start with [`AGENTS.md`](AGENTS.md) (layou
 | `skillhook init [--runner claude\|codex\|shell] [--model M] [--port N] [--force]` | Create `~/.skillhook` with config, secrets and the `hello` skill. |
 | `skillhook doctor` | Check Node, disk, config, secrets, skills, Claude/Codex login, Tailscale, public URL, server and service; exit 1 on failures. |
 | `skillhook runners [--refresh] [--local]` | Is each runner installed and logged in (or given an API key): what every job checks before it starts. |
+| `skillhook accounts [list\|show\|usage\|check\|add\|login\|logout\|default\|enable\|disable\|reset\|discover\|sync\|exec\|remove]` | Several Claude Code and Codex logins on one machine: who each is, plan and usage left (5h, weekly, per model), last use, jobs, and what needs attention; pools with failover on usage limits. See [docs/accounts.md](docs/accounts.md). |
 | `skillhook health [--quick] [--refresh] [--no-network] [--local]` | The doctor plus every MCP server Claude Code and Codex know, plugins, `codex doctor` and each skill's last run, grouped; via the running server's cached report when there is one. |
 | `skillhook serve [--port N] [--host H] [--pretty] [--log-level L]` | Run the webhook server in the foreground. |
 | `skillhook service install\|uninstall\|status\|restart\|logs [--lines N] [-f]` | Run the server at login (launchd on macOS, systemd `--user` on Linux). |

@@ -78,6 +78,8 @@ export const CLOUD_EVENT_TYPES = [
   "health.changed",
   "health.report",
   "runners.changed",
+  "account.changed",
+  "account.updated",
 ] as const;
 export type CloudEventType = (typeof CLOUD_EVENT_TYPES)[number];
 
