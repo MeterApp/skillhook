@@ -108,7 +108,7 @@ export interface ProbeAccountOptions {
   timeoutMs?: number;
 }
 
-interface LineSession {
+export interface LineSession {
   send(message: unknown): void;
   end(): void;
 }
@@ -117,7 +117,7 @@ interface LineSession {
  * Starts the CLI and feeds it JSON lines: `onMessage` sees every JSON line it prints and returns true once it has
  * what it wants. Resolves with the reason the conversation ended; never throws.
  */
-function converse(command: string, args: string[], env: Record<string, string>, timeoutMs: number, start: (session: LineSession) => void, onMessage: (message: Record<string, unknown>, session: LineSession) => boolean): Promise<{ done: boolean; error?: string; stderr: string }> {
+export function converse(command: string, args: string[], env: Record<string, string>, timeoutMs: number, start: (session: LineSession) => void, onMessage: (message: Record<string, unknown>, session: LineSession) => boolean): Promise<{ done: boolean; error?: string; stderr: string }> {
   return new Promise((resolve) => {
     let settled = false;
     let stderr = "";

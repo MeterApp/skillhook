@@ -107,6 +107,20 @@ describe("skillhook mcp", () => {
     }
   });
 
+  it("lists the accounts with their MCP servers when asked", async () => {
+    const paths = tempHome("skillhook-mcp-");
+    writeConfigFile(paths, { runners: { claude: { command: FAKE_CLAUDE }, codex: { command: FAKE_CODEX } }, accounts: { work: { runner: "claude" } } });
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(path.join(paths.home, "accounts", "work"), { recursive: true });
+    const c = await client(paths);
+    const plain = await c.call("list_accounts", {});
+    expect((plain.data.accounts as Record<string, unknown>[])[0]?.mcp).toBeUndefined();
+    const listed = await c.call("list_accounts", { mcp: true });
+    expect((listed.data.accounts as Record<string, unknown>[])[0]).toMatchObject({ name: "work", mcp: { via: "status", servers: expect.arrayContaining([expect.objectContaining({ name: "sentry", state: "needs_auth" })]) } });
+    expect(listed.text).toContain("work (claude): ready, MCP 3/5 connected");
+    expect(listed.text).toContain("then /mcp and authenticate sentry");
+  });
+
   it("answers stats, readiness, config and waiting jobs from the files when no server runs", async () => {
     const paths = tempHome("skillhook-mcp-");
     writeConfigFile(paths, { runners: { claude: { command: FAKE_CLAUDE }, codex: { command: FAKE_CODEX } } });

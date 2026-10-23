@@ -903,6 +903,10 @@ describe("HTTP surface", () => {
       const listed = (await json(await fetch(`${base}/accounts?usage=1`, { headers: auth }))) as unknown as { accounts: Record<string, unknown>[] };
       expect(listed.accounts[0]).toMatchObject({ name: "srv", status: "ready", identity: { email: "srv@example.com" }, usage: { windows: [{ id: "five_hour", used_percent: 42 }, { id: "seven_day" }, { id: "seven_day_opus" }] } });
       expect((await fetch(`${base}/accounts?account=nope`, { headers: auth })).status).toBe(404);
+      // Its MCP servers only when asked (each connects).
+      expect(listed.accounts[0]?.mcp).toBeUndefined();
+      const withMcp = (await json(await fetch(`${base}/accounts?mcp=1&account=srv`, { headers: auth }))) as unknown as { accounts: Record<string, unknown>[] };
+      expect(withMcp.accounts[0]).toMatchObject({ mcp: { via: "status", servers: expect.arrayContaining([expect.objectContaining({ name: "claude.ai Gmail", state: "connected", source: "connector" })]) }, attention: expect.arrayContaining([expect.objectContaining({ code: "mcp_needs_auth" }), expect.objectContaining({ code: "mcp_failed" })]) });
       // Run as the account through the API; the run sees its directory.
       expect((await fetch(`${base}/skills/hello/run`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ account: "ghost" }) })).status).toBe(400);
       const ran = await json(await fetch(`${base}/skills/hello/run`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ payload: { name: "Srv" }, account: "srv", wait: 20 }) }));

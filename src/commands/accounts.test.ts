@@ -139,6 +139,39 @@ describe("skillhook accounts", () => {
     expect(findSetupToken("no token here")).toBeUndefined();
   });
 
+  it("shows each account's MCP servers, connectors and plugins, and what needs authenticating", async () => {
+    const { paths, run } = setup();
+    expect((await run("accounts", "add", "work", "--runner", "claude", "--login")).code).toBe(0);
+    expect((await run("accounts", "add", "pro", "--runner", "codex", "--no-share", "--login")).code).toBe(0);
+    // Without --mcp nothing is asked.
+    expect((await run("accounts", "show", "work", "--json")).json().mcp).toBeUndefined();
+
+    const shown = await run("accounts", "show", "work", "--mcp");
+    expect(shown.code).toBe(0);
+    expect(shown.out()).toContain("MCP servers: 3/5 connected");
+    expect(shown.out()).toMatch(/sentry\s+needs auth\s+user/);
+    expect(shown.out()).toMatch(/slack\s+failed\s+user\s+Connection closed/);
+    expect(shown.out()).toMatch(/claude\.ai Gmail\s+connected\s+connector\s+5/);
+    expect(shown.out()).toContain("plugins    supabase@claude-plugins-official@0.1.15 (+1 disabled)");
+    expect(shown.out()).toContain("→ skillhook accounts exec work -- claude   then /mcp and authenticate sentry");
+    expect(shown.out()).not.toContain("SECRET-");
+
+    const json = (await run("accounts", "show", "pro", "--mcp", "--json")).json();
+    expect(json).toMatchObject({ mcp: { via: "status", servers: expect.arrayContaining([expect.objectContaining({ name: "linear", state: "needs_auth" }), expect.objectContaining({ name: "codex_apps", source: "connector" })]) }, attention: expect.arrayContaining([expect.objectContaining({ code: "mcp_needs_auth", fix: "skillhook accounts exec pro -- codex mcp login linear" })]) });
+
+    // An account with fewer servers than the machine's own login is told which (information, not a failure).
+    const workDir = path.join(paths.home, "accounts", "work");
+    writeFileSync(path.join(workDir, "mcp-status.json"), JSON.stringify({ mcpServers: [{ name: "stitch", status: "connected", config: { type: "http", url: "https://stitch.example/mcp" }, scope: "user", source: "user", tools: [] }] }));
+    const listed = await run("accounts", "--mcp");
+    expect(listed.out()).toMatch(/work\s+claude\s+ready.*1\/1/);
+    expect(listed.out()).toMatch(/pro\s+codex\s+ready.*3\/4 \(1 need auth\)/);
+    const work = ((await run("accounts", "--mcp", "--json")).json().accounts as { name: string; attention: { code: string; message: string }[] }[]).find((a) => a.name === "work")!;
+    expect(work.attention.filter((a) => a.code.startsWith("mcp_"))).toEqual([expect.objectContaining({ code: "mcp_missing", message: "lacks MCP servers the machine's own claude login has: sentry, slack, plugin:supabase:supabase" })]);
+    const check = await run("accounts", "check", "--mcp", "--json");
+    expect(check.json()).toMatchObject({ ok: false, items: [{ account: "pro", code: "mcp_needs_auth" }] });
+    expect(check.code).toBe(1);
+  });
+
   it("discovers the logins already on the machine and registers them", async () => {
     const { paths, env, run } = setup();
     mkdirSync(path.join(env.HOME, ".claude"), { recursive: true });
