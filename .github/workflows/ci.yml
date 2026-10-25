@@ -106,7 +106,9 @@ jobs:
         run: |
           node - "$RUNNER_TEMP/pack.json" <<'JS'
           const fs = require("node:fs");
-          const [info] = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          const result = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          // npm 11 returns an array; npm 12 keys the result by package name.
+          const [info] = Array.isArray(result) ? result : Object.values(result);
           const files = new Set(info.files.map((f) => f.path));
           const required = ["package.json", "README.md", "CHANGELOG.md", "LICENSE", "dist/cli.js", "dist/index.js", "dist/index.d.ts", "dist/update.js", "dist/cloud/protocol.js", "dist/cloud/protocol.d.ts", "schema/skillhook.schema.json", "schema/skillhook.yaml.schema.json", "examples/skills/hello/SKILL.md", "examples/skills/sentry-triage/SKILL.md"];
           const missing = required.filter((f) => !files.has(f));
@@ -120,7 +122,7 @@ jobs:
 
       - name: Install the tarball globally and use it
         run: |
-          tarball="$(node -p 'require(process.argv[1])[0].filename' "$RUNNER_TEMP/pack.json")" # @scope/name packs as scope-name-X.Y.Z.tgz
+          tarball="$(node -p 'Object.values(require(process.argv[1]))[0].filename' "$RUNNER_TEMP/pack.json")" # npm 11 array / npm 12 object; @scope/name packs as scope-name-X.Y.Z.tgz
           npm install -g "./$tarball"
           version="$(node -p "require('./package.json').version")"
           test "$(skillhook --version)" = "$version"
