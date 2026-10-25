@@ -102,6 +102,9 @@ jobs:
       - name: Pack
         run: npm pack --json > "$RUNNER_TEMP/pack.json"
 
+      - name: Verify packed library and protocol consumers
+        run: node scripts/check-package-api.mjs
+
       - name: Tarball contains what it should and nothing else
         run: |
           node - "$RUNNER_TEMP/pack.json" <<'JS'

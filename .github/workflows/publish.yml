@@ -99,6 +99,11 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      - name: Verify packed library and protocol consumers
+        run: |
+          pnpm run build
+          node scripts/check-package-api.mjs
+
       - name: Already on npm?
         id: exists
         env:
