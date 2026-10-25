@@ -188,6 +188,22 @@ describe("codex runner", () => {
     expect(outcome).toMatchObject({ ok: true, result: "pong", sessionId: "t1", usage: { input_tokens: 5, output_tokens: 1 } });
   });
 
+  it("accepts a completed turn after a recovered transport error, while retaining terminal failures", () => {
+    const reconnect = { type: "error", message: "Reconnecting... 2/5 (workspace routing discovery timed out)" };
+    const completed = { type: "turn.completed", usage: { input_tokens: 5, output_tokens: 1 } };
+    const message = { type: "item.completed", item: { type: "agent_message", text: "checkpoint saved" } };
+    const parse = (events: unknown[], exitCode = 0) => {
+      const state: StreamState = {};
+      for (const event of events) codexRunner.onLine?.(JSON.stringify(event), state);
+      return codexRunner.parse({ stdout: "", stderr: "OAuth token missing from an unrelated MCP server", exitCode, signal: null, state }, ctx());
+    };
+    expect(parse([reconnect, message, completed])).toMatchObject({ ok: true, result: "checkpoint saved", usage: completed.usage });
+    expect(parse([reconnect, message])).toMatchObject({ ok: false, error: reconnect.message });
+    expect(parse([reconnect, message, completed], 1).ok).toBe(false);
+    expect(parse([completed, reconnect])).toMatchObject({ ok: false, error: reconnect.message });
+    expect(parse([reconnect, { type: "turn.failed", error: { message: "retries exhausted" } }])).toMatchObject({ ok: false, error: "retries exhausted" });
+  });
+
   it("passes a schema file when the skill wants structured output and parses the JSON answer", () => {
     expect(codexRunner.build(ctx()).args).not.toContain("--output-schema");
     const c = ctx("skillhook:\n  runner: codex\n  response:\n    mode: structured");
