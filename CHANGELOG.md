@@ -4,6 +4,8 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.14.0 (2026-10-25)
+
 - Respect Codex turn completion after recovered reconnect errors, preserving terminal failures and raw diagnostics.
 - Update Zod to the patched 4.6 line for GHSA-mrhx-c7xc-m3w5.
 
