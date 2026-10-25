@@ -130,7 +130,7 @@ codex exec resume <thread id> --json --skip-git-repo-check \
 - `-o <file>` makes Codex write its final message to `last-message.md`; skillhook reads it when the JSON stream did not contain an `agent_message`.
 - `agent_api: mcp` (the default) configures the per-run job API server through `-c mcp_servers.skillhook_job.*` for this run only; nothing is written to `~/.codex/config.toml`.
 
-Output handling: `thread.started` provides the `thread_id` (stored as `session_id`), `item.completed` with `type: agent_message` provides the result, `turn.completed` provides `usage`, and `turn.failed` / `error` mark the job `failed`. Codex does not report cost, so `cost_usd` is absent for Codex jobs.
+Output handling: `thread.started` provides the `thread_id` (stored as `session_id`), `item.completed` with `type: agent_message` provides the result, `turn.completed` provides `usage`, and `turn.failed` / `error` mark the job `failed` unless a later `turn.completed` confirms recovery. Codex can emit transient reconnect errors before completing; those remain in the raw log but do not fail a completed turn. A non-zero process exit still fails the job. Codex does not report cost, so `cost_usd` is absent for Codex jobs.
 
 Resume: `skillhook jobs resume <id>` prints `cd <cwd> && codex resume <thread_id>`.
 
