@@ -138,7 +138,7 @@ skillhook:
   env: [SENTRY_AUTH_TOKEN, GH_TOKEN]
   claude:
     permission_mode: acceptEdits
-    allowed_tools: ["Read", "Grep", "Glob", "Edit", "Write", "Bash(git:*)", "Bash(gh:*)", "Bash(npm test:*)"]
+    allowed_tools: ["Read", "Grep", "Glob", "Edit", "Write", "Bash(git:*)", "Bash(gh:*)", "Bash(pnpm test:*)"]
     max_budget_usd: 5
 ---
 
@@ -253,7 +253,7 @@ skillhook schedules run weekly-review --wait 60   # fire one now, with a schedul
 | Default permissions | `bypassPermissions`; tighten with `claude.permission_mode: acceptEdits` + `allowed_tools` | `workspace-write` sandbox with network; `read-only` or `danger-full-access` per skill | your script |
 | Resume later | `claude --resume <session>` (printed by `skillhook jobs resume <id>`) | `codex resume <thread>` | n/a |
 
-Set the default once (`skillhook config set defaults.runner codex`, `skillhook config set defaults.model sonnet`) and override per skill with `skillhook.runner` / `skillhook.model` / `skillhook.effort`. Cheap models suit acknowledgement-style skills; put `opus` or a high `effort` on skills that read code. Details, environment allow-list and output parsing: [docs/runners.md](docs/runners.md).
+Set the default once (`skillhook config set defaults.runner codex`, `skillhook config set defaults.model sonnet`) and override per skill with `skillhook.runner` / `skillhook.model` / `skillhook.effort`. Several subscriptions on one machine (a work and a personal Claude Max, a ChatGPT Pro) are [accounts](docs/accounts.md): `skillhook accounts add work --runner claude --login`, then `account: work` or a pool `account: [work, personal]` that fails over when one hits its usage limit. Cheap models suit acknowledgement-style skills; put `opus` or a high `effort` on skills that read code. Details, environment allow-list and output parsing: [docs/runners.md](docs/runners.md).
 
 ## Security model
 
@@ -328,13 +328,25 @@ Cursor, Windsurf and other `mcp.json` clients:
 }
 ```
 
-`skillhook mcp --print-config` prints these lines for your install (with `--dir` when the home is not the default). The repository is also a plugin with skills for setup, skill authoring and operating Skillhook Cloud, this MCP server, and `skillhook-cloud` (`skillhook mcp --cloud`): the whole organisation, as the Skillhook Cloud dashboard shows and runs it, for your agent once you ran `skillhook cloud login`:
+`skillhook mcp --print-config` prints these lines for your install (with `--dir` when the home is not the default).
+
+### The plugin
+
+The repository is also a Claude Code, Codex and Cursor plugin: three skills (setting up and exposing skillhook, writing webhook skills, operating Skillhook Cloud), this MCP server, and `skillhook-cloud` (`skillhook mcp --cloud`): the whole organisation, as the Skillhook Cloud dashboard shows and runs it, for your agent once you signed in. Install it in Claude Code in one step (Claude Code 2.1.275 or later):
 
 ```text
-/plugin marketplace add MeterApp/skillhook
+/plugin install skillhook --marketplace MeterApp/skillhook
 ```
 
-Claude Code updates the plugin by itself once auto-update is on for its marketplace (`/plugin` → Marketplaces → `meterapp-skillhook` → Enable auto-update); `skillhook update --install` also updates it, in Claude Code and Codex.
+On older versions: `/plugin marketplace add MeterApp/skillhook`, then `/plugin install skillhook@meterapp-skillhook`. Claude Code updates the plugin by itself once auto-update is on for its marketplace (`/plugin` → Marketplaces → `meterapp-skillhook` → Enable auto-update); `skillhook update --install` also updates it, in Claude Code and Codex.
+
+#### What the plugin runs and sends
+
+- **Two local MCP servers (stdio).** Claude Code starts them with `npx -y @meterapp/skillhook@<version> mcp` and `npx -y @meterapp/skillhook@<version> mcp --cloud` ([`.mcp.json`](.mcp.json)). The version is pinned to the plugin's own release: the first start downloads exactly that version of the [`@meterapp/skillhook`](https://www.npmjs.com/package/@meterapp/skillhook) npm package (this repository, published with provenance) from the npm registry, and Node.js 22 or newer must be installed. The `package.json` and `pnpm-lock.yaml` at the repository root are that package's sources; the plugin runs nothing from the checkout itself.
+- **`skillhook` (this machine).** Reads and writes `~/.skillhook` (configuration, skills, secrets in `.env` with mode 600, jobs) and talks to the local skillhook server on `127.0.0.1`. When your agent calls the matching tools, it runs skills with `claude`, `codex` or a shell command on this machine, sends signed test webhooks to your own server, installs the launchd/systemd service, and turns on **Tailscale Funnel** (`expose`), which makes this machine's webhook endpoint (`https://<machine>.<tailnet>.ts.net/hooks/<skill>`; each skill checks its sender unless it says `auth: none`) reachable from the public internet; nothing is exposed until that tool or `skillhook expose tailscale` runs, and `skillhook expose off` removes it. `cloud_report_issue` sends a problem report to the Skillhook team only when the person asks for one, from a machine that is paired already.
+- **`skillhook-cloud` (Skillhook Cloud).** Talks over HTTPS to [Skillhook Cloud](https://skillhook.dev) only. Before anyone signs in it offers only the public pricing and checkout-link routes, sent without a credential. `skillhook_cloud_setup` signs in with the browser (device code: this computer's name goes to the cloud, a person approves it there) and keeps the organisation API key in `~/.skillhook/.env`. With a key, the server reads the cloud's tool catalogue when it starts, and each tool call is one request with that key and acts on the organisation's machines with the rights of the person who created the key. It never pairs this machine: the link that uploads this machine's jobs and deliveries starts only when a person runs `skillhook cloud connect` in a terminal ([docs/cloud.md](docs/cloud.md) lists what it sends).
+- **Update check.** At most once an hour, a detached process asks the npm registry for the latest version of `@meterapp/skillhook`. A pinned `npx` copy never installs anything; the plugin moves to a new version when the plugin updates. `SKILLHOOK_NO_UPDATE_CHECK=1` turns the check off.
+- **Nothing else.** No telemetry or analytics. `SKILLHOOK_NO_CLOUD=1` refuses every request to Skillhook Cloud. Skillhook Cloud's [privacy policy](https://skillhook.dev/privacy) and [terms](https://skillhook.dev/terms) cover what reaches it.
 
 Skillhook Cloud also serves the organisation's tools as a hosted MCP server at `https://skillhook.dev/api/mcp` (Streamable HTTP; the claude.ai and ChatGPT connectors sign in with OAuth, other clients send an organisation API key as the bearer token), for clients that connect to a URL rather than run the plugin: [skillhook.dev/docs/mcp](https://skillhook.dev/docs/mcp).
 
@@ -347,6 +359,7 @@ Agents reading this repository should start with [`AGENTS.md`](AGENTS.md) (layou
 | `skillhook init [--runner claude\|codex\|shell] [--model M] [--port N] [--force]` | Create `~/.skillhook` with config, secrets and the `hello` skill. |
 | `skillhook doctor` | Check Node, disk, config, secrets, skills, Claude/Codex login, Tailscale, public URL, server and service; exit 1 on failures. |
 | `skillhook runners [--refresh] [--local]` | Is each runner installed and logged in (or given an API key): what every job checks before it starts. |
+| `skillhook accounts [list\|show\|usage\|check\|add\|login\|logout\|default\|enable\|disable\|reset\|discover\|sync\|exec\|remove]` | Several Claude Code and Codex logins on one machine: who each is, plan and usage left (5h, weekly, per model), last use, jobs, each account's own MCP servers, connectors and plugins (`--mcp`), and what needs attention; pools with failover on usage limits. See [docs/accounts.md](docs/accounts.md). |
 | `skillhook health [--quick] [--refresh] [--no-network] [--local]` | The doctor plus every MCP server Claude Code and Codex know, plugins, `codex doctor` and each skill's last run, grouped; via the running server's cached report when there is one. |
 | `skillhook serve [--port N] [--host H] [--pretty] [--log-level L]` | Run the webhook server in the foreground. |
 | `skillhook service install\|uninstall\|status\|restart\|logs [--lines N] [-f]` | Run the server at login (launchd on macOS, systemd `--user` on Linux). |
@@ -420,10 +433,10 @@ git clone https://github.com/MeterApp/skillhook.git && cd skillhook && npm insta
 ```
 
 ```bash
-npm run check          # typecheck, vitest, build, schema check
+pnpm run check          # typecheck, vitest, build, schema check
 ```
 
-`npm test` runs the vitest suites (unit, HTTP integration with fake runners, CLI); `npm run dev -- <command> --dir /tmp/skillhook-dev` runs the CLI from source with tsx without touching `~/.skillhook`. Read [`AGENTS.md`](AGENTS.md) for the layout and hard rules and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the pull-request checklist, the branch rules and how releases are cut (`npm run release`, then a pull request; CI tags, publishes to npm with provenance and creates the GitHub release). Security issues: see [`SECURITY.md`](SECURITY.md).
+`pnpm test` runs the vitest suites (unit, HTTP integration with fake runners, CLI); `pnpm run dev <command> --dir /tmp/skillhook-dev` runs the CLI from source with tsx without touching `~/.skillhook`. Read [`AGENTS.md`](AGENTS.md) for the layout and hard rules and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the pull-request checklist, the branch rules and how releases are cut (`pnpm run release`, then a pull request; CI tags, publishes to npm with provenance and creates the GitHub release). Security issues: see [`SECURITY.md`](SECURITY.md).
 
 ## License
 

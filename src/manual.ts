@@ -18,7 +18,7 @@ export interface ManualRunInput {
   headers?: Record<string, string>;
   query?: Record<string, string>;
   trigger: Trigger;
-  overrides?: { runner?: RunnerName; model?: string; effort?: string; cwd?: string };
+  overrides?: { runner?: RunnerName; model?: string; effort?: string; cwd?: string; account?: string };
   /** Recorded on the job and the event; the caller is responsible for `rememberDelivery`. The scheduler uses `schedule:<slot>`. */
   deliveryId?: string;
   /** `source.method` on the job (default `LOCAL`; the scheduler writes `SCHEDULE`, replays `REPLAY`). */
@@ -60,6 +60,8 @@ export function buildManualEvent(input: ManualRunInput, id = newJobId()): Webhoo
 
 /** Creates (but does not enqueue) a job for a run that did not arrive over HTTP. Needs only the config and the job store, so the scheduler can call it with the server's own instances. */
 export function createManualJob(ops: { config: Config; store: JobStore }, input: ManualRunInput, store = ops.store): JobRecord {
+  const account = input.overrides?.account;
+  if (account && !Object.hasOwn(ops.config.accounts, account)) throw new Error(`No account "${account}" (skillhook accounts list)`);
   const settings = resolveRunSettings(input.skill, ops.config, input.overrides);
   const id = input.jobId ?? newJobId();
   const event = buildManualEvent(input, id);
@@ -84,6 +86,7 @@ export function createManualJob(ops: { config: Config; store: JobStore }, input:
     question: input.resume?.question,
     answer: input.resume?.answer,
     runner_reason: input.resume?.runnerReason,
+    account_requested: input.overrides?.account,
     event,
     rawBody: input.body?.raw,
   });

@@ -24,7 +24,7 @@ Outbound HTTPS from the machine only:
 | `machine` | `{id, hostname, os, arch, skillhook_version, node_version, started_at, public_url?}` |
 | `status` | `{queue: {running, queued}, running_jobs, link: {state, reason?, mode, outbox_depth, dropped_total, watched_jobs}}` |
 | `snapshot?` | On connect and every `cloud.snapshot_interval_seconds`: skills, skill errors, projects, schedules, effective config, health and readiness summaries, stats. |
-| `events` | Up to 200 `EventEnvelope`s: `{id: "<machine_id>:<seq>", seq, ts, machine_id, type, data}`; `seq` increases by one per durable event, `null` for transient `job.output`. Types: the server's own `delivery.received`, `job.*`, `schedule.*`, `skill.changed`, `config.changed`, `health.changed`, `runners.changed`, plus `link.started`, `link.stopped`, `health.report`, `job.output`. |
+| `events` | Up to 200 `EventEnvelope`s: `{id: "<machine_id>:<seq>", seq, ts, machine_id, type, data}`; `seq` increases by one per durable event, `null` for transient `job.output`. Types: the server's own `delivery.received`, `job.*`, `schedule.*`, `skill.changed`, `config.changed`, `health.changed`, `runners.changed`, `account.changed`, `account.updated` (scrubbed as [cloud.md](cloud.md#accounts) lists), plus `link.started`, `link.stopped`, `health.report`, `job.output`. |
 | `command_results` | Up to 50 `{command_id, ok, result?, error?: {code, message, hint?}, sensitive?, sealed?, started_at, finished_at, duration_ms}`; re-sent until acknowledged. |
 | `ingress_acks` | `{id, outcome, http_status, job_id?, code?, reason?}` for hosted-ingress deliveries processed since the last sync. |
 | `ack.commands_received` | Command ids received (the cloud stops re-sending them). |

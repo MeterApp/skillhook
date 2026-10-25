@@ -1,6 +1,7 @@
 // In-process event bus for `serve`. The queue, scheduler, registry and server publish state changes here;
 // `GET /events` (SSE), `GET /jobs/<id>/events` and, later, the cloud link subscribe. A listener that throws
 // is logged and never breaks the publisher, and there is no listener cap (every `?wait=` request adds one).
+import type { AccountState } from "./accounts.js";
 import type { DeliveryRecord } from "./delivery-log.js";
 import type { HealthChange, HealthReport } from "./health.js";
 import type { JobRecord } from "./jobs.js";
@@ -40,13 +41,17 @@ export interface EventMap {
   "health.changed": { report: HealthReport; changed: HealthChange[] };
   /** A runner became usable or stopped being so (installed, logged in), as the readiness check before jobs sees it. */
   "runners.changed": { runner: RunnerName; readiness: RunnerReadiness; previous?: RunnerReadiness };
+  /** An account (`skillhook accounts`) became usable or stopped being so (logged in, logged out, expired, token missing), as the check before jobs sees it. */
+  "account.changed": { account: string; runner: "claude" | "codex"; readiness: RunnerReadiness; previous?: RunnerReadiness };
+  /** What runs taught about an account changed: it hit a usage limit (`limited`), is usable again (`recovered`), failed to authenticate (`auth_failed`) or its usage was read (`usage`). */
+  "account.updated": { account: string; reason: "limited" | "recovered" | "auth_failed" | "usage"; state: AccountState };
   /** `skillhook.json` changed and the server re-read it: `applied` took effect now, `restart_required` at the next start. */
   "config.changed": { changed: (keyof Config)[]; applied: (keyof Config)[]; restart_required: (keyof Config)[]; pending_restart: (keyof Config)[]; config: Config };
 }
 
 export type EventType = keyof EventMap;
 
-export const EVENT_TYPES: EventType[] = ["server.started", "server.stopping", "delivery.received", "job.queued", "job.started", "job.updated", "job.cancelled", "job.finished", "job.progress", "job.waiting_human", "job.answered", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed", "health.changed", "runners.changed", "config.changed"];
+export const EVENT_TYPES: EventType[] = ["server.started", "server.stopping", "delivery.received", "job.queued", "job.started", "job.updated", "job.cancelled", "job.finished", "job.progress", "job.waiting_human", "job.answered", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed", "health.changed", "runners.changed", "account.changed", "account.updated", "config.changed"];
 
 export interface SkillhookEvent<K extends EventType = EventType> {
   /** Increases by one per event in this process; `GET /events` sends it as the SSE id. */

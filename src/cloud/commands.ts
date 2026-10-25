@@ -3,15 +3,19 @@
 // Read commands are here; control commands (running skills, answering jobs, changing config, restarting) come with the
 // control handlers in `deps.control` and answer `unsupported_command` until a version provides them.
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { collectAccounts } from "../account-report.js";
+import { AccountStateStore } from "../accounts.js";
 import { HOT_CONFIG_KEYS, RESTART_CONFIG_KEYS, type Config } from "../config.js";
 import { readDeliveryBody, type DeliveryLog } from "../delivery-log.js";
 import type { Secrets } from "../env.js";
+import type { Events } from "../events.js";
 import type { HealthCache } from "../health.js";
 import type { JobStore } from "../jobs.js";
 import type { Logger } from "../logger.js";
 import type { Paths } from "../paths.js";
 import { readProgress } from "../progress.js";
 import type { ReadinessCache } from "../readiness.js";
+import { baseRunEnv } from "../runners/env.js";
 import type { SkillRegistry } from "../registry.js";
 import type { ScheduleStatus } from "../scheduler.js";
 import { publicJob, skillSummary, type ServerState } from "../server.js";
@@ -23,7 +27,7 @@ import { errorMessage, nowIso } from "../util.js";
 import { commandAllowed, type CloudPolicy } from "./config.js";
 import type { CommandLedger } from "./outbox.js";
 import { COMMAND_CLASS, LIMITS, parseCommandArgs, type Command, type CommandErrorCode, type CommandResult, type CommandType, type Sealed, type Snapshot } from "./protocol.js";
-import { redactUpload, scrubSecrets, secretValues } from "./redact.js";
+import { accountViewForUpload, redactUpload, scrubSecrets, secretValues } from "./redact.js";
 
 export class CommandError extends Error {
   constructor(
@@ -47,6 +51,8 @@ export interface CommandDeps {
   schedules?: () => ScheduleStatus[];
   health?: HealthCache;
   readiness?: ReadinessCache;
+  /** Where `accounts.get` says what a usage probe taught (`account.updated`). */
+  events?: Events;
   serverState?: () => ServerState | undefined;
   logger: Logger;
   policy: () => CloudPolicy;
@@ -97,6 +103,13 @@ const readHandlers: Partial<Record<CommandType, CommandHandler>> = {
   "runners.get": async (args: Args<{ refresh?: boolean }>, _c, deps) => {
     if (!deps.readiness) throw new CommandError("unavailable", "this server has no readiness checks");
     return { result: { runners: await deps.readiness.all({ refresh: args.refresh }), default_runner: deps.config.defaults.runner } };
+  },
+  "accounts.get": async (args: Args<{ account?: string; refresh?: boolean; usage?: boolean }>, _c, deps) => {
+    if (args.account && !Object.hasOwn(deps.config.accounts, args.account)) throw new CommandError("not_found", `no account "${args.account}"`);
+    const secrets = deps.secrets();
+    const baseEnv = baseRunEnv({ secrets, fileSecrets: deps.fileSecrets(), processEnv: process.env });
+    const report = await collectAccounts({ config: deps.config, home: deps.paths.home, secrets, baseEnv, skills: deps.registry.list().skills, store: deps.store, states: new AccountStateStore(deps.paths.jobsDir), readiness: deps.readiness, refresh: args.refresh, usage: args.usage, only: args.account, events: deps.events });
+    return { result: { ...report, accounts: report.accounts.map(accountViewForUpload) } };
   },
   "skills.list": (_a, _c, deps) => {
     const loaded = deps.registry.list();
@@ -205,7 +218,7 @@ const readHandlers: Partial<Record<CommandType, CommandHandler>> = {
 
 function timeoutFor(command: Command): number {
   if (command.timeout_ms) return Math.min(600_000, command.timeout_ms);
-  return command.type === "health.get" || command.type === "skill.run" || command.type === "skill.test" ? LONG_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
+  return command.type === "health.get" || command.type === "accounts.get" || command.type === "skill.run" || command.type === "skill.test" ? LONG_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
 }
 
 export interface CommandDispatcher {

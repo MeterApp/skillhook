@@ -1,6 +1,6 @@
 {
   "name": "@meterapp/skillhook",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "description": "Make your Agent Skills reactive. A permanent, secure webhook endpoint on your own machine that runs SKILL.md files with Claude Code or Codex the moment something happens, plus version-controlled schedules for the work that has no trigger. Webhook in, agent out.",
   "license": "MIT",
   "author": "Meter <hello@meterapp.co> (https://meterapp.co)",
@@ -68,13 +68,14 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "npm run typecheck && npm test && npm run build && npm run schema -- --check && npm run release -- --check",
-    "prepublishOnly": "npm run check",
+    "check": "pnpm run typecheck && pnpm test && pnpm run build && pnpm run schema --check && pnpm run release --check",
+    "prepublishOnly": "pnpm run check",
     "release": "tsx scripts/release.ts",
-    "schema": "tsx scripts/generate-schema.ts"
+    "schema": "tsx scripts/generate-schema.ts",
+    "deps:install": "pnpm install --frozen-lockfile --prefer-offline"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "^2.2.0",
+    "@modelcontextprotocol/server": "^2.3.1",
     "yaml": "^2.9.1",
     "zod": "^4.6.5"
   },
@@ -83,5 +84,6 @@
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.0.2"
-  }
+  },
+  "packageManager": "pnpm@12.14.0"
 }

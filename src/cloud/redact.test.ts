@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { capText, REDACTED, redactUpload, scrubSecrets, secretValues } from "./redact.js";
+import { accountViewForUpload, capText, maskEmails, REDACTED, redactUpload, scrubSecrets, secretValues } from "./redact.js";
 
 // Placeholder values only: nothing here resembles a real credential format.
 const FAKE_ENV = {
@@ -67,5 +67,17 @@ describe("redaction for uploads", () => {
     expect(capText("short", 100)).toEqual({ text: "short", truncated: false, bytes: 5 });
     const capped = capText("ééééé", 5); // 10 bytes of UTF-8
     expect(capped).toEqual({ text: "éé", truncated: true, bytes: 10 });
+  });
+
+  it("masks email addresses to their first letter and domain, and leaves other @ alone", () => {
+    expect(maskEmails("logged in as ada.lovelace+work@mail.example.com, Ada's Org")).toBe("logged in as a…@mail.example.com, Ada's Org");
+    expect(maskEmails("a@b.co and bob@example.org.")).toBe("a…@b.co and b…@example.org.");
+    expect(maskEmails("@scope/pkg, user@localhost, @@, trailing@")).toBe("@scope/pkg, user@localhost, @@, trailing@");
+    expect(maskEmails("x".repeat(50_000) + "@" + "y".repeat(50_000))).toHaveLength(100_001);
+  });
+
+  it("keeps an account's view to its allow-list: no directory, no paths, no unknown fields", () => {
+    const view = accountViewForUpload({ name: "work", runner: "claude", kind: "login", dir: "/Users/ada/.claude", default_dir: true, status: "ready", extra: "x", identity: { email: "ada@example.com", plan: "max", checked_at: "t", secret: "s" }, attention: [{ level: "warn", code: "usage_high", message: "usage high", internal: 1 }], readiness: { runner: "claude", path: "/bin/claude", config_dir: "/Users/ada/.claude", ready: true, detail: "ok" } });
+    expect(view).toEqual({ name: "work", runner: "claude", kind: "login", default_dir: true, status: "ready", identity: { email: "a…@example.com", plan: "max", checked_at: "t" }, attention: [{ level: "warn", code: "usage_high", message: "usage high" }], readiness: { runner: "claude", ready: true, detail: "ok" } });
   });
 });

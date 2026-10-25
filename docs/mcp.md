@@ -39,11 +39,13 @@ Cursor, Windsurf and other `mcp.json` clients:
 
 Non-default home: add `"--dir", "/path/to/home"` to `args` (or set `SKILLHOOK_HOME` in the client's environment). The MCP process must see the same home as your shell.
 
-The repository is also a plugin: its skills, this MCP server, and `skillhook-cloud`, the organisation's fleet through Skillhook Cloud (below):
+The repository is also a plugin: its skills, this MCP server, and `skillhook-cloud`, the organisation's fleet through Skillhook Cloud (below). One step in Claude Code 2.1.275 or later:
 
 ```text
-/plugin marketplace add MeterApp/skillhook
+/plugin install skillhook --marketplace MeterApp/skillhook
 ```
+
+The plugin starts both servers with `npx -y @meterapp/skillhook@<version>`, pinned to the plugin's own release (`pnpm run release` keeps `.mcp.json` in step). What they run and send: [README → What the plugin runs and sends](../README.md#what-the-plugin-runs-and-sends).
 
 Global options apply to the `mcp` command like any other (`--dir`); the server writes only to the home directory and never to the repository it is started from. If the home does not exist yet it prints a warning and creates what it needs on first use (or run `skillhook init`).
 
@@ -122,6 +124,7 @@ Every tool returns a text block (a one-line summary followed by JSON) and the sa
 | `cloud_disconnect` | optional `keep_token` | Stop the Skillhook Cloud link: `cloud.enabled: false`, token and machine key revoked and removed, spool deleted. There is no `cloud_connect` tool on purpose: pairing hands the machine to an account, so the person runs `skillhook cloud connect --code …` themselves ([cloud.md](cloud.md#connecting)). |
 | `cloud_report_issue` | `title`; optional `body`, `kind` (bug, question, feature, other), `severity` (low, normal, high, urgent), `contact_email`, `job_id`, `delivery_id`, `skill`, `diagnostics` (default true), `dry_run` | Send a problem report to the Skillhook team from a paired machine, when the person asks for one (what `skillhook cloud report` does; `dry_run: true` returns the exact report without sending it). With diagnostics: versions, OS, cloud mode, the link's state, whether each runner is ready and the failing or warning checks, all scrubbed of every `.env` value; never payloads, logs, prompts or job output ([cloud.md](cloud.md#reporting-a-problem)). Returns the issue number and URL, whether a confirmation email went out, and the diagnostics that were sent. |
 | `get_runners` | optional `refresh` | Is each runner (claude, codex, shell) installed and logged in or given an API key: what every job checks before it starts. Through the running server's cached answer when there is one. |
+| `list_accounts` | optional `usage`, `mcp`, `refresh`, `account` | The Claude Code and Codex accounts skills run as ([accounts.md](accounts.md)): state, who, plan, usage windows (`usage: true` asks each account's CLI now), last use, jobs of the last 24 h, skills, with `mcp: true` (slow: every server connects) each account's MCP servers, claude.ai / ChatGPT connectors and plugins and whether each connected, and `attention` with the command that fixes each problem. Logging in is a person's job in a terminal (`skillhook accounts login <name>`), never a tool's. |
 | `get_health` | optional `deep` (default true), `refresh`, `network` | The grouped health report of `skillhook health`: the doctor's checks plus every MCP server Claude Code and Codex know (connected, needs authentication, failed), installed plugins, `codex doctor`, disk and each skill's last run. Through the running server's cached report when there is one (`refresh: true` probes again), otherwise probed now. Use it to answer "why does the agent's MCP tool not work" before touching a skill. |
 
 ## Skillhook Cloud: `skillhook mcp --cloud`

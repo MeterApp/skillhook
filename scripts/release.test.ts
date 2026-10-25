@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { bumpRelease, bumpVersion, checkRelease, parseChangelog, releaseNotes, runRelease, VERSIONED_MANIFESTS } from "./release.js";
+import { bumpRelease, bumpVersion, checkRelease, launcherSpecs, MCP_CONFIG, parseChangelog, releaseNotes, runRelease, VERSIONED_MANIFESTS } from "./release.js";
 
 const CHANGELOG = `# Changelog
 
@@ -31,8 +31,24 @@ function fakeRepo(changelog = CHANGELOG, version = "0.1.0"): string {
     mkdirSync(path.join(root, path.dirname(manifest)), { recursive: true });
     writeFileSync(path.join(root, manifest), `{\n  "name": "skillhook",\n  "version": "${version}",\n  "keywords": ["a", "b"]\n}\n`);
   }
+  writeFileSync(path.join(root, MCP_CONFIG), mcpConfig(`skillhook@${version}`));
   writeFileSync(path.join(root, "CHANGELOG.md"), changelog);
   return root;
+}
+
+function mcpConfig(spec: string): string {
+  return `${JSON.stringify(
+    {
+      mcpServers: {
+        local: { command: "npx", args: ["-y", spec, "mcp"] },
+        cloud: { command: "npx", args: ["-y", spec, "mcp", "--cloud"] },
+        other: { command: "npx", args: ["-y", "some-other-server@latest"] },
+        direct: { command: "skillhook", args: ["mcp"] },
+      },
+    },
+    null,
+    2,
+  )}\n`;
 }
 
 function io() {
@@ -78,7 +94,7 @@ describe("release script", () => {
     const root = fakeRepo();
     const result = bumpRelease(root, "minor", { date: "2026-10-01" });
     expect(result).toMatchObject({ previous: "0.1.0", version: "0.2.0" });
-    expect(result.files).toEqual(["CHANGELOG.md", "package.json", "package-lock.json", ...VERSIONED_MANIFESTS]);
+    expect(result.files).toEqual(["CHANGELOG.md", "package.json", "package-lock.json", ...VERSIONED_MANIFESTS, MCP_CONFIG]);
     expect(JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version).toBe("0.2.0");
     const lock = JSON.parse(readFileSync(path.join(root, "package-lock.json"), "utf8"));
     expect(lock.version).toBe("0.2.0");
@@ -89,6 +105,7 @@ describe("release script", () => {
       expect(text).toContain('"version": "0.2.0"');
       expect(text).toContain('"keywords": ["a", "b"]'); // formatting preserved
     }
+    expect(readFileSync(path.join(root, MCP_CONFIG), "utf8")).toBe(mcpConfig("skillhook@0.2.0")); // other servers untouched
     const changelog = readFileSync(path.join(root, "CHANGELOG.md"), "utf8");
     expect(changelog).toContain("## Unreleased\n\n## 0.2.0 (2026-10-01)\n\n- Something new.\n- Something fixed.\n\n## 0.1.0 (2026-09-16)");
     expect(checkRelease(root).problems).toEqual([]);
@@ -96,6 +113,39 @@ describe("release script", () => {
     expect(() => bumpRelease(root, "patch")).toThrow(/nothing under "## Unreleased"/);
     expect(bumpRelease(root, "patch", { allowEmpty: true, date: "2026-10-02" }).version).toBe("0.2.1");
     expect(readFileSync(path.join(root, "CHANGELOG.md"), "utf8")).toContain("## 0.2.1 (2026-10-02)\n\n- Maintenance release.");
+  });
+
+  it("requires the plugin's package launchers to pin the released version", () => {
+    expect(launcherSpecs(mcpConfig("skillhook"), "skillhook")).toEqual([
+      { server: "local", spec: "skillhook" },
+      { server: "cloud", spec: "skillhook" },
+    ]);
+    const root = fakeRepo();
+    writeFileSync(path.join(root, MCP_CONFIG), mcpConfig("skillhook"));
+    const unpinned = checkRelease(root).problems;
+    expect(unpinned).toHaveLength(2);
+    expect(unpinned[0]).toContain('.mcp.json server "local" launches skillhook, package.json says 0.1.0 (pin it: skillhook@0.1.0)');
+    expect(() => bumpRelease(root, "patch")).toThrow(/must pin every launcher at skillhook@0.1.0/);
+    expect(JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version).toBe("0.1.0"); // nothing written
+    writeFileSync(path.join(root, MCP_CONFIG), mcpConfig("skillhook@0.0.9"));
+    expect(checkRelease(root).problems).toEqual([
+      '.mcp.json server "local" launches skillhook@0.0.9, package.json says 0.1.0 (pin it: skillhook@0.1.0)',
+      '.mcp.json server "cloud" launches skillhook@0.0.9, package.json says 0.1.0 (pin it: skillhook@0.1.0)',
+    ]);
+    unlinkSync(path.join(root, MCP_CONFIG));
+    expect(checkRelease(root).problems).toEqual([]);
+  });
+
+  it("releases pnpm checkouts without changing their dependency lock", () => {
+    const root = fakeRepo();
+    unlinkSync(path.join(root, "package-lock.json"));
+    const lock = "lockfileVersion: '9.0'\nimporters:\n  .: {}\n";
+    writeFileSync(path.join(root, "pnpm-lock.yaml"), lock);
+    expect(checkRelease(root).problems).toEqual([]);
+    const result = bumpRelease(root, "minor", { date: "2026-10-21" });
+    expect(result.files).toEqual(["CHANGELOG.md", "package.json", ...VERSIONED_MANIFESTS, MCP_CONFIG]);
+    expect(readFileSync(path.join(root, "pnpm-lock.yaml"), "utf8")).toBe(lock);
+    expect(checkRelease(root).problems).toEqual([]);
   });
 
   it("drives everything from the command line", () => {
@@ -119,6 +169,6 @@ describe("release script", () => {
     expect(runRelease(["--root", root], none.io, "/nowhere")).toBe(2);
     const help = io();
     expect(runRelease(["--help"], help.io, root)).toBe(0);
-    expect(help.out()).toContain("npm run release -- --check");
+    expect(help.out()).toContain("pnpm run release --check");
   });
 });

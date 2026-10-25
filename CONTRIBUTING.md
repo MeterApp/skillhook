@@ -8,11 +8,11 @@ the hard rules (security, dependencies, skill format) and the checks.
 ```bash
 git clone https://github.com/MeterApp/skillhook.git
 cd skillhook
-npm install
-npm run check
+pnpm install --frozen-lockfile --prefer-offline
+pnpm run check
 ```
 
-Run the CLI from source with `npx tsx src/cli.ts <command> --dir /tmp/skillhook-dev`
+Run the CLI from source with `pnpm exec tsx src/cli.ts <command> --dir /tmp/skillhook-dev`
 so you never touch your real `~/.skillhook`.
 
 ## Pull requests
@@ -21,8 +21,14 @@ so you never touch your real `~/.skillhook`.
 - Add or update tests next to the code (`src/**/*.test.ts`); the HTTP and CLI suites
   use the fake runners in `test/fixtures/`.
 - Update the docs that describe what you changed (`README.md`, `docs/`, the plugin
-  skills under `skills/`) in the same PR, and run `npm run schema` after touching
+  skills under `skills/`) in the same PR, and run `pnpm run schema` after touching
   `src/config.ts`.
+- The repository root is the plugin folder that Claude Code and Anthropic's plugin directory install.
+  Keep every committed file under 256 KiB, the whole tree under 512 files, text and images only
+  (no binaries, archives, `.ico` or `.pdf`), no symlinks, and no `CLAUDE.md` at the root (contributor
+  context is `.claude/CLAUDE.md`). `.mcp.json` pins the package at the version in `package.json`;
+  `pnpm run release --check` fails otherwise. `claude plugin validate . --strict --profile directory`
+  checks the rest.
 - Describe the security impact of the change in the PR description when it touches
   `src/auth.ts`, `src/server.ts`, `src/runners/env.ts` or `src/prompt.ts`.
 
@@ -40,9 +46,10 @@ Settings → Rules → main when it should.
 Versions are cut from `main` by pull request:
 
 1. Describe changes under `## Unreleased` in `CHANGELOG.md` as they land.
-2. Run `npm run release -- minor` (or `patch`, `major`, `1.2.3`). It bumps `package.json`,
-   `package-lock.json` and the plugin manifests and moves the Unreleased entries under
-   `## 1.2.0 (date)`. Nothing is committed; `npm run release -- --check` verifies the result.
+2. Run `pnpm run release minor` (or `patch`, `major`, `1.2.3`). It bumps `package.json`,
+   the plugin manifests, the pinned `npx -y @meterapp/skillhook@X.Y.Z` launchers in `.mcp.json`
+   and moves the Unreleased entries under
+   `## 1.2.0 (date)`. Nothing is committed; `pnpm run release --check` verifies the result.
 3. Commit on a branch, open a pull request, let CI pass, merge.
 4. The **Release** workflow sees the new version on `main`, tags `v1.2.0` and dispatches the
    **Publish** workflow.
@@ -84,3 +91,11 @@ publish rights as the `NPM_TOKEN` repository secret; Publish uses it when presen
 ## Reporting security issues
 
 Please email hello@meterapp.co instead of opening a public issue. See `SECURITY.md`.
+
+### Shared dependency cache
+
+Use pnpm 12.14.0 (the `packageManager` pin), then run `pnpm deps:install`. It installs the committed lockfile and prefers cached packages while fetching anything missing. Dependency updates remain explicit.
+
+The pnpm global virtual store is enabled here after tests and builds passed. Equivalent dependency graphs share installed packages across projects and worktrees. It is experimental; to opt out set `virtualStoreType: project` in `pnpm-workspace.yaml` and reinstall.
+
+Keep the shared download store warm; prune only occasionally, and retire completed worktrees through their owning tool after preserving changes.

@@ -30,29 +30,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12.14.0
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}
-          cache: npm
+          cache: pnpm
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Typecheck
-        run: npm run typecheck
+        run: pnpm run typecheck
 
       - name: Test
-        run: npm test
+        run: pnpm test
 
       - name: Build
-        run: npm run build
+        run: pnpm run build
 
       - name: Config schema is current
-        run: npm run schema -- --check
+        run: pnpm run schema --check
 
       - name: Release metadata is consistent
-        run: npm run release -- --check
+        run: pnpm run release --check
 
       - name: CLI smoke test
         run: |
@@ -71,7 +74,7 @@ jobs:
           node -e 'const r = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if (!Array.isArray(r.checks) || !r.groups) process.exit(1);' "$RUNNER_TEMP/health.json"
 
       - name: Audit production dependencies
-        run: npm audit --omit=dev
+        run: pnpm audit --prod
 
   package:
     name: Package
@@ -81,17 +84,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12.14.0
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Build
-        run: npm run build
+        run: pnpm run build
 
       - name: Pack
         run: npm pack --json > "$RUNNER_TEMP/pack.json"

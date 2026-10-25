@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { parseFrontmatter } from "./frontmatter.js";
-import { ClaudePermissionModeSchema, CodexSandboxSchema, CommandSpecSchema, RunnerNameSchema, type RunnerName } from "./config.js";
+import { AccountRefSchema, ClaudePermissionModeSchema, CodexSandboxSchema, CommandSpecSchema, RunnerNameSchema, type RunnerName } from "./config.js";
 import { FallbackSchema, RetrySchema } from "./runners/failure.js";
 import { defaultSecretEnvFor, isSkillhookCredential } from "./env.js";
 import { isValidTimeZone, parseCron, type CronSpec } from "./schedule.js";
@@ -123,6 +123,8 @@ export type ClaudeOptions = z.infer<typeof ClaudeOptionsSchema>;
 export const SkillhookBlockSchema = z
   .object({
     runner: RunnerNameSchema.optional(),
+    /** The account the run uses (`skillhook accounts`), or a pool of accounts of one runner tried in turn: `work` or `[work, personal]`. Sets the runner when `runner` is not given. Default: `defaults.accounts.<runner>`, else the machine's own login. */
+    account: AccountRefSchema.optional(),
     /** Passed to `claude --model` / `codex -m`. Aliases (`opus`, `sonnet`, `haiku`) or full ids. */
     model: z.string().optional(),
     /** `claude --effort` / codex `model_reasoning_effort`. */

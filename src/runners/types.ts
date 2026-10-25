@@ -57,6 +57,8 @@ export interface StreamState {
   usage?: unknown;
   resultEvent?: Record<string, unknown>;
   structuredOutput?: unknown;
+  /** The last usage-window notices the CLI printed (Claude Code's `rate_limit_event`), by window type. */
+  rateLimits?: Record<string, { utilization?: number; resets_at?: string; status?: string }>;
 }
 
 export interface RunnerOutcome {

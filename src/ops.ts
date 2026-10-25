@@ -286,7 +286,7 @@ export function describeProject(project: LoadedProject): string {
 /** Runs an already created job in this process (a private queue) and resolves when it finishes or `waitMs` elapses. */
 export async function runJobLocally(ops: Ops, job: JobRecord, options: { waitMs?: number; timeoutSeconds: number }): Promise<JobRecord> {
   const config = { ...ops.config, concurrency: 1 };
-  const readiness = new ReadinessCache({ config: () => config, env: () => baseRunEnv({ secrets: ops.secrets(), fileSecrets: ops.fileSecrets(), processEnv: process.env }), ttlMs: () => config.health.readiness_cache_seconds * 1000 });
+  const readiness = new ReadinessCache({ config: () => config, env: () => baseRunEnv({ secrets: ops.secrets(), fileSecrets: ops.fileSecrets(), processEnv: process.env }), secrets: ops.secrets, ttlMs: () => config.health.readiness_cache_seconds * 1000 });
   const queue = new JobQueue({ store: ops.store, config, registry: ops.registry, secrets: ops.secrets, fileSecrets: ops.fileSecrets, logger: ops.logger, readiness });
   queue.enqueue(job);
   const finished = await queue.waitFor(job.id, options.waitMs ?? (options.timeoutSeconds + 30) * 1000);

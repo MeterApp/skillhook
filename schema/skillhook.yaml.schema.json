@@ -79,6 +79,23 @@
               "shell"
             ]
           },
+          "account": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,39}$"
+              },
+              {
+                "minItems": 1,
+                "maxItems": 20,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9_-]{0,39}$"
+                }
+              }
+            ]
+          },
           "model": {
             "type": "string"
           },
@@ -635,6 +652,10 @@
                         },
                         "effort": {
                           "type": "string"
+                        },
+                        "account": {
+                          "type": "string",
+                          "minLength": 1
                         }
                       },
                       "required": [

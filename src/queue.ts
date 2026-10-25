@@ -10,6 +10,7 @@ import { isTerminal, type JobAttempt, type JobRecord, type JobStatus, type JobSt
 import type { Logger } from "./logger.js";
 import { answerQuestion, readTimeline, type JobAnswer, type JobQuestion, type ProgressEntry } from "./progress.js";
 import { deriveOutcome, resolveJobResponse } from "./response.js";
+import { AccountStateStore, getAccount, isLimited, orderPool, poolFor, stateAfterRun, usageFromRun, type AccountState } from "./accounts.js";
 import type { ReadinessCache, RunnerReadiness } from "./readiness.js";
 import { prepareRun, resolveRunSettings } from "./run.js";
 import { claudeConfigDir } from "./runners/env.js";
@@ -36,6 +37,25 @@ export interface QueueDeps {
   progressPollMs?: number;
   /** Is the runner installed and logged in? Checked before a job spawns; a `fallback:` runner takes over or the job fails fast. */
   readiness?: ReadinessCache;
+  /** What runs taught about each account (`jobs/.accounts.json`); default: next to the job store's directories. */
+  accountStates?: AccountStateStore;
+}
+
+/** A runner (and maybe an account of it) a job can run on. */
+interface Target {
+  runner: RunnerName;
+  model?: string;
+  effort?: string;
+  account?: string;
+}
+
+/** Why no account of a pool can run now, for the job's error. */
+interface PoolVerdict {
+  account?: string;
+  /** One line per account that was skipped. */
+  skipped: string[];
+  /** Every account was unusable for an account reason (logged out, limited, missing). */
+  readiness?: RunnerReadiness;
 }
 
 interface AttemptResult {
@@ -46,6 +66,8 @@ interface AttemptResult {
   /** The agent said something before the run ended (a retry could repeat side effects). */
   producedOutput: boolean;
   startedAt: string;
+  /** What the CLI said about the account's usage windows while it ran. */
+  rateLimits?: StreamState["rateLimits"];
 }
 
 /** The skill's `fallback:` (else `defaults.fallback`), with the default trigger. */
@@ -347,13 +369,61 @@ export class JobQueue extends EventEmitter {
     queueMicrotask(() => this.tick());
   }
 
-  /** The first usable runner of `candidates` other than `exclude` (`shell` only for a skill that has a command). */
-  private async firstReady(candidates: FallbackConfig["runners"], exclude: Set<RunnerName>, skill: Skill): Promise<{ runner: RunnerName; model?: string; effort?: string } | undefined> {
+  private get accountStates(): AccountStateStore {
+    return this.deps.accountStates ?? (this.deps.accountStates = new AccountStateStore(this.deps.store.jobsDir));
+  }
+
+  /**
+   * The account of `pool` this run should use: in the pool's order (`account_policy.strategy`), skipping accounts that
+   * are not defined, disabled, limited (until their reset) or `exclude`d, and those whose readiness check fails.
+   */
+  private async pickAccount(pool: string[], exclude: Set<string>): Promise<PoolVerdict> {
+    const { config } = this.deps;
+    const home = path.dirname(this.deps.store.jobsDir);
+    const states = this.accountStates.all();
+    const skipped: string[] = [];
+    let readiness: RunnerReadiness | undefined;
+    for (const name of orderPool(pool, states, config.account_policy.strategy)) {
+      if (exclude.has(name)) continue;
+      const account = getAccount(config, home, name);
+      if (!account) {
+        skipped.push(`${name}: not defined`);
+        continue;
+      }
+      if (account.disabled) {
+        skipped.push(`${name}: disabled`);
+        continue;
+      }
+      if (isLimited(states[name])) {
+        skipped.push(`${name}: usage limit until ${states[name]?.limited_until}`);
+        continue;
+      }
+      if (!this.deps.readiness) return { account: name, skipped };
+      try {
+        readiness = await this.deps.readiness.get(account.runner, { account });
+      } catch {
+        skipped.push(`${name}: readiness check failed`);
+        continue;
+      }
+      if (readiness.ready) return { account: name, skipped };
+      skipped.push(`${name}: ${readiness.detail}${readiness.hint ? ` (${readiness.hint})` : ""}`);
+    }
+    return { skipped, ...(readiness ? { readiness } : {}) };
+  }
+
+  /** The first usable runner of `candidates` other than `exclude` (`shell` only for a skill that has a command), with an account of its pool when it has one. */
+  private async firstReady(candidates: FallbackConfig["runners"], exclude: Set<RunnerName>, skill: Skill): Promise<Target | undefined> {
     for (const entry of candidates) {
-      const target = typeof entry === "string" ? { runner: entry } : entry;
+      const target: Target = typeof entry === "string" ? { runner: entry } : { ...entry };
       const candidate = target.runner;
       if (exclude.has(candidate)) continue;
       if (candidate === "shell" && !skill.config.shell?.command) continue;
+      const pool = poolFor(skill, this.deps.config, candidate, target.account);
+      if (pool.length) {
+        const verdict = await this.pickAccount(pool, new Set());
+        if (verdict.account) return { ...target, account: verdict.account };
+        continue;
+      }
       try {
         const readiness = await this.deps.readiness?.get(candidate, { claudeConfigDir: claudeConfigDir(skill) });
         if (readiness?.ready) return target;
@@ -362,6 +432,25 @@ export class JobQueue extends EventEmitter {
       }
     }
     return undefined;
+  }
+
+  /** Writes what the attempt taught about its account to `jobs/.accounts.json` and says so on the bus when it matters. */
+  private recordAccount(job: JobRecord, attempt: AttemptResult): void {
+    if (!job.account) return;
+    try {
+      const before: AccountState = this.accountStates.get(job.account);
+      const ok = attempt.status === "succeeded";
+      const failure = attempt.failure && (attempt.status === "failed" || attempt.status === "timed_out") ? attempt.failure : undefined;
+      const state = this.accountStates.update(job.account, { ...stateAfterRun({ jobId: job.id, ok, failure, cooldownMinutes: this.deps.config.account_policy.limited_cooldown_minutes, rateLimits: attempt.rateLimits }), ...usageFromRun(before, attempt.rateLimits) });
+      const reason = failure?.kind === "usage_limit" ? "limited" : failure?.kind === "auth" ? "auth_failed" : ok && (before.limited_until || before.last_failure) ? "recovered" : undefined;
+      if (ok && before.last_failure) this.accountStates.update(job.account, { last_failure: undefined });
+      if (reason) {
+        this.deps.logger.warn(`account ${reason.replace("_", " ")}`, { job: job.id, account: job.account, ...(state.limited_until ? { until: state.limited_until } : {}) });
+        this.events.emit("account.updated", { account: job.account, reason, state: this.accountStates.get(job.account) });
+      }
+    } catch (error) {
+      this.deps.logger.warn("could not record the account's state", { job: job.id, account: job.account, error: errorMessage(error) });
+    }
   }
 
   /** Waits `ms` between attempts, or less when the job is cancelled or the queue stops meanwhile. */
@@ -387,9 +476,33 @@ export class JobQueue extends EventEmitter {
     }
 
     // Pre-flight: a runner that is not installed or not logged in never spawns; a fallback takes over or the job fails fast.
+    // With accounts, the pool's first usable account is the one that runs (and an empty pool is the same as not ready).
     const policy = fallbackPolicy(skill, config);
     const tried = new Set<RunnerName>([running.job.runner]);
-    if (this.deps.readiness && running.job.runner !== "shell") {
+    const triedAccounts = new Set<string>();
+    const pool = poolFor(skill, config, running.job.runner, job.account_requested);
+    if (pool.length) {
+      const verdict = await this.pickAccount(pool, triedAccounts);
+      if (verdict.account) {
+        triedAccounts.add(verdict.account);
+        if (verdict.skipped.length) logger.info("account pool: skipped accounts", { job: job.id, account: verdict.account, skipped: verdict.skipped });
+        running.job = store.update(job.id, { account: verdict.account, ...(verdict.skipped.length ? { runner_reason: `account ${verdict.account}; skipped ${verdict.skipped.join("; ")}` } : {}) });
+        this.events.emit("job.updated", { job: running.job, fields: ["account", ...(verdict.skipped.length ? (["runner_reason"] as const) : [])] });
+      } else {
+        const why = `no usable ${running.job.runner} account (${verdict.skipped.join("; ") || "empty pool"})`;
+        const alternative = policy.on.includes("not_ready") ? await this.firstReady(policy.runners, tried, skill) : undefined;
+        if (!alternative) {
+          const limited = verdict.skipped.length > 0 && verdict.skipped.every((line) => line.includes("usage limit until"));
+          this.finish(running.job, { status: "failed", started_at: nowIso(), error: why, failure: { kind: limited ? "usage_limit" : verdict.readiness && !verdict.readiness.found ? "not_found" : "auth", retryable: false, message: why } });
+          return;
+        }
+        logger.warn("no usable account; using the fallback", { job: job.id, skill: job.skill, runner: running.job.runner, fallback: alternative.runner, account: alternative.account, detail: why });
+        tried.add(alternative.runner);
+        if (alternative.account) triedAccounts.add(alternative.account);
+        running.job = store.update(job.id, { runner: alternative.runner, ...(alternative.model ? { model: alternative.model } : {}), ...(alternative.effort ? { effort: alternative.effort } : {}), ...(alternative.account ? { account: alternative.account } : {}), runner_requested: running.job.runner, runner_reason: `fallback: ${why}` });
+        this.events.emit("job.updated", { job: running.job, fields: ["runner", "model", "effort", "account", "runner_requested", "runner_reason"] });
+      }
+    } else if (this.deps.readiness && running.job.runner !== "shell") {
       let readiness: RunnerReadiness | undefined;
       try {
         readiness = await this.deps.readiness.get(running.job.runner, { claudeConfigDir: claudeConfigDir(skill) });
@@ -404,8 +517,9 @@ export class JobQueue extends EventEmitter {
         }
         logger.warn("runner not ready; using the fallback", { job: job.id, skill: job.skill, runner: running.job.runner, fallback: alternative.runner, detail: readiness.detail });
         tried.add(alternative.runner);
-        running.job = store.update(job.id, { runner: alternative.runner, ...(alternative.model ? { model: alternative.model } : {}), ...(alternative.effort ? { effort: alternative.effort } : {}), runner_requested: running.job.runner, runner_reason: `fallback: ${running.job.runner} ${readiness.detail}` });
-        this.events.emit("job.updated", { job: running.job, fields: ["runner", "model", "effort", "runner_requested", "runner_reason"] });
+        if (alternative.account) triedAccounts.add(alternative.account);
+        running.job = store.update(job.id, { runner: alternative.runner, ...(alternative.model ? { model: alternative.model } : {}), ...(alternative.effort ? { effort: alternative.effort } : {}), ...(alternative.account ? { account: alternative.account } : {}), runner_requested: running.job.runner, runner_reason: `fallback: ${running.job.runner} ${readiness.detail}` });
+        this.events.emit("job.updated", { job: running.job, fields: ["runner", "model", "effort", "account", "runner_requested", "runner_reason"] });
       }
     }
 
@@ -415,27 +529,40 @@ export class JobQueue extends EventEmitter {
     const attempts: JobAttempt[] = [];
     while (true) {
       const attempt = await this.attempt(running, skill, attempts.length);
+      this.recordAccount(running.job, attempt);
       const kind = attempt.failure?.kind;
       if (kind && (attempt.status === "failed" || attempt.status === "timed_out") && !attempt.producedOutput && !running.cancelled && !this.stopping) {
-        if (kind === "auth") this.deps.readiness?.invalidate(running.job.runner, { claudeConfigDir: claudeConfigDir(skill) });
-        const sameRunner = retriesLeft > 0 && retryOn.includes(kind);
-        const alternative = !sameRunner && (policy.on as string[]).includes(kind) ? await this.firstReady(policy.runners, tried, skill) : undefined;
-        if (sameRunner || alternative) {
-          attempts.push({ runner: running.job.runner, started_at: attempt.startedAt, finished_at: nowIso(), status: attempt.status, ...(attempt.error ? { error: attempt.error } : {}), failure: attempt.failure });
+        const account = running.job.account ? getAccount(config, path.dirname(store.jobsDir), running.job.account) : undefined;
+        if (kind === "auth") this.deps.readiness?.invalidate(running.job.runner, account ? { account } : { claudeConfigDir: claudeConfigDir(skill) });
+        // An account problem is the account's, not the skill's: the pool's next account tries first (same runner, same prompt).
+        const accountPool = running.job.account && config.account_policy.failover && (kind === "auth" || kind === "usage_limit") ? poolFor(skill, config, running.job.runner, job.account_requested) : [];
+        const nextAccount = accountPool.length > 1 ? (await this.pickAccount(accountPool, triedAccounts)).account : undefined;
+        const sameRunner = !nextAccount && retriesLeft > 0 && retryOn.includes(kind);
+        const alternative = !nextAccount && !sameRunner && (policy.on as string[]).includes(kind) ? await this.firstReady(policy.runners, tried, skill) : undefined;
+        if (nextAccount || sameRunner || alternative) {
+          attempts.push({ runner: running.job.runner, ...(running.job.account ? { account: running.job.account } : {}), started_at: attempt.startedAt, finished_at: nowIso(), status: attempt.status, ...(attempt.error ? { error: attempt.error } : {}), failure: attempt.failure });
           const fields: (keyof JobRecord)[] = ["attempts"];
           const patch: Partial<JobRecord> = { attempts: [...attempts] };
+          if (nextAccount) {
+            triedAccounts.add(nextAccount);
+            patch.account = nextAccount;
+            patch.runner_reason = `account ${running.job.account} failed (${kind}); now ${nextAccount}`;
+            fields.push("account", "runner_reason");
+          }
           if (alternative) {
             tried.add(alternative.runner);
             patch.runner = alternative.runner;
             if (alternative.model) patch.model = alternative.model;
             if (alternative.effort) patch.effort = alternative.effort;
+            patch.account = alternative.account;
+            if (alternative.account) triedAccounts.add(alternative.account);
             patch.runner_requested = running.job.runner_requested ?? running.job.runner;
             patch.runner_reason = `fallback: ${running.job.runner} failed (${kind})`;
-            fields.push("runner", "model", "effort", "runner_requested", "runner_reason");
+            fields.push("runner", "model", "effort", "account", "runner_requested", "runner_reason");
           }
           running.job = store.update(job.id, patch);
           this.events.emit("job.updated", { job: running.job, fields });
-          logger.warn(alternative ? "run failed; trying the fallback runner" : "run failed; retrying", { job: job.id, skill: job.skill, kind, runner: running.job.runner, attempt: attempts.length + 1 });
+          logger.warn(nextAccount ? "run failed; trying the pool's next account" : alternative ? "run failed; trying the fallback runner" : "run failed; retrying", { job: job.id, skill: job.skill, kind, runner: running.job.runner, account: running.job.account, attempt: attempts.length + 1 });
           if (sameRunner) {
             retriesLeft--;
             const backoffMs = (retry?.backoff_seconds ?? 30) * 1000;
@@ -624,6 +751,7 @@ export class JobQueue extends EventEmitter {
       error,
       producedOutput: Boolean(state.producedOutput || state.lastMessage),
       startedAt,
+      ...(state.rateLimits ? { rateLimits: state.rateLimits } : {}),
       patch: {
         ...(outcomeOverride ? { outcome: outcomeOverride } : {}),
         status,

@@ -66,7 +66,8 @@ Unknown top-level keys are allowed. Unknown keys inside `skillhook:` are rejecte
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `runner` | `claude` \| `codex` \| `shell` | `defaults.runner` in `skillhook.json` (`claude`) | Which runner executes the job. |
+| `runner` | `claude` \| `codex` \| `shell` | `defaults.runner` in `skillhook.json` (`claude`), else the runner of `account` | Which runner executes the job. |
+| `account` | an account name, or a list of them (a pool of one runner's accounts) | `defaults.accounts.<runner>`, else the machine's own login | The Claude Code or Codex login the run uses ([accounts.md](accounts.md)): its configuration directory and only its credentials. A pool runs as its first usable account and fails over to the next one on a usage limit or a failed login. Sets the runner when `runner` is not given. |
 | `model` | string | `defaults.model` (else the runner's own default) | Passed to `claude --model` / `codex -m`. Aliases such as `opus`, `sonnet`, `haiku`, or full model ids. |
 | `effort` | string | `defaults.effort` | Passed unchanged to `claude --effort` / codex `-c model_reasoning_effort="…"`. Use a value your runner accepts (for example `low`, `medium`, `high`, `xhigh`). |
 | `cwd` | path (`~` allowed) | `defaults.cwd`, else the skill directory | Working directory of the agent. Must exist, otherwise the job fails with `Working directory does not exist`. |

@@ -75,6 +75,19 @@ export const claudeRunner: Runner = {
       const text = extractText(event.message);
       if (text) state.lastMessage = text;
     }
+    // `{rate_limit_info: {rateLimitType, utilization (0–1), resetsAt (epoch s), status}}`: what the account has left.
+    if (event.type === "rate_limit_event" && typeof event.rate_limit_info === "object" && event.rate_limit_info !== null) {
+      const info = event.rate_limit_info as Record<string, unknown>;
+      const type = typeof info.rateLimitType === "string" ? info.rateLimitType : "unknown";
+      state.rateLimits = {
+        ...state.rateLimits,
+        [type]: {
+          ...(typeof info.utilization === "number" ? { utilization: info.utilization } : {}),
+          ...(typeof info.resetsAt === "number" ? { resets_at: new Date(info.resetsAt * 1000).toISOString() } : {}),
+          ...(typeof info.status === "string" ? { status: info.status } : {}),
+        },
+      };
+    }
     if (event.type === "result") {
       state.resultEvent = event;
       if (event.structured_output !== undefined) state.structuredOutput = event.structured_output;
@@ -104,6 +117,8 @@ export const claudeRunner: Runner = {
     return { ok: false, sessionId: io.state.sessionId, error: lastLines(io.stderr) || lastLines(io.stdout) || `claude exited with code ${io.exitCode}${io.signal ? ` (${io.signal})` : ""}` };
   },
   resumeCommand(sessionId, cwd, env) {
+    // A named account: `accounts exec` gives the person the same directory and credential the run had.
+    if (env?.SKILLHOOK_ACCOUNT) return `cd ${shellQuote(cwd)} && skillhook accounts exec ${shellQuote(env.SKILLHOOK_ACCOUNT)} -- claude --resume ${shellQuote(sessionId)}`;
     // The session lives in the configuration directory the run used: resume it with the same one.
     const configDir = env?.CLAUDE_CONFIG_DIR ? `CLAUDE_CONFIG_DIR=${shellQuote(env.CLAUDE_CONFIG_DIR)} ` : "";
     return `cd ${shellQuote(cwd)} && ${configDir}claude --resume ${shellQuote(sessionId)}`;

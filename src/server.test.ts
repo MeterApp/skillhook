@@ -891,6 +891,43 @@ describe("HTTP surface", () => {
     expect(ok.status).toBe("succeeded");
   });
 
+  it("reports accounts, runs a job as one on request and announces when one stops working", async () => {
+    const auth = { authorization: `Bearer ${ADMIN}` };
+    expect((await fetch(`${base}/accounts`, { headers: { "x-forwarded-for": "203.0.113.1" } })).status).toBe(401);
+    expect(await json(await fetch(`${base}/accounts`, { headers: auth }))).toMatchObject({ accounts: [], problems: [], needs_attention: [] });
+    const dir = path.join(paths.home, "srv-account");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "account"), "srv@example.com\n");
+    config.accounts = { srv: { runner: "claude", kind: "login", dir, disabled: false } };
+    try {
+      const listed = (await json(await fetch(`${base}/accounts?usage=1`, { headers: auth }))) as unknown as { accounts: Record<string, unknown>[] };
+      expect(listed.accounts[0]).toMatchObject({ name: "srv", status: "ready", identity: { email: "srv@example.com" }, usage: { windows: [{ id: "five_hour", used_percent: 42 }, { id: "seven_day" }, { id: "seven_day_opus" }] } });
+      expect((await fetch(`${base}/accounts?account=nope`, { headers: auth })).status).toBe(404);
+      // Its MCP servers only when asked (each connects).
+      expect(listed.accounts[0]?.mcp).toBeUndefined();
+      const withMcp = (await json(await fetch(`${base}/accounts?mcp=1&account=srv`, { headers: auth }))) as unknown as { accounts: Record<string, unknown>[] };
+      expect(withMcp.accounts[0]).toMatchObject({ mcp: { via: "status", servers: expect.arrayContaining([expect.objectContaining({ name: "claude.ai Gmail", state: "connected", source: "connector" })]) }, attention: expect.arrayContaining([expect.objectContaining({ code: "mcp_needs_auth" }), expect.objectContaining({ code: "mcp_failed" })]) });
+      // Run as the account through the API; the run sees its directory.
+      expect((await fetch(`${base}/skills/hello/run`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ account: "ghost" }) })).status).toBe(400);
+      const ran = await json(await fetch(`${base}/skills/hello/run`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ payload: { name: "Srv" }, account: "srv", wait: 20 }) }));
+      expect(ran).toMatchObject({ status: "succeeded" });
+      expect(store.get(String(ran.job_id))).toMatchObject({ account: "srv", account_requested: "srv" });
+      expect((JSON.parse(readFileSync(recordFile, "utf8")) as { env: Record<string, string> }).env.CLAUDE_CONFIG_DIR).toBe(dir);
+      const byAccount = (await json(await fetch(`${base}/jobs?account=srv`, { headers: auth }))) as unknown as { jobs: { id: string }[] };
+      expect(byAccount.jobs.map((j) => j.id)).toEqual([ran.job_id]);
+      // It expires: the next look says so, on the event stream too.
+      const stream = await fetch(`${base}/events?types=account.changed`, { headers: auth });
+      writeFileSync(path.join(dir, "expired"), "");
+      const expired = (await json(await fetch(`${base}/accounts?refresh=1`, { headers: auth }))) as unknown as { accounts: Record<string, unknown>[]; needs_attention: string[] };
+      expect(expired.accounts[0]).toMatchObject({ status: "expired", attention: expect.arrayContaining([expect.objectContaining({ level: "fail", code: "login_expired", fix: "skillhook accounts login srv" })]), jobs_24h: { total: 1, succeeded: 1 } });
+      expect(expired.needs_attention).toEqual(["srv"]);
+      const changed = await readSse(stream, (event) => event.event === "account.changed", 10_000);
+      expect((JSON.parse(changed.at(-1)!.data) as { data: unknown }).data).toMatchObject({ account: "srv", readiness: { ready: false, expired: true }, previous: { ready: true } });
+    } finally {
+      config.accounts = {};
+    }
+  });
+
   it("serves stats over the jobs and deliveries it recorded", async () => {
     const auth = { authorization: `Bearer ${ADMIN}` };
     expect((await fetch(`${base}/stats`, { headers: { "x-forwarded-for": "203.0.113.1" } })).status).toBe(401);

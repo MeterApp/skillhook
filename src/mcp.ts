@@ -7,6 +7,9 @@ import { DELIVERY_OUTCOMES, readDeliveryBody, type DeliveryOutcome } from "./del
 import { formatDoctor, runDoctor } from "./doctor.js";
 import { formatHealth, runHealth, type HealthReport } from "./health.js";
 import { checkReadiness, RUNNER_NAMES, type RunnerReadiness } from "./readiness.js";
+import { mcpSummary } from "./account-mcp.js";
+import { collectAccounts, usageText, type AccountsReport } from "./account-report.js";
+import { AccountStateStore } from "./accounts.js";
 import { baseRunEnv } from "./runners/env.js";
 import { FailureKindSchema } from "./runners/failure.js";
 import { listExamples } from "./examples.js";
@@ -635,6 +638,29 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
       const runEnv = baseRunEnv({ secrets: o.secrets(), fileSecrets: o.fileSecrets(), processEnv: env });
       const runners = await Promise.all(RUNNER_NAMES.map((runner) => checkReadiness(runner, o.config, runEnv)));
       return ok({ via: "local", runners, default_runner: o.config.defaults.runner }, runners.map((r) => `${r.runner}: ${r.ready ? "ready" : "not ready"} (${r.detail})`).join("\n"));
+    }),
+  );
+
+  server.registerTool(
+    "list_accounts",
+    { title: "Accounts", description: "The Claude Code and Codex accounts (named logins) skills run as: for each its state (ready, needs_login, expired, limited, missing_secret, disabled), who it is logged in as, its plan, its usage windows (5h, weekly, per model; with `usage: true` asked from each account's CLI now), its last use, its jobs of the last 24 hours, the skills that use it, and `attention`: what needs a person, each with the command that fixes it. With `mcp: true` (slow: every server connects) also `mcp`: the MCP servers, claude.ai / ChatGPT connectors and plugins each account's runs get, whether each connected, needs authentication or failed, and attention items for them. Logging in is done by a person in a terminal (`skillhook accounts login <name>`), never by a tool.", inputSchema: z.object({ usage: z.boolean().optional(), mcp: z.boolean().optional(), refresh: z.boolean().optional(), account: z.string().optional() }) },
+    wrap(async ({ usage, mcp, refresh, account }) => {
+      const running = await findRunningServer(paths);
+      let report: AccountsReport;
+      let via = "local";
+      if (running) {
+        const params = new URLSearchParams({ ...(usage ? { usage: "1" } : {}), ...(mcp ? { mcp: "1" } : {}), ...(refresh ? { refresh: "1" } : {}), ...(account ? { account } : {}) });
+        const response = await adminRequest<AccountsReport & { error?: string; message?: string }>(running.baseUrl, loadSecrets(paths, env), `/accounts${params.size ? `?${params.toString()}` : ""}`, { timeoutMs: 120_000 });
+        if (response.status >= 400) throw new Error(`${String(response.body.error)}: ${String(response.body.message)}`);
+        report = response.body;
+        via = "server";
+      } else {
+        const o = ops();
+        const secrets = o.secrets();
+        report = await collectAccounts({ config: o.config, home: paths.home, secrets, baseEnv: baseRunEnv({ secrets, fileSecrets: o.fileSecrets(), processEnv: env }), skills: o.registry.list().skills, store: o.store, states: new AccountStateStore(paths.jobsDir), usage, mcp, timeoutMs: o.config.health.probe_timeout_seconds * 1000, refresh, only: account });
+      }
+      const text = report.accounts.length ? report.accounts.map((a) => `${a.name} (${a.runner}): ${a.status}${a.identity?.email ? ` as ${a.identity.email}` : ""}${a.usage ? `, ${usageText(a.usage)}` : ""}${a.mcp ? `, MCP ${mcpSummary(a.mcp)} connected` : ""}${a.attention.filter((x) => x.level !== "info").map((x) => `\n  ! ${x.message}${x.fix ? ` → ${x.fix}` : ""}`).join("")}`).join("\n") : "No accounts: every run uses this machine's own login (skillhook accounts add <name> --runner claude|codex).";
+      return ok({ via, ...report }, text);
     }),
   );
 

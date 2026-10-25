@@ -1,10 +1,11 @@
-// Keeps the version in package.json, package-lock.json, the plugin manifests and CHANGELOG.md in step.
+// Keeps the version in package.json, legacy npm lockfiles (when present), the plugin manifests, the pinned package
+// launcher in .mcp.json (`npx -y @meterapp/skillhook@X.Y.Z mcp`) and CHANGELOG.md in step.
 //
-//   npm run release -- --check              verify that they agree (runs in CI and in `npm run check`)
-//   npm run release -- patch|minor|major    bump everything and move the "Unreleased" changelog entries under the new version
-//   npm run release -- 1.2.3                set an explicit version (must be higher than the current one)
-//   npm run release -- --notes [version]    print the changelog section of a version (the GitHub release body)
-//   npm run release -- --version            print the current version
+//   pnpm run release --check              verify that they agree (runs in CI and in `pnpm run check`)
+//   pnpm run release patch|minor|major    bump everything and move the "Unreleased" changelog entries under the new version
+//   pnpm run release 1.2.3                set an explicit version (must be higher than the current one)
+//   pnpm run release --notes [version]    print the changelog section of a version (the GitHub release body)
+//   pnpm run release --version            print the current version
 //
 // Options: --root <dir> (default: the repository), --date YYYY-MM-DD (default: today, UTC),
 //          --allow-empty (bump even when "Unreleased" has no entries).
@@ -18,6 +19,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 /** Files that carry the package version, relative to the repository root. */
 export const VERSIONED_MANIFESTS = [".claude-plugin/plugin.json", ".codex-plugin/plugin.json", ".cursor-plugin/plugin.json"];
 export const CHANGELOG = "CHANGELOG.md";
+/** The plugin's MCP servers. Every server launched with a package runner must pin this package at the released version. */
+export const MCP_CONFIG = ".mcp.json";
+const PACKAGE_LAUNCHERS = new Set(["npx", "pnpx", "bunx"]);
 
 export class ReleaseError extends Error {}
 
@@ -105,6 +109,34 @@ export function parseChangelog(text: string): ChangelogSections {
   return sections;
 }
 
+interface McpServerEntry {
+  command?: unknown;
+  args?: unknown;
+}
+
+/**
+ * The package specs `.mcp.json` hands to a package launcher (`npx`, `pnpx`, `bunx`) for this package, one per server:
+ * `{ server, spec }`, where `spec` is the argument naming the package (`@meterapp/skillhook@1.2.3`, or the bare name
+ * when unpinned). Servers that launch some other package are left out. Plugin directories refuse unpinned launchers.
+ */
+export function launcherSpecs(text: string, packageName: string): { server: string; spec: string }[] {
+  const config = JSON.parse(text) as { mcpServers?: Record<string, McpServerEntry> };
+  const found: { server: string; spec: string }[] = [];
+  for (const [server, entry] of Object.entries(config.mcpServers ?? {})) {
+    if (typeof entry.command !== "string" || !PACKAGE_LAUNCHERS.has(path.basename(entry.command))) continue;
+    const args = Array.isArray(entry.args) ? entry.args.filter((a): a is string => typeof a === "string") : [];
+    const spec = args.find((a) => a === packageName || a.startsWith(`${packageName}@`));
+    if (spec !== undefined) found.push({ server, spec });
+  }
+  return found;
+}
+
+function packageName(root: string): string {
+  const name = readJson(path.join(root, "package.json")).name;
+  if (typeof name !== "string") throw new ReleaseError("package.json has no name");
+  return name;
+}
+
 export function releaseNotes(root: string, version: string): string {
   const sections = parseChangelog(readFileSync(path.join(root, CHANGELOG), "utf8"));
   const section = sections.versions.find((s) => s.version === version);
@@ -135,13 +167,20 @@ export function checkRelease(root: string): { version: string; problems: string[
     const found = readJson(file).version;
     if (found !== version) problems.push(`${manifest} version is ${String(found ?? "missing")}, package.json says ${version}`);
   }
+  const mcpFile = path.join(root, MCP_CONFIG);
+  if (existsSync(mcpFile)) {
+    const name = packageName(root);
+    for (const { server, spec } of launcherSpecs(readFileSync(mcpFile, "utf8"), name)) {
+      if (spec !== `${name}@${version}`) problems.push(`${MCP_CONFIG} server "${server}" launches ${spec}, package.json says ${version} (pin it: ${name}@${version})`);
+    }
+  }
   const changelogFile = path.join(root, CHANGELOG);
   if (!existsSync(changelogFile)) problems.push(`${CHANGELOG} is missing`);
   else {
     const sections = parseChangelog(readFileSync(changelogFile, "utf8"));
     if (!sections.unreleased) problems.push(`${CHANGELOG} needs a "## Unreleased" section at the top`);
     const matching = sections.versions.filter((s) => s.version === version);
-    if (matching.length === 0) problems.push(`${CHANGELOG} has no "## ${version}" section (run: npm run release -- ${version}, or write it)`);
+    if (matching.length === 0) problems.push(`${CHANGELOG} has no "## ${version}" section (run: pnpm run release ${version}, or write it)`);
     else if (matching.length > 1) problems.push(`${CHANGELOG} lists ${version} ${matching.length} times`);
     else if (!matching[0]?.body) problems.push(`${CHANGELOG} section "## ${matching[0]?.heading}" is empty`);
     if (sections.versions[0] && sections.versions[0].version !== version) problems.push(`${CHANGELOG} lists ${sections.versions[0].version} before ${version}; newest first`);
@@ -198,6 +237,17 @@ export function bumpRelease(root: string, spec: string, options: BumpOptions = {
     if (!next.changed) throw new ReleaseError(`${manifest} does not contain "version": "${previous}"`);
     writes.push({ file, text: next.text });
   }
+  const mcpFile = path.join(root, MCP_CONFIG);
+  if (existsSync(mcpFile)) {
+    const name = packageName(root);
+    const text = readFileSync(mcpFile, "utf8");
+    const specs = launcherSpecs(text, name);
+    if (specs.length > 0) {
+      if (specs.some((s) => s.spec !== `${name}@${previous}`)) throw new ReleaseError(`${MCP_CONFIG} must pin every launcher at ${name}@${previous} before a bump (run: pnpm run release --check)`);
+      const next = text.split(`"${name}@${previous}"`).join(`"${name}@${version}"`);
+      writes.push({ file: mcpFile, text: next });
+    }
+  }
   for (const write of writes) writeFileSync(write.file, write.text);
   return { previous, version, files: writes.map((w) => path.relative(root, w.file)) };
 }
@@ -244,7 +294,7 @@ export function runRelease(argv: string[], io: ReleaseIO, defaultRoot: string): 
           io.stderr(`Release metadata for ${version} is inconsistent:\n${problems.map((p) => `  - ${p}`).join("\n")}\n`);
           return 1;
         }
-        io.stdout(`release metadata ok: ${version} in package.json, package-lock.json, ${VERSIONED_MANIFESTS.length} plugin manifests and ${CHANGELOG}\n`);
+        io.stdout(`release metadata ok: ${version} in package.json, ${VERSIONED_MANIFESTS.length} plugin manifests, ${MCP_CONFIG} and ${CHANGELOG}\n`);
         return 0;
       }
       case "notes": {

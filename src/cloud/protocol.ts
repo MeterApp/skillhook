@@ -78,6 +78,8 @@ export const CLOUD_EVENT_TYPES = [
   "health.changed",
   "health.report",
   "runners.changed",
+  "account.changed",
+  "account.updated",
 ] as const;
 export type CloudEventType = (typeof CLOUD_EVENT_TYPES)[number];
 
@@ -90,6 +92,7 @@ export const COMMAND_TYPES = [
   "health.get",
   "snapshot.get",
   "runners.get",
+  "accounts.get",
   "skills.list",
   "skill.get",
   "skill.put",
@@ -132,6 +135,7 @@ export const COMMAND_CLASS: Record<CommandType, CommandClass> = {
   "health.get": "read",
   "snapshot.get": "read",
   "runners.get": "read",
+  "accounts.get": "read",
   "skills.list": "read",
   "skill.get": "read",
   "skill.put": "control",
@@ -179,6 +183,7 @@ export const COMMAND_ARGS = {
   "health.get": z.object({ deep: z.boolean().optional(), refresh: z.boolean().optional() }).strict(),
   "snapshot.get": z.object({}).strict(),
   "runners.get": z.object({ refresh: z.boolean().optional() }).strict(),
+  "accounts.get": z.object({ account: name.optional(), refresh: z.boolean().optional(), usage: z.boolean().optional() }).strict(),
   "skills.list": z.object({}).strict(),
   "skill.get": z.object({ name }).strict(),
   "skill.put": z.object({ name, content: z.string().min(1).max(512 * 1024), allow_unauthenticated: z.boolean().optional() }).strict(),
