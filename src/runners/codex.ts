@@ -75,6 +75,10 @@ export const codexRunner: Runner = {
         break;
       }
       case "turn.completed":
+        // Codex emits error events while reconnecting, then completes the turn.
+        // Completion supersedes those diagnostics; later errors and a nonzero
+        // exit still fail the run. Keep raw diagnostics in stdout.log.
+        delete state.failed;
         state.usage = event.usage;
         break;
       case "turn.failed": {
