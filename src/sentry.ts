@@ -112,7 +112,7 @@ export class DaemonSentry {
       const eventId = randomUUID().replaceAll("-", "");
       const event = {
         event_id: eventId, timestamp: Date.now() / 1000, platform: "node", level: "error",
-        release: `@meterapp/skillhook@${/^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/.test(this.options.version) ? this.options.version : "unknown"}`,
+        release: `skillhook-daemon@${this.options.version.length <= 128 && /^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/.test(this.options.version) ? this.options.version : "unknown"}`,
         environment: settings.environment, logger: "skillhook.daemon",
         exception: { values: [{ type, value, ...(ownFrames.length ? { stacktrace: { frames: ownFrames } } : {}) }] },
         tags: { component: "daemon" }, fingerprint: ["skillhook.daemon", value],

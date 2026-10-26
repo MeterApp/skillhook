@@ -4,6 +4,10 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.14.2 (2026-10-26)
+
+- Use the Sentry-compatible `skillhook-daemon@<version>` release name. Scoped npm package names contain a slash, which Sentry discards from accepted events.
+
 ## 0.14.1 (2026-10-26)
 
 - Opt-in Sentry reporting for unexpected daemon errors and fatal exceptions, with bounded delivery and private, static error context. `skillhook sentry status|test` checks the running daemon and sends an authenticated verification event; Sentry settings stay out of runner environments and remote credential controls.
