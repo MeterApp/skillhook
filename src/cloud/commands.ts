@@ -268,7 +268,7 @@ export function createCommandDispatcher(deps: CommandDeps): CommandDispatcher {
         return done;
       } catch (error) {
         if (error instanceof CommandError) return finish(command, startedAt, { ok: false, error: { code: error.code, message: error.message, ...(error.hint ? { hint: error.hint } : {}) } });
-        deps.logger.error("cloud command failed", { command: command.id, type: command.type, error: errorMessage(error) });
+        deps.logger.error("cloud command failed", { command: command.id, type: command.type, error: errorMessage(error) }, error);
         return finish(command, startedAt, { ok: false, error: { code: "internal", message: errorMessage(error) } });
       }
     },

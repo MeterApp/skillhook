@@ -22,6 +22,8 @@ Related: [security.md](security.md) (authentication), [skills.md](skills.md) (fi
 | `GET` | `/doctor` | admin | The quick report (`skillhook doctor`), cached; `?network=0`, `?refresh=1`. |
 | `GET` | `/runners` | admin | Is each runner installed and logged in (what a job checks before it starts); `?refresh=1`. |
 | `GET` | `/accounts` | admin | Every account ([accounts.md](accounts.md)): state, who, plan, usage windows, jobs of the last 24 h, what needs attention; `?usage=1`, `?mcp=1`, `?refresh=1`, `?account=<name>`. |
+| `GET` | `/diagnostics/sentry` | admin | Safe opt-in daemon Sentry status: `{enabled, configured, pending, rate_limited, last_error}`; no DSN or credentials. |
+| `POST` | `/diagnostics/sentry` | explicit admin token, including loopback | Send the fixed `Sentry daemon verification` error; no event data accepted; once per minute. `200 {enabled: true, event_id, delivered: true}` when accepted, `503 {enabled, delivered: false, error}` on delivery failure; `429` when the diagnostic limit is reached. |
 | `GET` | `/stats` | admin | Numbers over jobs and deliveries: by status, outcome, runner, failure kind; durations, cost, tokens; per skill (`?since=24h`, `?until=`, `?skill=`). |
 | `GET`, `PATCH` | `/config` | admin | The live `skillhook.json` (defaults applied) with what applies live and what needs a restart; change keys in one validated write. |
 | `POST` | `/config/reload` | admin | Re-read `skillhook.json` (after editing it by hand). |
@@ -175,6 +177,8 @@ curl -sS -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" https://mac.tail1234.
 ## Admin authentication
 
 Admin routes accept `Authorization: Bearer <SKILLHOOK_ADMIN_TOKEN>`. Without a token they are allowed only for direct loopback connections that carry no proxy header (`X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Real-IP`, `CF-Connecting-IP`, `Forwarded`, `Via`, `Tailscale-User-Login`, `ngrok-trace-id`); that is how the CLI and the MCP server talk to the local server. Through a tunnel the token is mandatory. If no token is configured the response is `401 unauthorized` with the message `admin endpoints need SKILLHOOK_ADMIN_TOKEN (run: skillhook secret generate admin)`; with a token configured but absent or wrong it is `admin token required`.
+
+The Sentry verification route (`POST /diagnostics/sentry`) additionally requires an explicitly configured admin token even for a direct loopback caller. Its read-only status route follows the usual admin policy. See [Sentry operations](operations.md#sentry-daemon-error-reporting).
 
 ## `GET /health`
 

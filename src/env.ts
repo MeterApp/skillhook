@@ -115,10 +115,10 @@ export const ADMIN_TOKEN_ENV = "SKILLHOOK_ADMIN_TOKEN";
 
 /**
  * skillhook's own credentials: the admin token and the Skillhook Cloud family (the link's token and key pair, the API key
- * and its cloud). Never a skill's secret (writing the skill's would overwrite them), never written from the cloud.
+ * and its cloud), plus the Sentry settings and kill switch. Never a skill's secret (writing the skill's would overwrite them), never written from the cloud.
  */
 export function isSkillhookCredential(name: string): boolean {
-  return name === ADMIN_TOKEN_ENV || name.startsWith(CLOUD_ENV_PREFIX);
+  return name === ADMIN_TOKEN_ENV || name === "SKILLHOOK_NO_SENTRY" || name.startsWith(CLOUD_ENV_PREFIX) || name.startsWith("SKILLHOOK_SENTRY_");
 }
 
 /** Never print these; used by `secret list` and redaction. */

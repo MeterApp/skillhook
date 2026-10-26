@@ -15,6 +15,7 @@ import { jobCommand, jobUsage } from "./job.js";
 import { jobsCommand, JOBS_USAGE } from "./jobs.js";
 import { runnersCommand, RUNNERS_USAGE } from "./runners.js";
 import { accountsCommand, ACCOUNTS_USAGE } from "./accounts.js";
+import { sentryCommand, SENTRY_USAGE } from "./sentry.js";
 import { statsCommand, STATS_USAGE } from "./stats.js";
 import { deliveriesCommand, DELIVERIES_USAGE } from "./deliveries.js";
 import { exposeCommand, EXPOSE_USAGE, urlCommand, URL_USAGE } from "./expose.js";
@@ -39,6 +40,7 @@ Setup
   init [--runner claude|codex|shell] [--model M] [--port N] [--force]   Create ~/.skillhook: config, secrets, hello skill
   doctor                                                   Check node, config, secrets, skills, claude/codex login, Tailscale, server, service
   health [--quick] [--refresh] [--no-network] [--local]     Doctor plus MCP servers, plugins, codex doctor, disk and last runs, grouped; via the running server when there is one
+  sentry [status|test]                                     Read daemon error reporting status; send a fixed verification error (opt-in)
   runners [--refresh] [--local]                            Is each runner installed and logged in: what every job checks before it starts
   accounts [list|show|usage|check|add|login|logout|default|discover|exec|remove …]   Several Claude / Codex logins: state, plan, usage left, what needs attention
   serve [--port N] [--host H] [--log-level L] [--pretty]   Run the webhook server in the foreground
@@ -122,6 +124,7 @@ export const COMMANDS: Record<string, Command> = {
   runners: { run: runnersCommand, usage: RUNNERS_USAGE },
   accounts: { run: accountsCommand, usage: ACCOUNTS_USAGE },
   account: { run: accountsCommand, usage: ACCOUNTS_USAGE },
+  sentry: { run: sentryCommand, usage: SENTRY_USAGE },
   stats: { run: statsCommand, usage: STATS_USAGE },
   config: { run: configCommand, usage: CONFIG_USAGE },
   cloud: { run: cloudCommand, usage: CLOUD_USAGE },

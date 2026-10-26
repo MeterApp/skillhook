@@ -36,6 +36,7 @@ import type { ScheduleStatus } from "./scheduler.js";
 import { describeAuth, SkillError, type Skill } from "./skills.js";
 import { errorMessage, getPath, isPlainObject, isValidSkillName, nowIso, writeJsonFile } from "./util.js";
 import { VERSION } from "./version.js";
+import type { DaemonSentry } from "./sentry.js";
 import type { Paths } from "./paths.js";
 import type { RunnerName } from "./config.js";
 
@@ -47,6 +48,8 @@ export interface ServerDeps {
   registry: SkillRegistry;
   secrets: () => Secrets;
   logger: Logger;
+  /** Optional daemon-only error reporter; never receives request or job data. */
+  sentry?: Pick<DaemonSentry, "status" | "verify">;
   /** Live schedule state for `/health` (admin); absent when the server runs without a scheduler. */
   schedules?: () => ScheduleStatus[];
   /** The cached health report behind `GET /health/checks` and `GET /doctor` (built by `serve`; absent means 404). */
@@ -322,6 +325,7 @@ export function createServer(deps: ServerDeps): Server {
   const requests = new RateLimiter(() => config.rate_limit.requests_per_minute);
   const authFailures = new RateLimiter(() => config.rate_limit.auth_failures_per_minute);
   const startedAt = Date.now();
+  const sentryTests = new RateLimiter(1, 60_000);
 
   /** Admin = a valid admin token, or a direct loopback connection with no proxy headers and no token (the CLI on this machine). */
   function isAdmin(headers: Record<string, string>, req: IncomingMessage, viaProxy: boolean): boolean {
@@ -695,6 +699,23 @@ export function createServer(deps: ServerDeps): Server {
       // Public callers learn only that the server is up; queue details need admin access.
       return send(res, 200, isAdmin(headers, req, viaProxy) ? { ok: true, version: VERSION, uptime_seconds: Math.round((Date.now() - startedAt) / 1000), queue: queue.stats(), ...(deps.schedules ? { schedules: deps.schedules() } : {}), ...(deps.deliveryLog ? { deliveries: deps.deliveryLog.stats() } : {}), cloud: deps.cloud?.() ?? null } : { ok: true, version: VERSION });
     }
+    if (segments[0] === "diagnostics" && segments.length === 2 && segments[1] === "sentry") {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (method !== "GET" && method !== "POST") throw new HttpError(405, "method_not_allowed", "use GET or POST");
+      if (method === "POST") {
+        // Emitting an external diagnostic always needs the configured bearer, even on loopback.
+        const token = deps.secrets()[ADMIN_TOKEN_ENV];
+        const presented = parseAuthorizationScheme(headers.authorization, "Bearer");
+        if (!token || !presented || !safeEqual(presented, token)) throw new HttpError(401, "unauthorized", "Sentry verification requires the configured admin bearer token");
+      }
+      if (!deps.sentry) throw new HttpError(503, "sentry_unavailable", "Sentry reporting is not available in this server");
+      if (method === "GET") return send(res, 200, deps.sentry.status());
+      const body = (await readBody(req, 1_024)).toString("utf8").trim();
+      if (body && body !== "{}") throw new HttpError(400, "bad_request", "Sentry verification accepts no event data");
+      if (!sentryTests.hit("verification")) throw new HttpError(429, "rate_limited", "Sentry verification is limited to once per minute");
+      const result = await deps.sentry.verify();
+      return send(res, result.delivered ? 200 : 503, result);
+    }
     if ((segments[0] === "health" && segments.length === 2 && segments[1] === "checks") || (segments[0] === "doctor" && segments.length === 1)) {
       requireAdmin(headers, req, viaProxy, ip);
       if (method !== "GET") throw new HttpError(405, "method_not_allowed", "use GET");
@@ -969,7 +990,7 @@ export function createServer(deps: ServerDeps): Server {
         send(res, error.status, { ok: false, error: error.code, message: error.message, ...error.extra });
         return;
       }
-      logger.error("unhandled request error", { error: errorMessage(error), url: req.url });
+      logger.error("unhandled request error", { error: errorMessage(error), url: req.url }, error);
       if (!res.headersSent) send(res, 500, { ok: false, error: "internal_error", message: "internal error" });
       else res.destroy();
     });
