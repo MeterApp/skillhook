@@ -58,7 +58,10 @@ describe("daemon Sentry", () => {
       const [header, item, payload] = request.body.trimEnd().split("\n") as [string, string, string];
       expect(JSON.parse(header).event_id).toBe(result.event_id);
       expect(JSON.parse(item)).toMatchObject({ type: "event", length: Buffer.byteLength(payload) });
-      expect(JSON.parse(payload)).toMatchObject({ event_id: result.event_id, platform: "node", release: "@meterapp/skillhook@0.14.0", environment: "staging", exception: { values: [{ type: "Error", value: "Sentry daemon verification" }] } });
+      expect(JSON.parse(payload)).toMatchObject({ event_id: result.event_id, platform: "node", release: "skillhook-daemon@0.14.0", environment: "staging", exception: { values: [{ type: "Error", value: "Sentry daemon verification" }] } });
+      // Sentry discards release names containing slashes, even when it accepts the event.
+      expect(JSON.parse(payload).release).not.toContain("/");
+      expect(JSON.parse(payload).release.length).toBeLessThanOrEqual(200);
       expect(sentry.status().pending).toBe(0);
     } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
   });
@@ -77,7 +80,7 @@ describe("daemon Sentry", () => {
     const event = JSON.parse(bodies[0]!.split("\n")[2]!);
     expect(event.exception.values[0]).toEqual({ type: "TypeError", value: "daemon error", stacktrace: { frames: [{ filename: "server.ts", lineno: 90, colno: 2, in_app: true }] } });
     expect(event.environment).toBe("production");
-    expect(event.release).toBe("@meterapp/skillhook@unknown");
+    expect(event.release).toBe("skillhook-daemon@unknown");
     for (const key of ["request", "user", "breadcrumbs", "server_name", "extra", "contexts"]) expect(event).not.toHaveProperty(key);
   });
 
