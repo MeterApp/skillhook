@@ -129,7 +129,7 @@ export class Events {
     try {
       fn(event);
     } catch (error) {
-      this.logger?.error("event listener failed", { type: event.type, seq: event.seq, error: errorMessage(error) });
+      this.logger?.error("event listener failed", { type: event.type, seq: event.seq, error: errorMessage(error) }, error);
     }
   }
 }

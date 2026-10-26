@@ -4,6 +4,10 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.14.1 (2026-10-26)
+
+- Opt-in Sentry reporting for unexpected daemon errors and fatal exceptions, with bounded delivery and private, static error context. `skillhook sentry status|test` checks the running daemon and sends an authenticated verification event; Sentry settings stay out of runner environments and remote credential controls.
+
 ## 0.14.0 (2026-10-25)
 
 - Respect Codex turn completion after recovered reconnect errors, preserving terminal failures and raw diagnostics.

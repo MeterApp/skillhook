@@ -13,9 +13,9 @@ const PASSTHROUGH_EXACT = ["NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "HTTPS_PROXY"
 /** From the server's own environment only these credential variables pass; never a parent Claude Code session's CLAUDE_CODE_* state. */
 const PROCESS_CREDENTIAL_KEYS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_HOME", "CLAUDE_CONFIG_DIR", ...PASSTHROUGH_EXACT];
 /** Never forwarded unless a skill lists them explicitly. */
-const NEVER_IMPLICIT = /^(SKILLHOOK_ADMIN_TOKEN|SKILLHOOK_SECRET_|SKILLHOOK_CLOUD_|SKILLHOOK_ACCOUNT_)/;
+const NEVER_IMPLICIT = /^(SKILLHOOK_ADMIN_TOKEN|SKILLHOOK_SECRET_|SKILLHOOK_CLOUD_|SKILLHOOK_SENTRY_|SKILLHOOK_NO_SENTRY$|SKILLHOOK_ACCOUNT_)/;
 /** Never forwarded at all: the cloud link's token, key and URL stay in the server process (docs/cloud.md); an account's token or key reaches only that account's runs, as the CLI's own variable (docs/accounts.md). */
-const NEVER_EXPLICIT = /^(SKILLHOOK_CLOUD_|SKILLHOOK_ACCOUNT_)/;
+const NEVER_EXPLICIT = /^(SKILLHOOK_CLOUD_|SKILLHOOK_SENTRY_|SKILLHOOK_NO_SENTRY$|SKILLHOOK_ACCOUNT_)/;
 
 export function defaultPathEntries(home = homedir()): string[] {
   return [

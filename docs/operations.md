@@ -42,6 +42,30 @@ Logs go to stderr as one JSON object per line (`{"ts":…,"level":…,"msg":…}
 
 Other commands find the running server through `server.json` and `GET /health`. `skillhook send`, `skillhook jobs cancel` and the MCP tools `run_skill` (server mode) and `cancel_job` need it; `skillhook run` does not.
 
+### Sentry daemon error reporting
+
+Sentry reporting is **off by default**. To opt in for this machine, put your own Sentry project's DSN in `<home>/.env` (mode 600), rather than a CLI argument or a repository:
+
+```text
+SKILLHOOK_SENTRY_DSN=https://<public-key>@<ingest-host>/<project-id>
+SKILLHOOK_SENTRY_ENVIRONMENT=production
+```
+
+The environment label defaults to `production`. `SKILLHOOK_NO_SENTRY=1` is the kill switch. The instrumented daemon re-reads these values live, so changing its `.env` needs no restart. A daemon installed before Sentry support needs an upgrade and restart first. Removing the DSN also disables reporting. These are skillhook's own credentials: runners, the cloud control API and local MCP tools cannot receive or set them.
+
+Only unexpected daemon errors are reported. Events contain static operation names, error types, module-relative frames from skillhook itself, package version and environment. They omit raw error messages, nested causes, webhook payloads, prompts, headers, secrets, arbitrary diagnostic fields, absolute working directories, hostnames, tracing and normal job failures. No Sentry SDK dependency is added; the built-in HTTPS transport follows Sentry's [envelope protocol](https://develop.sentry.dev/sdk/foundations/envelopes/) and [rate limiting protocol](https://develop.sentry.dev/sdk/foundations/transport/rate-limiting/).
+
+Verify the running daemon:
+
+```bash
+skillhook sentry status
+skillhook sentry test --json
+```
+
+`status` shows `{enabled, configured, pending, rate_limited, last_error}` without exposing the DSN. Disabled status is informational and exits 0. `test` sends the fixed `Sentry daemon verification` error through the actual daemon; it never sends an event from the CLI as a fallback. The daemon must be running, and an explicitly configured `SKILLHOOK_ADMIN_TOKEN` is required even over loopback (`skillhook secret generate admin` if missing). The test accepts no event data and is limited to once per minute. It exits non-zero when reporting is disabled, unavailable or delivery fails.
+
+A successful response is `{enabled: true, event_id: "…", delivered: true}`. That means Sentry accepted the envelope. Search that exact event ID in your Sentry project and confirm the resulting issue to verify ingestion independently. A request sent, or a locally generated event ID alone, does not establish delivery.
+
 ### As a background service
 
 ```bash

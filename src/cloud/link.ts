@@ -210,7 +210,7 @@ export class CloudLink {
       if (event.type === "config.changed") this.wake();
       this.spool(event);
     });
-    this.loopDone = this.loop().catch((error: unknown) => this.deps.logger.error("cloud link loop ended", { error: errorMessage(error) }));
+    this.loopDone = this.loop().catch((error: unknown) => this.deps.logger.error("cloud link loop ended", { error: errorMessage(error) }, error));
   }
 
   /** Stops the loop; when connected, one last sync carries `link.stopped` and whatever is pending (bounded by `stopSyncTimeoutMs`). */
@@ -262,7 +262,7 @@ export class CloudLink {
     try {
       entry.fn();
     } catch (error) {
-      this.deps.logger.error("deferred cloud command action failed", { command: commandId, error: errorMessage(error) });
+      this.deps.logger.error("deferred cloud command action failed", { command: commandId, error: errorMessage(error) }, error);
     }
   }
 

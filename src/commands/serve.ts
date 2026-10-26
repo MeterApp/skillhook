@@ -18,6 +18,8 @@ import { serviceStatus } from "../service.js";
 import { errorMessage } from "../util.js";
 import { attemptedRecently, autoUpdateEnabled, checkForUpdate, detectInstall, installedVersion, isNewerVersion, lastInstall, releaseNotesUrl, spawnBackgroundRefresh, UPDATE_CHECK_INTERVAL_MS } from "../update.js";
 import { VERSION } from "../version.js";
+import { DaemonSentry } from "../sentry.js";
+import { installDaemonErrorReporting } from "../daemon-errors.js";
 import { bool, num, str, type Ctx } from "./shared.js";
 
 export const SERVE_USAGE = `Usage: skillhook serve [--port N] [--host H] [--log-level debug|info|warn|error] [--pretty]
@@ -26,6 +28,16 @@ Runs the webhook server in the foreground until it is stopped (skillhook service
 --port and --host override skillhook.json (default 127.0.0.1:8787); logs are JSON lines, readable with --pretty or at a terminal.`;
 
 export async function serveCommand(ctx: Ctx): Promise<number> {
+  const sentry = new DaemonSentry({ secrets: () => ctx.secrets(), version: VERSION });
+  try { return await runDaemon(ctx, sentry); }
+  catch (error) {
+    sentry.capture("daemon startup failed", error);
+    await sentry.flush(3_000);
+    throw error;
+  }
+}
+
+async function runDaemon(ctx: Ctx, sentry: DaemonSentry): Promise<number> {
   const events = new Events();
   // One live config object for everything in this process; reloads patch it in place (see ConfigRef).
   const configRef = new ConfigRef(ctx.paths, ctx.config(), {
@@ -38,7 +50,7 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   const config = configRef.current;
   const port = num(ctx.flags, "port") ?? config.port;
   const host = str(ctx.flags, "host") ?? config.host;
-  const logger = createLogger({ level: (str(ctx.flags, "log-level") as "info" | undefined) ?? config.log_level, format: bool(ctx.flags, "pretty") || (ctx.io.isTTY && !ctx.json) ? "pretty" : "json" });
+  const logger = createLogger({ onError: (operation, cause) => { sentry.capture(operation, cause); }, level: (str(ctx.flags, "log-level") as "info" | undefined) ?? config.log_level, format: bool(ctx.flags, "pretty") || (ctx.io.isTTY && !ctx.json) ? "pretty" : "json" });
   events.setLogger(logger);
   const registry = ctx.registry();
   registry.onChange((change) => events.emit("skill.changed", change));
@@ -53,6 +65,7 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   let link: CloudLink | undefined;
   const health = new HealthCache(ctx.paths, { ttlMs: () => config.health.cache_seconds * 1000, options: () => ({ env: ctx.io.env, timeoutMs: config.health.probe_timeout_seconds * 1000, live: () => ({ started_at: startedAt, queue: queue.stats() }), cloud: () => link?.status() }), events });
   let shuttingDown = false;
+  let removeFatalHandlers = () => {};
   const stop = async (reason: string, options: { force: boolean; waitSeconds: number }) => {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -71,6 +84,8 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
     await link?.stop(reason);
     queue.preservePendingOrder();
     clearServerState(ctx.paths);
+    await sentry.flush(3_000);
+    removeFatalHandlers();
     process.exit(0);
   };
   const control: ServerControl = {
@@ -80,7 +95,7 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
     },
     restart: (options) => void stop("restart", options),
   };
-  const server = createServer({ config, paths: ctx.paths, store, queue, registry, secrets, logger, events, deliveryLog, health, readiness, configRef, control, cloud: () => link?.status(), schedules: () => scheduler.status() });
+  const server = createServer({ config, paths: ctx.paths, store, queue, registry, secrets, logger, sentry, events, deliveryLog, health, readiness, configRef, control, cloud: () => link?.status(), schedules: () => scheduler.status() });
 
   const loaded = registry.list();
   for (const error of loaded.errors) logger.error("skill failed to load", { skill: error.name, error: error.error });
@@ -100,8 +115,9 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
   accounts.start();
 
   await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, host, () => resolve());
+    const onStartupError = (error: Error) => { scheduler.stop(); accounts.stop(); reject(error); };
+    server.once("error", onStartupError);
+    server.listen(port, host, () => { server.removeListener("error", onStartupError); resolve(); });
   });
   const address = server.address();
   const boundPort = typeof address === "object" && address ? address.port : port;
@@ -160,9 +176,18 @@ export async function serveCommand(ctx: Ctx): Promise<number> {
 
   // A manual edit of skillhook.json is picked up within a few seconds (`skillhook config set` also tells the server).
   setInterval(() => {
-    const reload = configRef.poll((error) => logger.error("config file is invalid; keeping the running settings", { error: errorMessage(error) }));
+    const reload = configRef.poll((error) => logger.error("config file is invalid; keeping the running settings", { error: errorMessage(error) }, error));
     if (reload?.changed.length) logger.info("config reloaded", { applied: reload.applied, restart_required: reload.restart_required });
   }, 5_000).unref();
+  removeFatalHandlers = installDaemonErrorReporting(sentry, {
+    beforeExit: () => {
+      server.close();
+      scheduler.stop();
+      accounts.stop();
+      void queue.drain(0);
+    },
+  });
+
   process.on("SIGINT", () => void stop("SIGINT", { force: true, waitSeconds: 0 }));
   process.on("SIGTERM", () => void stop("SIGTERM", { force: true, waitSeconds: 0 }));
   await new Promise(() => {

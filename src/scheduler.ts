@@ -176,7 +176,7 @@ export class Scheduler {
     try {
       writeJsonFile(this.file, this.states);
     } catch (error) {
-      this.deps.logger.error("could not write schedule state", { file: this.file, error: errorMessage(error) });
+      this.deps.logger.error("could not write schedule state", { file: this.file, error: errorMessage(error) }, error);
     }
   }
 
@@ -185,7 +185,7 @@ export class Scheduler {
     try {
       return this.deps.registry.list().skills.filter((skill) => skill.enabled && skill.schedule !== undefined);
     } catch (error) {
-      this.deps.logger.error("scheduler could not list skills", { error: errorMessage(error) });
+      this.deps.logger.error("scheduler could not list skills", { error: errorMessage(error) }, error);
       return [];
     }
   }
@@ -194,7 +194,7 @@ export class Scheduler {
     try {
       this.tick();
     } catch (error) {
-      this.deps.logger.error("scheduler tick failed", { error: errorMessage(error) });
+      this.deps.logger.error("scheduler tick failed", { error: errorMessage(error) }, error);
     }
   }
 

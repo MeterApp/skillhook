@@ -9,7 +9,7 @@ export interface Logger {
   debug(msg: string, fields?: Record<string, unknown>): void;
   info(msg: string, fields?: Record<string, unknown>): void;
   warn(msg: string, fields?: Record<string, unknown>): void;
-  error(msg: string, fields?: Record<string, unknown>): void;
+  error(msg: string, fields?: Record<string, unknown>, cause?: unknown): void;
   child(fields: Record<string, unknown>): Logger;
 }
 
@@ -19,6 +19,8 @@ export interface LoggerOptions {
   format?: "json" | "pretty";
   stream?: NodeJS.WritableStream;
   base?: Record<string, unknown>;
+  /** Daemon-only error observer. Fields stay local; observer failures never break logging. */
+  onError?: (message: string, cause?: unknown) => void;
 }
 
 export function createLogger(options: LoggerOptions = {}): Logger {
@@ -48,8 +50,11 @@ export function createLogger(options: LoggerOptions = {}): Logger {
     debug: (msg, fields) => write("debug", msg, fields),
     info: (msg, fields) => write("info", msg, fields),
     warn: (msg, fields) => write("warn", msg, fields),
-    error: (msg, fields) => write("error", msg, fields),
-    child: (fields) => createLogger({ level, format, stream, base: { ...base, ...fields } }),
+    error: (msg, fields, cause) => {
+      try { options.onError?.(msg, cause); } catch { /* reporting must not break the daemon */ }
+      write("error", msg, fields);
+    },
+    child: (fields) => createLogger({ level, format, stream, base: { ...base, ...fields }, onError: options.onError }),
   };
   return logger;
 }
