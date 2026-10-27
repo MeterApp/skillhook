@@ -2,6 +2,7 @@
 // logged-out CLI fails fast, or a `fallback:` runner takes over) and shown by `skillhook runners`, `GET /runners` and
 // the MCP tool get_runners. Probes run with the job environment (baseRunEnv), cached per runner for a minute.
 import { existsSync } from "node:fs";
+import { probeClaudeAccount } from "./account-probe.js";
 import { withAccountEnv, type ResolvedAccount } from "./accounts.js";
 import type { Config, RunnerName } from "./config.js";
 import type { Secrets } from "./env.js";
@@ -41,7 +42,7 @@ export interface ReadinessOptions {
   claudeConfigDir?: string;
 }
 
-function claudeMethod(method: string | undefined): RunnerReadiness["method"] {
+export function claudeMethod(method: string | undefined): RunnerReadiness["method"] {
   const m = (method ?? "").toLowerCase();
   if (!m || m === "none") return "unknown";
   if (m.includes("key") || m.includes("console")) return "api_key";
@@ -60,6 +61,20 @@ export class ReadinessProbeUnanswered extends Error {
   }
 }
 
+/**
+ * Does Claude Code's stored login still work? `claude auth status` only reads the stored credentials: an access token
+ * that expired and can no longer be refreshed still says "logged in", and every run then fails with a 401. The control
+ * protocol (`initialize`, `get_status`; no prompt, no inference) uses the login the way a run does, and says `Login:
+ * Expired` when the token is refused. `undefined` when the probe could not tell (an older CLI, a timeout), so a probe
+ * that fails never marks a working login broken.
+ */
+export async function claudeLoginWorks(command: string | string[], env: Record<string, string>, timeoutMs?: number): Promise<boolean | undefined> {
+  const report = await probeClaudeAccount({ command, env, timeoutMs });
+  return report.ok ? report.loggedIn : undefined;
+}
+
+export const CLAUDE_TOKEN_REFUSED = "login expired: Claude Code could not use or refresh the stored token";
+
 export async function checkReadiness(runner: RunnerName, config: Config, baseEnv: Record<string, string>, claudeConfigDir?: string): Promise<RunnerReadiness> {
   const checked_at = nowIso();
   if (runner === "shell") return { runner, found: true, authenticated: null, detail: "runs the skill's own command", ready: true, checked_at };
@@ -74,7 +89,6 @@ export async function checkReadiness(runner: RunnerName, config: Config, baseEnv
     if (!probe.found) return { runner, found: false, authenticated: false, detail: probe.auth.detail, hint: "install Claude Code: https://claude.com/claude-code, or set runners.claude.command", ready: false, ...where, checked_at };
     if (probe.auth.timedOut) throw new ReadinessProbeUnanswered(probe.auth.detail);
     const byLogin = auth !== "api_key" && probe.auth.loggedIn;
-    const authenticated = byLogin || Boolean(keyVar);
     const hint =
       auth === "api_key"
         ? "put ANTHROPIC_API_KEY in .env (skillhook secret set ANTHROPIC_API_KEY), or set runners.claude.auth to auto to use the login"
@@ -83,6 +97,11 @@ export async function checkReadiness(runner: RunnerName, config: Config, baseEnv
           : claudeConfigDir
             ? `run \`${hintDir}claude login\` in a terminal as this user`
             : "run `claude login` in a terminal as this user, or put ANTHROPIC_API_KEY in .env";
+    // A key takes the place of the login in a run, so only a login that would be used is tried.
+    if (byLogin && !keyVar && claudeMethod(probe.auth.method) === "subscription" && (await claudeLoginWorks(config.runners.claude.command, env, config.health.probe_timeout_seconds * 1000)) === false) {
+      return { runner, found: true, path: probe.path, version: probe.version, authenticated: false, method: "subscription", expired: true, detail: CLAUDE_TOKEN_REFUSED, hint, ready: false, ...where, checked_at };
+    }
+    const authenticated = byLogin || Boolean(keyVar);
     return {
       runner,
       found: true,
@@ -140,6 +159,9 @@ export async function checkAccountReadiness(account: ResolvedAccount, config: Co
   const identity = probe.auth.email || probe.auth.org ? { identity: { ...(probe.auth.email ? { email: probe.auth.email } : {}), ...(probe.auth.org ? { org: probe.auth.org } : {}) } } : {};
   if (!probe.auth.loggedIn) return { ...base, ...version, found: true, authenticated: false, ...identity, ...(probe.auth.expired ? { expired: true } : {}), detail: probe.auth.expired ? "login expired" : probe.auth.detail, hint: login, ready: false };
   const method = runner === "claude" ? claudeMethod(probe.auth.method) : probe.auth.method === "api_key" ? "api_key" : probe.auth.method === "chatgpt" ? "subscription" : "unknown";
+  if (runner === "claude" && method === "subscription" && (await claudeLoginWorks(command, env, config.health.probe_timeout_seconds * 1000)) === false) {
+    return { ...base, ...version, found: true, authenticated: false, method, ...identity, expired: true, detail: CLAUDE_TOKEN_REFUSED, hint: login, ready: false };
+  }
   return { ...base, ...version, found: true, authenticated: true, method, ...identity, detail: `${probe.auth.detail}${probe.auth.account ? ` as ${probe.auth.account}` : ""}`, ready: true };
 }
 
