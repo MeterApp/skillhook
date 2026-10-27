@@ -8,6 +8,7 @@ import { ConfigRef, loadConfig, type Config } from "../config.js";
 import { DeliveryLog } from "../delivery-log.js";
 import { loadSecrets, readEnvFile, upsertEnvVar } from "../env.js";
 import { Events } from "../events.js";
+import type { HealthCache } from "../health.js";
 import { JobStore, type JobRecord } from "../jobs.js";
 import { silentLogger } from "../logger.js";
 import type { WebhookEvent } from "../payload.js";
@@ -24,7 +25,7 @@ import { machineKeyPair, openSealed, sealForRecipient } from "./seal.js";
 
 // Placeholder values: nothing here is a real credential.
 const SECRET = "placeholder-hello-value";
-const TIMING: Partial<LinkTiming> = { disabledPollMs: 20, backoffMinMs: 5, backoffMaxMs: 30, revokedRetryMs: 40, upgradeRetryMs: 40, syncTimeoutMs: 3_000, stopSyncTimeoutMs: 1_000 };
+const TIMING: Partial<LinkTiming> = { disabledPollMs: 20, backoffMinMs: 5, backoffMaxMs: 30, revokedRetryMs: 40, upgradeRetryMs: 40, syncTimeoutMs: 3_000, stopSyncTimeoutMs: 1_000, healthSoonMs: 0 };
 
 const cleanups: (() => Promise<unknown> | unknown)[] = [];
 afterEach(async () => {
@@ -61,6 +62,8 @@ interface SetupOptions {
   readiness?: (events: Events) => ReadinessCache;
   /** `accounts` of skillhook.json. */
   accounts?: Record<string, unknown>;
+  /** A health cache stand-in. */
+  health?: HealthCache;
 }
 
 async function setup(options: SetupOptions = {}) {
@@ -88,7 +91,7 @@ async function setup(options: SetupOptions = {}) {
     cleanups.push(() => q.shutdown());
   }
   const readiness = options.readiness?.(events);
-  const link = new CloudLink({ paths, config, secrets, fileSecrets, events, logger: silentLogger, registry, store, deliveryLog, serverState: () => undefined, localBaseUrl: options.localBaseUrl ?? (() => undefined), env: options.env ?? {}, fetchImpl: options.fetchImpl, timing: TIMING, control, queueStats: queue ? () => (queue as JobQueue).stats() : undefined, readiness });
+  const link = new CloudLink({ paths, config, secrets, fileSecrets, events, logger: silentLogger, registry, store, deliveryLog, serverState: () => undefined, localBaseUrl: options.localBaseUrl ?? (() => undefined), env: options.env ?? {}, fetchImpl: options.fetchImpl, timing: TIMING, control, queueStats: queue ? () => (queue as JobQueue).stats() : undefined, readiness, health: options.health });
   cleanups.push(() => link.stop("test"));
   return { fake, paths, config, events, store, deliveryLog, registry, link, secrets, queue, restarts };
 }
@@ -116,6 +119,23 @@ function ingress(partial: Partial<IngressItem> & { id: string }): IngressItem {
 }
 
 describe("CloudLink", () => {
+  it("sends a fresh health report as soon as a job falls back from a failed Claude Code login, not at the next interval", async () => {
+    const asked: { refresh?: boolean }[] = [];
+    const health = { get: async (input: { refresh?: boolean }) => (asked.push(input), { report: { checks: [], ok: true, generated_at: new Date().toISOString() }, cached: false }), last: () => undefined } as unknown as HealthCache;
+    const { fake, events, store, link } = await setup({ health, cloud: { health_interval_seconds: 86_400 } });
+    const reports = () => fake.requests.flatMap((r) => r.events).filter((e) => e.type === "health.report").length;
+    link.start();
+    await fake.waitFor(() => reports() === 1); // the first one goes out at once
+    // Unrelated news waits for the interval.
+    const job = newJob(store);
+    events.emit("job.updated", { job: { ...job, runner_reason: "account a; skipped b" }, fields: ["runner_reason"] });
+    await sleep(150);
+    expect(reports()).toBe(1);
+    events.emit("job.updated", { job: { ...job, runner: "codex", runner_requested: "claude", runner_reason: "fallback: claude failed (auth)", attempts: [{ runner: "claude", started_at: "", finished_at: "", status: "failed", failure: { kind: "auth", retryable: false, message: "401" } }] }, fields: ["attempts", "runner", "runner_reason"] });
+    await fake.waitFor(() => reports() === 2);
+    expect(asked.at(-1)).toMatchObject({ refresh: true });
+  });
+
   it("replays recovery completed before subscription, including a previous crash and delayed pairing", async () => {
     const { fake, link, store, config } = await setup({ cloud: { enabled: false } });
     const old = newJob(store);

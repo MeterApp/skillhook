@@ -17,7 +17,7 @@ import { resolveRunSettings } from "./run.js";
 import { probeAccountMcp } from "./account-mcp.js";
 import { accountAttention } from "./account-report.js";
 import { AccountStateStore, listAccounts, poolFor, refNames, withAccountEnv } from "./accounts.js";
-import { checkAccountReadiness } from "./readiness.js";
+import { checkAccountReadiness, CLAUDE_TOKEN_REFUSED, claudeLoginWorks, claudeMethod } from "./readiness.js";
 import { baseRunEnv, claudeConfigDir, withClaudeConfigDir } from "./runners/env.js";
 import { commandParts } from "./runners/types.js";
 import { nextRun } from "./schedule.js";
@@ -139,6 +139,37 @@ function updateHint(paths: Paths, config: Config | undefined, latest: string): s
   const install = detectInstall(undefined, latest);
   const automatic = autoUpdateEnabled(config) && Boolean(install.command) && !install.blocked && !failed;
   return `${automatic ? "skillhook installs it in the background (auto_update); now: " : "run: "}skillhook update --install   (notes: ${releaseNotesUrl(latest)})${failed}`;
+}
+
+/** How far back `claude fallbacks` looks. */
+const FALLBACK_WINDOW_MS = 24 * 3_600_000;
+
+/** Asked for Claude Code and ran on another runner because Claude Code's login did not work (a run refused, or the pre-flight). */
+export function claudeLoginFallback(job: JobRecord): boolean {
+  if (job.runner_requested !== "claude" || job.runner === "claude") return false;
+  const attempts = job.attempts ?? [];
+  if (attempts.some((a) => a.runner === "claude" && a.failure?.kind === "auth")) return true;
+  // The pre-flight's form (`fallback: claude <readiness detail>`): not ready means logged out, expired or not installed.
+  return !attempts.some((a) => a.runner === "claude") && (job.runner_reason ?? "").startsWith("fallback: claude ");
+}
+
+/** The `claude fallbacks` row over recent jobs (newest first): failing while the newest fallback is newer than Claude Code's newest successful run. */
+export function claudeFallbackCheck(jobs: JobRecord[]): { status: CheckStatus; detail: string; hint?: string; data: Record<string, unknown> } {
+  const fell = jobs.filter(claudeLoginFallback);
+  const latest = fell[0];
+  if (!latest) return { status: "ok", detail: "no job fell back from claude in the last 24 h", data: { count: 0 } };
+  const worked = jobs.find((job) => job.runner === "claude" && job.status === "succeeded" && job.created_at > latest.created_at);
+  const runners = [...new Set(fell.map((job) => job.runner))].join(", ");
+  const skills = [...new Set(fell.map((job) => job.skill))];
+  const reason = latest.attempts?.find((a) => a.runner === "claude" && a.failure?.kind === "auth")?.error ?? latest.runner_reason ?? "";
+  const data = { count: fell.length, latest_job: latest.id, latest_at: latest.created_at, runners, skills, last_claude_success: worked?.id ?? null };
+  if (worked) return { status: "ok", detail: `${fell.length} job(s) fell back from claude in the last 24 h; claude has run since (${worked.id})`, data };
+  return {
+    status: "fail",
+    detail: `${fell.length} job(s) in the last 24 h ran on ${runners} instead of claude because its login failed (${skills.join(", ")}); latest ${latest.id}: ${reason}`,
+    hint: "run `claude login` as the user the service runs as (with the CLAUDE_CONFIG_DIR jobs use), then `skillhook runners --refresh`; the row clears once claude runs a job again",
+    data,
+  };
 }
 
 export async function runHealth(paths: Paths, options: HealthOptions = {}): Promise<HealthReport> {
@@ -279,21 +310,43 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
     const apiKey = Boolean(secrets.ANTHROPIC_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN);
     const version = claude.version ? `${claude.version}, ` : "";
     const data = { found: claude.found, path: claude.path ?? null, version: claude.version ?? null, logged_in: claude.auth.loggedIn, method: claude.auth.method ?? null, api_key: apiKey };
+    // `auth status` says "logged in" for a token that can no longer be refreshed; the control protocol uses it.
+    const refused = config !== undefined && claude.found && claude.auth.loggedIn && !apiKey && claudeMethod(claude.auth.method) === "subscription" && (await claudeLoginWorks(config.runners.claude.command, probeEnv, timeoutMs)) === false;
     if (!claude.found) check("runners", "claude", "fail", claude.auth.detail, "install Claude Code: https://claude.com/claude-code, or set runners.claude.command", data);
+    else if (refused) check("runners", "claude", "fail", `${version}${CLAUDE_TOKEN_REFUSED}`, "run `claude login` in a terminal as the user the service runs as (with the CLAUDE_CONFIG_DIR jobs use)", { ...data, expired: true });
     else if (claude.auth.loggedIn || apiKey) check("runners", "claude", "ok", `${version}${apiKey && !claude.auth.loggedIn ? "ANTHROPIC_API_KEY set" : claude.auth.detail}`, undefined, data);
     else check("runners", "claude", "fail", `${version}${claude.auth.detail}`, "run `claude login` in a terminal (subscription) or put ANTHROPIC_API_KEY in .env", data);
   }
   // Each configuration directory skills name is its own login: one that is logged out sends its skills to the fallback.
   if (config && claudeDirs.size) {
-    const probes = await Promise.all([...claudeDirs].map(async ([dir, skills]) => ({ dir, skills, probe: await probeClaude(config.runners.claude.command, { env: withClaudeConfigDir(probeEnv, dir), deep: false, timeoutMs }) })));
-    for (const { dir, skills, probe } of probes) {
+    const probes = await Promise.all(
+      [...claudeDirs].map(async ([dir, skills]) => {
+        const dirEnv = withClaudeConfigDir(probeEnv, dir);
+        const probe = await probeClaude(config.runners.claude.command, { env: dirEnv, deep: false, timeoutMs });
+        const refused = probe.found && probe.auth.loggedIn && claudeMethod(probe.auth.method) === "subscription" && (await claudeLoginWorks(config.runners.claude.command, dirEnv, timeoutMs)) === false;
+        return { dir, skills, probe, refused };
+      }),
+    );
+    for (const { dir, skills, probe, refused } of probes) {
       const name = `claude ${displayPath(dir)}`;
       const used = `${skills.length} skill(s): ${skills.join(", ")}`;
       const data = { config_dir: dir, found: probe.found, logged_in: probe.auth.loggedIn, method: probe.auth.method ?? null, account: probe.auth.account ?? null, skills };
       if (!probe.found) continue; // the claude row already says it is not installed
       if (!isDirectory(dir)) check("runners", name, "fail", `${dir} does not exist (${used})`, `run: CLAUDE_CONFIG_DIR=${dir} claude login`, data);
+      else if (refused) check("runners", name, "fail", `${CLAUDE_TOKEN_REFUSED} (${used})`, `run: CLAUDE_CONFIG_DIR=${dir} claude login`, { ...data, expired: true });
       else if (probe.auth.loggedIn) check("runners", name, "ok", `${probe.auth.detail}${probe.auth.account ? ` as ${probe.auth.account}` : ""} (${used})`, undefined, data);
       else check("runners", name, "fail", `${probe.auth.detail} (${used})`, `run: CLAUDE_CONFIG_DIR=${dir} claude login`, data);
+    }
+  }
+  // A job that asked for Claude Code and ran on its fallback because the login failed still succeeds, so nothing else
+  // says so: this row fails until Claude Code runs a job again (and the cloud raises an alert on a failing row).
+  if (config && claude && isDirectory(paths.jobsDir)) {
+    try {
+      const store = new JobStore(paths.jobsDir, { maxJobs: config.jobs.max_jobs, dedupeWindowSeconds: config.jobs.dedupe_window_seconds });
+      const fallbacks = claudeFallbackCheck(store.list({ since: new Date(Date.now() - FALLBACK_WINDOW_MS).toISOString(), limit: 1000 }));
+      check("runners", "claude fallbacks", fallbacks.status, fallbacks.detail, fallbacks.hint, fallbacks.data);
+    } catch (error) {
+      check("runners", "claude fallbacks", "skip", `could not read the jobs: ${errorMessage(error)}`);
     }
   }
   // Every named account is its own login: a logged-out, expired or limited one sends its skills to the pool's next account.
