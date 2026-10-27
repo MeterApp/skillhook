@@ -99,3 +99,27 @@ Use pnpm 12.14.0 (the `packageManager` pin), then run `pnpm deps:install`. It in
 The pnpm global virtual store is enabled here after tests and builds passed. Equivalent dependency graphs share installed packages across projects and worktrees. It is experimental; to opt out set `virtualStoreType: project` in `pnpm-workspace.yaml` and reinstall.
 
 Keep the shared download store warm; prune only occasionally, and retire completed worktrees through their owning tool after preserving changes.
+
+## Publishing the plugin directory mirror
+
+Claude's directory safety scan reads the whole submitted repository. Submit
+[MeterApp/skillhook-plugins](https://github.com/MeterApp/skillhook-plugins), the
+plugin-only mirror, rather than the CLI development repository (whose tests
+contain fake credentials and whose workspace config is unrelated to installation).
+The root manifests, icon, MCP launchers, skills and supporting docs remain the
+source of truth here. The mirror preserves both local and cloud capabilities.
+
+After merging a plugin change and verifying its pinned npm version is published,
+run from a clean `main` checkout:
+
+```bash
+node scripts/publish-plugins.mjs --dry-run
+node scripts/publish-plugins.mjs
+```
+
+Both commands stage an explicit allowlist and run
+`claude plugin validate <snapshot> --strict --profile directory` before publishing.
+`--output=<empty-directory>` preserves the validated snapshot for inspection.
+Set `CLAUDE_BIN` if the Claude CLI is not on PATH. Never edit the generated public
+mirror directly, and do not enable operational Skillhook hooks for either public
+repository.
