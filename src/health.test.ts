@@ -3,8 +3,9 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { formatDoctor, runDoctor } from "./doctor.js";
 import { Events } from "./events.js";
-import { diffHealth, formatHealth, formatUptime, HealthCache, runHealth, type HealthReport } from "./health.js";
-import { JobStore } from "./jobs.js";
+import { claudeFallbackCheck, claudeLoginFallback, diffHealth, formatHealth, formatUptime, HealthCache, runHealth, type HealthReport } from "./health.js";
+import { JobStore, type JobRecord } from "./jobs.js";
+import { CLAUDE_TOKEN_REFUSED } from "./readiness.js";
 import { silentLogger } from "./logger.js";
 import type { Paths } from "./paths.js";
 import { FAKE_CLAUDE, FAKE_CODEX, tempHome, writeConfigFile, writeEnv, writeSkill } from "./test-support/helpers.js";
@@ -161,6 +162,62 @@ describe("claude.config_dir", () => {
     expect(report.checks.find((c) => c.name.endsWith("nowhere"))).toMatchObject({ status: "fail", detail: expect.stringContaining("does not exist") });
     expect(byName(report, "skill acme-one")?.data).toMatchObject({ claude_config_dir: acme });
     expect(byName(report, "claude")?.status).toBe("ok"); // the default login is a row of its own
+  });
+
+  it("fails a directory whose stored token Claude Code refuses although `auth status` says logged in", async () => {
+    const paths = home();
+    const stale = path.join(paths.home, "claude-stale");
+    mkdirSync(stale, { recursive: true });
+    writeFileSync(path.join(stale, "token-refused"), "");
+    writeSkill(paths, "stale", `description: s\nskillhook:\n  claude:\n    config_dir: ${stale}`);
+    const report = await runHealth(paths, OFFLINE);
+    expect(report.checks.find((c) => c.name.endsWith("claude-stale"))).toMatchObject({ status: "fail", detail: `${CLAUDE_TOKEN_REFUSED} (1 skill(s): stale)`, hint: `run: CLAUDE_CONFIG_DIR=${stale} claude login`, data: { expired: true } });
+  });
+});
+
+describe("claude login", () => {
+  it("fails the claude row when the job environment's login is refused", async () => {
+    const paths = home();
+    const stale = path.join(paths.home, "claude-stale");
+    mkdirSync(stale, { recursive: true });
+    writeFileSync(path.join(stale, "token-refused"), "");
+    const report = await runHealth(paths, { ...OFFLINE, env: { ...NO_NET, CLAUDE_CONFIG_DIR: stale } });
+    expect(byName(report, "claude")).toMatchObject({ status: "fail", detail: expect.stringContaining(CLAUDE_TOKEN_REFUSED), hint: expect.stringContaining("claude login"), data: { expired: true } });
+  });
+});
+
+describe("claude fallbacks", () => {
+  let n = 0;
+  const job = (fields: Partial<JobRecord>): JobRecord => ({ id: `j${++n}`, skill: "triage", status: "succeeded", trigger: "webhook", runner: "claude", created_at: new Date(Date.UTC(2026, 9, 23, 0, n)).toISOString(), ...fields }) as JobRecord;
+  const refused = { runner: "claude" as const, started_at: "", finished_at: "", status: "failed" as const, error: "Failed to authenticate. API Error: 401 OAuth access token has expired.", failure: { kind: "auth" as const, retryable: false, message: "401" } };
+
+  it("tells a fallback over a failed login from other fallbacks", () => {
+    expect(claudeLoginFallback(job({ runner: "codex", runner_requested: "claude", attempts: [refused] }))).toBe(true);
+    expect(claudeLoginFallback(job({ runner: "codex", runner_requested: "claude", runner_reason: `fallback: claude ${CLAUDE_TOKEN_REFUSED}` }))).toBe(true);
+    expect(claudeLoginFallback(job({ runner: "codex", runner_requested: "claude", attempts: [{ ...refused, failure: { kind: "usage_limit", retryable: false, message: "limit" } }], runner_reason: "fallback: claude failed (usage_limit)" }))).toBe(false);
+    expect(claudeLoginFallback(job({ runner: "claude", runner_requested: "claude", attempts: [refused] }))).toBe(false); // another account took over
+    expect(claudeLoginFallback(job({ runner: "codex" }))).toBe(false);
+  });
+
+  it("fails while the newest fallback is newer than claude's newest success, and clears once claude runs again", () => {
+    expect(claudeFallbackCheck([job({ runner: "claude" })])).toMatchObject({ status: "ok", data: { count: 0 } });
+    const older = job({ runner: "claude", status: "succeeded" });
+    const first = job({ skill: "sentry", runner: "codex", runner_requested: "claude", attempts: [refused] });
+    const second = job({ skill: "support", runner: "codex", runner_requested: "claude", runner_reason: `fallback: claude ${CLAUDE_TOKEN_REFUSED}` });
+    const failing = claudeFallbackCheck([second, first, older]);
+    expect(failing).toMatchObject({ status: "fail", hint: expect.stringContaining("claude login"), data: { count: 2, latest_job: second.id, runners: "codex", skills: ["support", "sentry"], last_claude_success: null } });
+    expect(failing.detail).toContain("2 job(s) in the last 24 h ran on codex instead of claude because its login failed (support, sentry)");
+    const recovered = job({ runner: "claude", status: "succeeded" });
+    expect(claudeFallbackCheck([recovered, second, first, older])).toMatchObject({ status: "ok", data: { count: 2, last_claude_success: recovered.id } });
+  });
+
+  it("is a row of the report, read from the job store", async () => {
+    const paths = home();
+    const store = new JobStore(paths.jobsDir, { maxJobs: 100, dedupeWindowSeconds: 60 });
+    const event: WebhookEvent = { id: "", skill: "beta", trigger: "webhook", received_at: new Date().toISOString(), method: "POST", path: "/hooks/beta", query: {}, headers: {}, source_ip: "1.1.1.1", content_type: "application/json", content_length: 2, body_kind: "json", payload: {} };
+    const fell = store.create({ skill: "beta", trigger: "webhook", runner: "claude", source: { ip: "", method: "POST", path: "", content_type: null }, event });
+    store.update(fell.id, { status: "succeeded", runner: "codex", runner_requested: "claude", runner_reason: "fallback: claude failed (auth)", attempts: [refused] });
+    expect(byName(await runHealth(paths, OFFLINE), "claude fallbacks")).toMatchObject({ group: "runners", status: "fail", data: { latest_job: fell.id } });
   });
 });
 

@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "./config.js";
 import { Events } from "./events.js";
 import { silentLogger } from "./logger.js";
-import { checkReadiness, ReadinessCache, RUNNER_NAMES } from "./readiness.js";
+import { checkReadiness, CLAUDE_TOKEN_REFUSED, ReadinessCache, RUNNER_NAMES } from "./readiness.js";
 import { mergedPath } from "./runners/env.js";
 import { FAKE_CLAUDE, FAKE_CODEX, tempHome, writeConfigFile } from "./test-support/helpers.js";
 
@@ -40,6 +40,22 @@ describe("checkReadiness", () => {
     expect(await checkReadiness("claude", missing, ENV)).toMatchObject({ found: false, authenticated: false, ready: false, detail: "definitely-not-a-binary-xyz not found on PATH", hint: expect.stringContaining("install Claude Code") });
     expect(await checkReadiness("codex", missing, ENV)).toMatchObject({ found: false, ready: false });
     expect(RUNNER_NAMES).toEqual(["claude", "codex", "shell"]);
+  });
+
+  it("tries Claude Code's login instead of trusting `auth status`, which still says logged in for a refused token", async () => {
+    const { paths, config } = configured();
+    const claudeDir = path.join(paths.home, "claude-refused");
+    mkdirSync(claudeDir, { recursive: true });
+    writeFileSync(path.join(claudeDir, "token-refused"), "");
+    expect(await checkReadiness("claude", config, { ...ENV, CLAUDE_CONFIG_DIR: claudeDir })).toMatchObject({ found: true, authenticated: false, expired: true, method: "subscription", detail: CLAUDE_TOKEN_REFUSED, ready: false, hint: expect.stringContaining("claude login") });
+    expect(await checkReadiness("claude", config, ENV, claudeDir)).toMatchObject({ expired: true, ready: false, config_dir: claudeDir, hint: expect.stringContaining(`CLAUDE_CONFIG_DIR=${claudeDir} claude login`) });
+    // An API key is used instead of the login, so the login is not tried.
+    expect(await checkReadiness("claude", config, { ...ENV, CLAUDE_CONFIG_DIR: claudeDir, ANTHROPIC_API_KEY: "sk-test" })).toMatchObject({ ready: true });
+    // A CLI that cannot answer the control protocol (an older version) keeps what `auth status` said.
+    const older = path.join(paths.home, "older-claude.mjs");
+    writeFileSync(older, `const a = process.argv.slice(2);\nif (a[0] === "--version") console.log("2.0.0 (Claude Code)");\nelse if (a[0] === "auth") console.log(JSON.stringify({ loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty" }));\nprocess.exit(a.includes("--input-format") ? 1 : 0);\n`);
+    writeConfigFile(paths, { runners: { claude: { command: [process.execPath, older] } } });
+    expect(await checkReadiness("claude", loadConfig(paths), ENV)).toMatchObject({ authenticated: true, ready: true, detail: "logged in (claude.ai)" });
   });
 });
 

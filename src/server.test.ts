@@ -6,7 +6,7 @@ import { ConfigRef, loadConfig, setConfigValue } from "./config.js";
 import { DeliveryLog } from "./delivery-log.js";
 import { Events } from "./events.js";
 import { HealthCache } from "./health.js";
-import { ReadinessCache } from "./readiness.js";
+import { CLAUDE_TOKEN_REFUSED, ReadinessCache } from "./readiness.js";
 import { baseRunEnv } from "./runners/env.js";
 import { JobStore } from "./jobs.js";
 import { silentLogger } from "./logger.js";
@@ -882,6 +882,20 @@ describe("HTTP surface", () => {
       expect(store.get(String(profiled.job_id))).toMatchObject({ runner: "claude", resume_command: expect.stringContaining(`CLAUDE_CONFIG_DIR=${profileDir} claude --resume`) });
       expect(store.get(String(profiled.job_id))?.runner_requested).toBeUndefined();
       expect((JSON.parse(readFileSync(recordFile, "utf8")) as { env: Record<string, string> }).env.CLAUDE_CONFIG_DIR).toBe(profileDir);
+      // A stored token that can no longer be refreshed: `auth status` still says logged in, but the pre-flight tries the
+      // login, so the job goes to the fallback without a failed run first, and the health report says so.
+      const refusedDir = path.join(paths.home, "claude-refused");
+      mkdirSync(refusedDir, { recursive: true });
+      writeFileSync(path.join(refusedDir, "token-refused"), "");
+      writeEnv(paths, { ...ENV_BASE, CLAUDE_CONFIG_DIR: refusedDir });
+      const stale = (await json(await fetch(`${base}/runners?refresh=1`, { headers: auth }))) as unknown as { runners: { runner: string; ready: boolean; expired?: boolean; detail: string }[] };
+      expect(stale.runners[0]).toMatchObject({ runner: "claude", ready: false, expired: true, detail: CLAUDE_TOKEN_REFUSED });
+      const rerouted = await json(await fetch(`${base}/hooks/fallbacky?wait=20`, { method: "POST", body: "{}", headers: { authorization: "Bearer fb" } }));
+      expect(store.get(String(rerouted.job_id))).toMatchObject({ status: "succeeded", runner: "codex", runner_requested: "claude", runner_reason: `fallback: claude ${CLAUDE_TOKEN_REFUSED}` });
+      expect(store.get(String(rerouted.job_id))?.attempts).toBeUndefined();
+      const checks = (await json(await fetch(`${base}/health/checks?refresh=1`, { headers: auth }))) as unknown as { checks: { name: string; status: string; data?: { latest_job?: string } }[] };
+      expect(checks.checks.find((c) => c.name === "claude")).toMatchObject({ status: "fail" });
+      expect(checks.checks.find((c) => c.name === "claude fallbacks")).toMatchObject({ status: "fail", data: { latest_job: String(rerouted.job_id) } });
     } finally {
       writeEnv(paths, ENV_BASE);
     }

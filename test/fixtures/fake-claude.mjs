@@ -29,7 +29,10 @@ if (args[0] === "--version") {
   process.exit(0);
 }
 // Account state under CLAUDE_CONFIG_DIR: `logged-out`, `expired` (a login that ran out), `account` (the email),
-// `usage.json` (what `get_usage` answers), `limited` (runs fail with a usage limit and a rejected rate_limit_event).
+// `usage.json` (what `get_usage` answers), `limited` (runs fail with a usage limit and a rejected rate_limit_event),
+// `token-refused` (as captured: `auth status` still says logged in, but the stored token can no longer be refreshed, so
+// the control protocol says `Login: Expired` and every run fails to authenticate).
+const tokenRefused = () => stateFile("token-refused") !== undefined;
 const loggedIn = () => process.env.FAKE_CLAUDE_AUTH !== "out" && stateFile("logged-out") === undefined && stateFile("expired") === undefined && !(process.env.FAKE_CLAUDE_AUTH_TOKEN_ONLY && !process.env.CLAUDE_CODE_OAUTH_TOKEN);
 const accountEmail = () => (stateFile("account") ?? "").trim() || undefined;
 if (args[0] === "auth" && args[1] === "status") {
@@ -78,12 +81,12 @@ if (args.includes("--input-format") && args[args.indexOf("--input-format") + 1] 
     }
     if (message.type !== "control_request") continue;
     const subtype = message.request?.subtype;
-    const expired = stateFile("expired") !== undefined;
-    if (subtype === "initialize") reply(message.request_id, { commands: [], models: [], account: loggedIn() ? { email: accountEmail() ?? "fake@example.com", subscriptionType: "max", tokenSource: process.env.CLAUDE_CODE_OAUTH_TOKEN ? "CLAUDE_CODE_OAUTH_TOKEN" : "claude.ai", apiProvider: "firstParty" } : { tokenSource: "none", apiProvider: "firstParty" }, claude_code_version: "2.1.270" });
+    const expired = stateFile("expired") !== undefined || tokenRefused();
+    if (subtype === "initialize") reply(message.request_id, { commands: [], models: [], account: loggedIn() && !tokenRefused() ? { email: accountEmail() ?? "fake@example.com", subscriptionType: "max", tokenSource: process.env.CLAUDE_CODE_OAUTH_TOKEN ? "CLAUDE_CODE_OAUTH_TOKEN" : "claude.ai", apiProvider: "firstParty" } : { tokenSource: "none", apiProvider: "firstParty" }, claude_code_version: "2.1.270" });
     else if (subtype === "get_usage") {
       const usage = stateFile("usage.json");
       const reset = (hours) => new Date(Date.now() + hours * 3_600_000).toISOString();
-      reply(message.request_id, usage ? JSON.parse(usage) : loggedIn() ? { session: { total_cost_usd: 0 }, subscription_type: "max", rate_limits_available: true, rate_limits: { five_hour: { utilization: 42, resets_at: reset(2) }, seven_day: { utilization: 17, resets_at: reset(90) }, model_scoped: [{ display_name: "Opus", utilization: 5, resets_at: reset(90) }] }, behaviors: null } : { session: { total_cost_usd: 0 }, subscription_type: null, rate_limits_available: false, rate_limits: null, behaviors: null });
+      reply(message.request_id, usage ? JSON.parse(usage) : loggedIn() && !tokenRefused() ? { session: { total_cost_usd: 0 }, subscription_type: "max", rate_limits_available: true, rate_limits: { five_hour: { utilization: 42, resets_at: reset(2) }, seven_day: { utilization: 17, resets_at: reset(90) }, model_scoped: [{ display_name: "Opus", utilization: 5, resets_at: reset(90) }] }, behaviors: null } : { session: { total_cost_usd: 0 }, subscription_type: null, rate_limits_available: false, rate_limits: null, behaviors: null });
     } else if (subtype === "mcp_status") {
       mcpAsked++;
       if (stateFile("no-mcp-status") !== undefined) {
@@ -200,7 +203,7 @@ if (process.env.FAKE_CLAUDE_FAIL) {
   out({ type: "result", subtype: "error", is_error: true, result: process.env.FAKE_CLAUDE_FAIL, session_id: sessionId, total_cost_usd: 0, num_turns: 1, duration_ms: 5 });
   process.exit(1);
 }
-const failKind = process.env.FAKE_CLAUDE_FAIL_KIND ?? (stateFile("logged-out") !== undefined || stateFile("expired") !== undefined ? "auth" : stateFile("limited") !== undefined ? "limited" : undefined);
+const failKind = process.env.FAKE_CLAUDE_FAIL_KIND ?? (stateFile("logged-out") !== undefined || stateFile("expired") !== undefined || tokenRefused() ? "auth" : stateFile("limited") !== undefined ? "limited" : undefined);
 if (failKind === "limited") {
   // A limited account, as the real CLI reports it: a rejected window on the rate-limit notice, then the error result.
   const resetsAt = Math.floor(Date.now() / 1000) + 7200;

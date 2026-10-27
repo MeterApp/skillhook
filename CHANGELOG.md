@@ -4,6 +4,9 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- A Claude Code login whose token can no longer be refreshed is no longer reported as ready. `claude auth status` only reads the stored credentials and says "logged in" for such a token, so jobs passed the readiness check, failed with `401 OAuth access token has expired` and silently ran on their `fallback:` runner. Readiness (`skillhook runners`, `GET /runners`, the job pre-flight, account readiness) and the `claude` health rows now try the login through Claude Code's control protocol (no prompt) and report `expired: true` with `login expired: Claude Code could not use or refresh the stored token`.
+- A `claude fallbacks` health check fails while jobs fall back from Claude Code because its login failed, and clears once Claude Code runs a job again. Skillhook Cloud raises a `health_failing` alert on it; a paired machine now sends a fresh health report at its next sync when a job falls back that way or a runner or account becomes usable or unusable, instead of waiting for `cloud.health_interval_seconds`.
+
 ## 0.14.2 (2026-10-26)
 
 - Use the Sentry-compatible `skillhook-daemon@<version>` release name. Scoped npm package names contain a slash, which Sentry discards from accepted events.
