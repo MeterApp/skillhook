@@ -9,7 +9,7 @@
     "email": "hello@meterapp.co",
     "url": "https://meterapp.co"
   },
-  "homepage": "https://skillhook.dev",
+  "homepage": "https://skillhook.dev/?ref=plugin",
   "repository": "https://github.com/MeterApp/skillhook",
   "license": "MIT",
   "icon": "./.claude-plugin/icon.png",

@@ -27,7 +27,7 @@ try {
     try { run('gh', ['repo', 'view', repo, '--json', 'name']); } catch { exists = false; }
     if (exists) run('gh', ['repo', 'clone', repo, checkout, '--', '--depth', '1']);
     else {
-      run('gh', ['repo', 'create', repo, '--public', '--description', 'Skillhook plugin for Claude Code, Codex and Cursor: webhook skills and Skillhook Cloud MCP', '--homepage', 'https://skillhook.dev']);
+      run('gh', ['repo', 'create', repo, '--public', '--description', 'Skillhook plugin for Claude Code, Codex and Cursor: webhook skills and Skillhook Cloud MCP', '--homepage', 'https://skillhook.dev/?ref=plugin']);
       run('git', ['init', '-b', 'main'], checkout);
       run('git', ['remote', 'add', 'origin', `https://github.com/${repo}.git`], checkout);
     }
@@ -43,7 +43,7 @@ try {
     manifest.repository = `https://github.com/${repo}`;
     writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
   }
-  writeFileSync(join(checkout, 'README.md'), `# Skillhook plugin\n\nWebhook in, agent out. Set up secure webhooks on your own machine, write Agent Skills, and operate your Skillhook Cloud organisation.\n\n## Install\n\n\`\`\`text\n/plugin marketplace add ${repo}\n/plugin install skillhook@meterapp-skillhook\n\`\`\`\n\nThe plugin launches the pinned npm package \`@meterapp/skillhook@${version}\` with npx and includes three skills and two MCP servers (local and cloud). Node.js 22 or later is required. Cloud access is optional; run \`skillhook cloud login\` to sign in.\n\n[Website](https://skillhook.dev) · [Documentation](https://skillhook.dev/docs) · [Source and support](https://github.com/MeterApp/skillhook) · [Privacy](https://skillhook.dev/privacy) · [Terms](https://skillhook.dev/terms)\n\nThis repository is generated from [MeterApp/skillhook](https://github.com/MeterApp/skillhook) with \`scripts/publish-plugins.mjs\`. Make changes there and republish; do not edit this mirror. Only plugin assets and supporting documentation are published here.\n`);
+  writeFileSync(join(checkout, 'README.md'), `# Skillhook plugin\n\nWebhook in, agent out. Set up secure webhooks on your own machine, write Agent Skills, and operate your Skillhook Cloud organisation.\n\n## Install\n\n\`\`\`text\n/plugin marketplace add ${repo}\n/plugin install skillhook@meterapp-skillhook\n\`\`\`\n\nThe plugin launches the pinned npm package \`@meterapp/skillhook@${version}\` with npx and includes three skills and two MCP servers (local and cloud). Node.js 22 or later is required. Cloud access is optional; run \`skillhook cloud login\` to sign in.\n\n[Website](https://skillhook.dev/?ref=plugin) · [Documentation](https://skillhook.dev/docs?ref=plugin) · [Source and support](https://github.com/MeterApp/skillhook) · [Privacy](https://skillhook.dev/privacy) · [Terms](https://skillhook.dev/terms)\n\nThis repository is generated from [MeterApp/skillhook](https://github.com/MeterApp/skillhook) with \`scripts/publish-plugins.mjs\`. Make changes there and republish; do not edit this mirror. Only plugin assets and supporting documentation are published here.\n`);
   console.log(run(process.env.CLAUDE_BIN || 'claude', ['plugin', 'validate', checkout, '--strict', '--profile', 'directory']));
   if (output || dryRun) console.log(`Validated skillhook ${version}: ${checkout}`);
   else {
