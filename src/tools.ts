@@ -17,14 +17,14 @@ export interface ToolExecResult {
   spawnError?: string;
 }
 
-/** Runs one tool with the given environment (its PATH decides what is found); never throws. */
+/** Read-only probes must end at their deadline even when the CLI ignores SIGTERM; never throws. */
 export function execTool(command: string, args: string[], options: { env: Record<string, string>; timeoutMs?: number; cwd?: string }): Promise<ToolExecResult> {
   return new Promise((resolve) => {
-    execFile(command, args, { env: options.env, cwd: options.cwd, timeout: options.timeoutMs ?? 20_000, maxBuffer: 8 * 1024 * 1024, encoding: "utf8" }, (error, stdout, stderr) => {
+    execFile(command, args, { env: options.env, cwd: options.cwd, timeout: options.timeoutMs ?? 20_000, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024, encoding: "utf8" }, (error, stdout, stderr) => {
       if (!error) return resolve({ code: 0, stdout, stderr, timedOut: false });
       const e = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string; stdout?: string; stderr?: string };
       const started = typeof e.code !== "string"; // execFile reports a numeric exit code once the process ran; ENOENT & co. are strings
-      resolve({ code: typeof e.code === "number" ? e.code : null, stdout: typeof stdout === "string" ? stdout : "", stderr: typeof stderr === "string" ? stderr : "", timedOut: e.killed === true && e.signal === "SIGTERM", ...(started ? {} : { spawnError: e.message }) });
+      resolve({ code: typeof e.code === "number" ? e.code : null, stdout: typeof stdout === "string" ? stdout : "", stderr: typeof stderr === "string" ? stderr : "", timedOut: e.killed === true && e.signal === "SIGKILL", ...(started ? {} : { spawnError: e.message }) });
     });
   });
 }

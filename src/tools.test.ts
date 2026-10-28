@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { mergedPath } from "./runners/env.js";
 import { FAKE_CLAUDE, FAKE_CODEX, tempHome } from "./test-support/helpers.js";
-import { parseClaudeAuth, parseClaudeMcpList, parseClaudePlugins, parseCodexDoctor, parseCodexLogin, parseCodexMcpList, parseCodexPlugins, parseVersion, probeClaude, probeCodex, resolveCommand } from "./tools.js";
+import { execTool, parseClaudeAuth, parseClaudeMcpList, parseClaudePlugins, parseCodexDoctor, parseCodexLogin, parseCodexMcpList, parseCodexPlugins, parseVersion, probeClaude, probeCodex, resolveCommand } from "./tools.js";
 
 // Captured from Claude Code 2.1.270 (URLs replaced).
 const CLAUDE_MCP_LIST = `Checking MCP server health…
@@ -201,5 +201,21 @@ describe("probes", () => {
     const missing = await probeClaude("definitely-not-a-binary-xyz", { env: { ...env, PATH: "/nonexistent" }, deep: true });
     expect(missing).toEqual({ found: false, auth: { loggedIn: false, detail: "definitely-not-a-binary-xyz not found on PATH" } });
     expect(await probeCodex("/nonexistent/codex", { env })).toMatchObject({ found: false });
+  });
+});
+
+
+describe("tool deadlines", () => {
+  it("ends an unresponsive probe even when it ignores SIGTERM", async () => {
+    const started = Date.now();
+    const result = await execTool(process.execPath, ["-e", `
+      process.on("SIGTERM", () => {});
+      process.stdout.write("ready");
+      // Keep the regression finite even with the old SIGTERM-only implementation.
+      setTimeout(() => process.exit(0), 3000);
+    `], { env: { PATH: process.env.PATH ?? "" }, timeoutMs: 750 });
+    expect(result).toMatchObject({ code: null, stdout: "ready", timedOut: true });
+    expect(result.spawnError).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(2500);
   });
 });

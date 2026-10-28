@@ -4,6 +4,10 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.14.3 (2026-10-28)
+
+- Bound runner and tool probes with a forced timeout so a CLI that ignores SIGTERM cannot hold queue slots indefinitely.
+
 ## 0.14.2 (2026-10-26)
 
 - Use the Sentry-compatible `skillhook-daemon@<version>` release name. Scoped npm package names contain a slash, which Sentry discards from accepted events.
