@@ -3,6 +3,8 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { AccountStateStore, defaultAccountSecretEnv, getAccount, isLimited, orderPool, parseLimitReset, poolFor, prepareAccountDir, resolveAccount, runnerOfAccounts, stateAfterRun, usageFromRun, withAccountEnv } from "./accounts.js";
+import { createResumeJob } from "./answer.js";
+import { getRunner } from "./runners/index.js";
 import { AccountWatch } from "./account-watch.js";
 import { ConfigSchema, loadConfig as load } from "./config.js";
 import { Events } from "./events.js";
@@ -191,6 +193,59 @@ function readEnv(file: string): Record<string, string> {
       .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
   );
 }
+
+describe("accounts: session affinity", () => {
+  it.each((["claude", "codex"] as const).flatMap((runner) => ["named", "legacy"].map((kind) => ({ runner, kind }))))("resumes a $kind $runner session in its original profile after the ordered pool changes", async ({ runner, kind }) => {
+    const { paths, config, store, registry, queue, dir } = setup({ a: { runner }, b: { runner } }, { defaults: { accounts: { [runner]: ["a", "b"] } } });
+    writeSkill(paths, "pooled", "description: Pooled.\nskillhook:\n  env: [FAKE_CLAUDE_RECORD, FAKE_CODEX_RECORD]\n  auth: {type: none}");
+    const skill = registry.get("pooled")!;
+    const record = path.join(paths.home, "resume.json");
+    writeEnv(paths, { [runner === "claude" ? "FAKE_CLAUDE_RECORD" : "FAKE_CODEX_RECORD"]: record });
+    const first = createManualJob({ config, store }, { skill, payload: { event: "original" }, trigger: "cli", overrides: { runner } });
+    const original = store.update(first.id, { status: "succeeded", cwd: skill.dir, session_id: "old-session", ...(kind === "named" ? { account: "b" } : {}), resume_command: getRunner(runner).resumeCommand!("old-session", skill.dir, { [runner === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME"]: dir("b") }) });
+    if (kind === "legacy") {
+      // A disabled alias of the same directory must not shadow its usable registered login.
+      config.accounts.a!.dir = dir("b");
+      config.accounts.a!.disabled = true;
+    }
+    const resumed = createResumeJob({ config, store }, { original, skill, answer: { text: "Proceed", at: new Date().toISOString() } });
+    if (kind === "named") expect(resumed.account_requested).toBe("b");
+    queue.enqueue(resumed);
+    expect(await queue.waitFor(resumed.id, 20_000)).toMatchObject({ status: "succeeded", account: "b", result: expect.stringContaining("resumed=old-session") });
+    if (runner === "claude") expect(JSON.parse(readFileSync(record, "utf8")).env.CLAUDE_CONFIG_DIR).toBe(dir("b"));
+    expect(store.require(first.id)).toEqual(original);
+    await queue.shutdown();
+  });
+
+  it.each(["expired", "limited"])("never switches account or runner when the session profile is %s", async (state) => {
+    const { paths, config, store, registry, queue, dir } = setup({ a: { runner: "claude" }, b: { runner: "claude" } }, { defaults: { accounts: { claude: ["a", "b"] }, fallback: { runners: ["codex"], on: ["not_ready", "auth", "usage_limit"] } } });
+    writeSkill(paths, "pooled", "description: Pooled.\nskillhook:\n  auth: {type: none}");
+    const skill = registry.get("pooled")!;
+    const first = createManualJob({ config, store }, { skill, payload: {}, trigger: "cli" });
+    const original = store.update(first.id, { status: "succeeded", cwd: skill.dir, account: "b", session_id: "old-session" });
+    writeFileSync(path.join(dir("b"), state), "");
+    const resumed = createResumeJob({ config, store }, { original, skill, answer: { text: "Proceed", at: new Date().toISOString() } });
+    queue.enqueue(resumed);
+    const done = await queue.waitFor(resumed.id, 20_000);
+    expect(done).toMatchObject({ status: "failed", runner: "claude", failure: { kind: state === "expired" ? "auth" : "usage_limit" } });
+    expect(done?.attempts).toBeUndefined();
+    expect(done?.account === undefined || done.account === "b").toBe(true);
+    await queue.shutdown();
+  });
+
+  it.each(["unrecognized", "removed"])("fails closed for an %s original session profile, keeping its answer", async (state) => {
+    const { paths, config, store, registry, queue } = setup({ a: { runner: "claude" } }, { defaults: { accounts: { claude: ["a"] } } });
+    writeSkill(paths, "pooled", "description: Pooled.\nskillhook:\n  auth: {type: none}");
+    const skill = registry.get("pooled")!;
+    const first = createManualJob({ config, store }, { skill, payload: {}, trigger: "cli" });
+    const original = store.update(first.id, { status: "succeeded", cwd: skill.dir, session_id: "old-session", ...(state === "removed" ? { account: "removed" } : { resume_command: "unrecognized shell text; never execute" }) });
+    const resumed = createResumeJob({ config, store }, { original, skill, answer: { text: "Proceed", at: new Date().toISOString() } });
+    queue.enqueue(resumed);
+    expect(await queue.waitFor(resumed.id, 20_000)).toMatchObject({ status: "failed", error: expect.stringContaining("Cannot safely resume"), answer: { text: "Proceed" } });
+    expect(store.require(first.id)).toEqual(original);
+    await queue.shutdown();
+  });
+});
 
 describe("accounts: the queue picks, fails over and remembers", () => {
   it("runs as the pool's first usable account, skipping a logged-out one before the run", async () => {

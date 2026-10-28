@@ -95,6 +95,12 @@ Before a job runs, the queue goes through the pool:
 5. **No account left?** The job fails at once and its error gives every account's reason. Its `failure.kind` is
    `usage_limit` when they are all limited, otherwise `auth`. A `fallback:` with `on: [not_ready]` still takes over.
 
+A human answer that resumes an existing Claude or Codex session stays on the account that created that session,
+even if the skill or global pool changed. It never fails over to another account or runner. If the profile is logged
+out or limited, restore it and retry; an explicit fresh replay may use the normal pool. Legacy jobs without account
+metadata are matched only against the complete resume commands generated for registered login directories. An
+unknown session profile fails safely, with the answer retained, instead of opening the session elsewhere.
+
 ### What a run teaches about its account
 
 The queue writes it to `jobs/.accounts.json` (`accounts reset <name>` forgets it):

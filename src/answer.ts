@@ -87,7 +87,8 @@ export function createResumeJob(ops: { config: Config; store: JobStore }, input:
     mkdirSync(dir, { recursive: true });
     copyFileSync(skill.file, path.join(dir, "SKILL.md"));
   }
-  return job;
+  // A session belongs to the account that created it, even after the skill pool changes.
+  return session && original.account ? ops.store.update(job.id, { account_requested: original.account }) : job;
 }
 
 function skillFor(ops: AnswerOps, job: JobRecord): Skill {

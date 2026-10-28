@@ -4,6 +4,10 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.14.4 (2026-10-28)
+
+- Keep human-answer session resumes on their original Claude or Codex account, including legacy jobs matched to registered login directories. A missing or unavailable profile fails safely with the answer retained; session resumes never fail over to another account or runner. Fresh jobs keep the configured pool and fallback behavior.
+
 - Links to Skillhook Cloud in the README, docs, `llms.txt`, the plugin's skills and manifest, and the CLI's output carry a `?ref=` slug (`readme`, `skillhook-docs`, `plugin`, `cli`), so the cloud can tell which of them brought a new account; the slugs are registered in Skillhook Cloud's `lib/attribution/sources.ts`. Base URLs (`--url`, `cloud.url`, API and MCP endpoints) are unchanged.
 
 ## 0.14.3 (2026-10-28)
