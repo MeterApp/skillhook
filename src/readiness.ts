@@ -7,7 +7,7 @@ import type { Config, RunnerName } from "./config.js";
 import type { Secrets } from "./env.js";
 import type { Events } from "./events.js";
 import { withClaudeConfigDir } from "./runners/env.js";
-import { probeClaude, probeCodex } from "./tools.js";
+import { probeClaude, probeCodex, QUICK_PROBE_MS } from "./tools.js";
 import { displayPath, nowIso } from "./util.js";
 
 export const RUNNER_NAMES: RunnerName[] = ["claude", "codex", "shell"];
@@ -48,6 +48,18 @@ function claudeMethod(method: string | undefined): RunnerReadiness["method"] {
   return "subscription"; // claude.ai, oauth, …
 }
 
+/**
+ * The CLI did not answer the login check in time (it was killed). Nothing is known about the runner, so this is thrown
+ * rather than returned as "not ready": the queue then runs the job anyway instead of failing it or falling back, as for
+ * any check that could not be made.
+ */
+export class ReadinessProbeUnanswered extends Error {
+  constructor(detail: string) {
+    super(`could not tell whether the runner is ready: ${detail}`);
+    this.name = "ReadinessProbeUnanswered";
+  }
+}
+
 export async function checkReadiness(runner: RunnerName, config: Config, baseEnv: Record<string, string>, claudeConfigDir?: string): Promise<RunnerReadiness> {
   const checked_at = nowIso();
   if (runner === "shell") return { runner, found: true, authenticated: null, detail: "runs the skill's own command", ready: true, checked_at };
@@ -55,9 +67,10 @@ export async function checkReadiness(runner: RunnerName, config: Config, baseEnv
     const env = withClaudeConfigDir(baseEnv, claudeConfigDir);
     const where = claudeConfigDir ? { config_dir: claudeConfigDir } : {};
     const hintDir = claudeConfigDir ? `CLAUDE_CONFIG_DIR=${claudeConfigDir} ` : "";
-    const probe = await probeClaude(config.runners.claude.command, { env, deep: false });
+    const probe = await probeClaude(config.runners.claude.command, { env, deep: false, timeoutMs: config.health.probe_timeout_seconds * 1000 });
     const apiKey = Boolean(env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN);
     if (!probe.found) return { runner, found: false, authenticated: false, detail: probe.auth.detail, hint: "install Claude Code: https://claude.com/claude-code, or set runners.claude.command", ready: false, ...where, checked_at };
+    if (probe.auth.timedOut) throw new ReadinessProbeUnanswered(probe.auth.detail);
     const authenticated = probe.auth.loggedIn || apiKey;
     return {
       runner,
@@ -74,9 +87,10 @@ export async function checkReadiness(runner: RunnerName, config: Config, baseEnv
     };
   }
   const env = baseEnv;
-  const probe = await probeCodex(config.runners.codex.command, { env, deep: false });
+  const probe = await probeCodex(config.runners.codex.command, { env, deep: false, timeoutMs: config.health.probe_timeout_seconds * 1000 });
   const apiKey = Boolean(env.OPENAI_API_KEY);
   if (!probe.found) return { runner, found: false, authenticated: false, detail: probe.auth.detail, hint: "install Codex: npm i -g @openai/codex, or set runners.codex.command", ready: false, checked_at };
+  if (probe.auth.timedOut) throw new ReadinessProbeUnanswered(probe.auth.detail);
   const authenticated = probe.auth.loggedIn || apiKey;
   return {
     runner,
@@ -106,8 +120,10 @@ export async function checkAccountReadiness(account: ResolvedAccount, config: Co
   if (account.kind === "login" && !account.defaultDir && !existsSync(account.dir)) return { ...base, found: true, authenticated: false, detail: `${displayPath(account.dir)} does not exist`, hint: login, ready: false };
   const env = withAccountEnv(baseEnv, account, secrets);
   const command = config.runners[runner].command;
-  const probe = runner === "claude" ? await probeClaude(command, { env, deep: false, explainLogout: true }) : await probeCodex(command, { env, deep: false });
+  const timeoutMs = config.health.probe_timeout_seconds * 1000;
+  const probe = runner === "claude" ? await probeClaude(command, { env, deep: false, explainLogout: true, timeoutMs }) : await probeCodex(command, { env, deep: false, timeoutMs });
   if (!probe.found) return { ...base, found: false, authenticated: false, detail: probe.auth.detail, hint: runner === "claude" ? "install Claude Code: https://claude.com/claude-code, or set runners.claude.command" : "install Codex: npm i -g @openai/codex, or set runners.codex.command", ready: false };
+  if (probe.auth.timedOut) throw new ReadinessProbeUnanswered(`${account.name}: ${probe.auth.detail}`);
   const version = { path: probe.path, version: probe.version };
   if (account.kind !== "login") return { ...base, ...version, found: true, authenticated: true, method: account.kind === "api_key" ? "api_key" : "subscription", detail: `${account.secretEnv} set (${account.kind === "token" ? "long-lived token" : "API key"})`, ready: true };
   const identity = probe.auth.email || probe.auth.org ? { identity: { ...(probe.auth.email ? { email: probe.auth.email } : {}), ...(probe.auth.org ? { org: probe.auth.org } : {}) } } : {};
@@ -124,7 +140,29 @@ export interface ReadinessCacheDeps {
   secrets?: () => Secrets;
   /** How long an answer is trusted (default 60 s). */
   ttlMs?: () => number;
+  /** How long one probe may go unanswered before `get` gives up on it (default: `probeDeadlineMs` of the config). */
+  deadlineMs?: () => number;
+  /** The probe itself (default: `checkReadiness` / `checkAccountReadiness`); tests hand in one that hangs. */
+  check?: (runner: RunnerName, options: ReadinessOptions) => Promise<RunnerReadiness>;
   events?: Events;
+}
+
+/**
+ * The longest a readiness probe legitimately takes: the quick CLI calls (two in parallel, then one more for an account
+ * that is logged out) and the login try through the control protocol, each bounded by `health.probe_timeout_seconds`,
+ * plus a margin for killing a stuck process. A probe still unanswered after this is given up on.
+ */
+export function probeDeadlineMs(config: Pick<Config, "health">): number {
+  const slow = config.health.probe_timeout_seconds * 1000;
+  const quick = Math.min(QUICK_PROBE_MS, slow);
+  return 2 * quick + slow + 5_000;
+}
+
+export class ReadinessProbeTimeout extends Error {
+  constructor(what: string, deadlineMs: number) {
+    super(`${what} readiness probe gave no answer within ${Math.round(deadlineMs / 1000)}s`);
+    this.name = "ReadinessProbeTimeout";
+  }
 }
 
 type KeyOptions = Pick<ReadinessOptions, "claudeConfigDir" | "account">;
@@ -149,8 +187,26 @@ export class ReadinessCache {
     if (!options.refresh && hit && Date.now() - hit.at < (this.deps.ttlMs?.() ?? 60_000)) return hit.readiness;
     const inflight = this.pending.get(key);
     if (inflight) return inflight;
-    const check = account ? checkAccountReadiness(account, this.deps.config(), this.deps.env(), this.deps.secrets?.() ?? {}) : checkReadiness(runner, this.deps.config(), this.deps.env(), runner === "claude" ? options.claudeConfigDir : undefined);
-    const promise = check.then(
+    const config = this.deps.config();
+    const check = this.deps.check ? this.deps.check(runner, options) : account ? checkAccountReadiness(account, config, this.deps.env(), this.deps.secrets?.() ?? {}) : checkReadiness(runner, config, this.deps.env(), runner === "claude" ? options.claudeConfigDir : undefined);
+    // A probe that never settles (a CLI stuck behind a system dialog, with every caller awaiting this one promise)
+    // must not hold the queue: past the deadline it fails like any other failed check, and the next `get` probes afresh.
+    const deadlineMs = this.deps.deadlineMs?.() ?? probeDeadlineMs(config);
+    const bounded = new Promise<RunnerReadiness>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new ReadinessProbeTimeout(account ? `account ${account.name}` : runner, deadlineMs)), deadlineMs);
+      timer.unref();
+      check.then(
+        (readiness) => {
+          clearTimeout(timer);
+          resolve(readiness);
+        },
+        (error: unknown) => {
+          clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        },
+      );
+    });
+    const promise = bounded.then(
       (readiness) => {
         const previous = this.cached.get(key)?.readiness;
         this.cached.set(key, { readiness, at: Date.now() });

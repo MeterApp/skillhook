@@ -1,9 +1,9 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { mergedPath } from "./runners/env.js";
-import { FAKE_CLAUDE, FAKE_CODEX, tempHome } from "./test-support/helpers.js";
-import { parseClaudeAuth, parseClaudeMcpList, parseClaudePlugins, parseCodexDoctor, parseCodexLogin, parseCodexMcpList, parseCodexPlugins, parseVersion, probeClaude, probeCodex, resolveCommand } from "./tools.js";
+import { FAKE_CLAUDE, FAKE_CODEX, HUNG_CLAUDE, tempHome } from "./test-support/helpers.js";
+import { execTool, parseClaudeAuth, parseClaudeMcpList, parseClaudePlugins, parseCodexDoctor, parseCodexLogin, parseCodexMcpList, parseCodexPlugins, parseVersion, probeClaude, probeCodex, resolveCommand } from "./tools.js";
 
 // Captured from Claude Code 2.1.270 (URLs replaced).
 const CLAUDE_MCP_LIST = `Checking MCP server health…
@@ -201,5 +201,48 @@ describe("probes", () => {
     const missing = await probeClaude("definitely-not-a-binary-xyz", { env: { ...env, PATH: "/nonexistent" }, deep: true });
     expect(missing).toEqual({ found: false, auth: { loggedIn: false, detail: "definitely-not-a-binary-xyz not found on PATH" } });
     expect(await probeCodex("/nonexistent/codex", { env })).toMatchObject({ found: false });
+  });
+});
+
+describe("a tool that hangs", () => {
+  const env = { PATH: mergedPath(process.env.PATH), HOME: process.env.HOME ?? "/" };
+
+  it("execTool ends a timed-out command that ignores SIGTERM, and says so", async () => {
+    const dir = tempHome("skillhook-exec-").home;
+    const script = path.join(dir, "ignores-sigterm.mjs");
+    const pidFile = path.join(dir, "pid");
+    writeFileSync(script, `import { writeFileSync } from "node:fs";\nprocess.on("SIGTERM", () => {});\nwriteFileSync(${JSON.stringify(pidFile)}, String(process.pid));\nprocess.stdout.write("started\\n");\nsetInterval(() => {}, 60_000);\n`);
+    const started = Date.now();
+    const result = await execTool(process.execPath, [script], { env, timeoutMs: 500 });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(result).toMatchObject({ code: null, timedOut: true, stdout: "started\n" });
+    expect(result.spawnError).toBeUndefined();
+    // The process is gone, not orphaned.
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(() => process.kill(pid, 0)).toThrow();
+  });
+
+  it("probes report a login check that timed out as unknown, not as logged out, within the quick timeout", async () => {
+    const started = Date.now();
+    const probe = await probeClaude(HUNG_CLAUDE, { env, deep: false, timeoutMs: 1_000, explainLogout: true });
+    expect(Date.now() - started).toBeLessThan(6_000);
+    expect(probe).toMatchObject({ found: true, version: undefined, auth: { loggedIn: false, timedOut: true, detail: "claude auth status timed out" } });
+    expect(probe.auth.expired).toBeUndefined();
+    const codex = await probeCodex(HUNG_CLAUDE, { env, deep: false, timeoutMs: 1_000 });
+    expect(codex.auth).toMatchObject({ loggedIn: false, timedOut: true, detail: "codex login status timed out" });
+  });
+
+  it("hands a probe only PATH, the session basics and the runner's own variables, never the rest of .env", async () => {
+    const dir = tempHome("skillhook-probe-env-").home;
+    const record = path.join(dir, "env.json");
+    const script = path.join(dir, "records-env.mjs");
+    writeFileSync(script, `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(record)}, JSON.stringify(process.env));\nif (process.argv[2] === "--version") console.log("2.1.270 (Claude Code)");\nelse console.log(JSON.stringify({ loggedIn: true, authMethod: "claude.ai" }));\n`);
+    const full = { ...env, TMPDIR: "/tmp", CLAUDE_CONFIG_DIR: "/cfg", ANTHROPIC_API_KEY: "sk-ant", CODEX_HOME: "/codex", HTTPS_PROXY: "http://proxy", SKILLHOOK_ADMIN_TOKEN: "admin", SKILLHOOK_SECRET_DEMO: "hook", GITHUB_TOKEN: "ghp", SENTRY_DSN: "dsn" };
+    const probe = await probeClaude([process.execPath, script], { env: full, deep: false });
+    expect(probe.auth.loggedIn).toBe(true);
+    const seen = JSON.parse(readFileSync(record, "utf8")) as Record<string, string>;
+    expect(seen).toMatchObject({ PATH: env.PATH, HOME: env.HOME, TMPDIR: "/tmp", CLAUDE_CONFIG_DIR: "/cfg", ANTHROPIC_API_KEY: "sk-ant", CODEX_HOME: "/codex", HTTPS_PROXY: "http://proxy" });
+    for (const key of ["SKILLHOOK_ADMIN_TOKEN", "SKILLHOOK_SECRET_DEMO", "GITHUB_TOKEN", "SENTRY_DSN"]) expect(seen[key]).toBeUndefined();
   });
 });

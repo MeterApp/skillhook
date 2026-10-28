@@ -9,6 +9,8 @@ import { ensureDir } from "../util.js";
 export const FIXTURES = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../test/fixtures");
 export const FAKE_CLAUDE = [process.execPath, path.join(FIXTURES, "fake-claude.mjs")];
 export const FAKE_CODEX = [process.execPath, path.join(FIXTURES, "fake-codex.mjs")];
+/** A `claude` that answers nothing, never exits and ignores SIGTERM (Claude Code behind a stuck keychain dialog). */
+export const HUNG_CLAUDE = [process.execPath, path.join(FIXTURES, "hung-claude.mjs")];
 
 export function tempHome(prefix = "skillhook-test-"): Paths {
   const home = realpathSync(mkdtempSync(path.join(tmpdir(), prefix)));

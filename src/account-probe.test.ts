@@ -64,7 +64,8 @@ describe("account probes against the CLIs", () => {
     mkdirSync(dir);
     writeFileSync(path.join(dir, "account"), "a@example.com\n");
     const record = path.join(paths.home, "record.json");
-    const report = await probeClaudeAccount({ command: FAKE_CLAUDE, env: { ...ENV, CLAUDE_CONFIG_DIR: dir, FAKE_CLAUDE_RECORD: record } });
+    writeFileSync(path.join(dir, "record"), record); // a probe gets no FAKE_* variable: only the runner's own
+    const report = await probeClaudeAccount({ command: FAKE_CLAUDE, env: { ...ENV, CLAUDE_CONFIG_DIR: dir, FAKE_CLAUDE_RECORD: record, SKILLHOOK_ADMIN_TOKEN: "never" } });
     expect(report).toMatchObject({ ok: true, loggedIn: true, method: "subscription", identity: { email: "a@example.com", plan: "max" }, usage: { windows: [{ id: "five_hour", used_percent: 42 }, { id: "seven_day", used_percent: 17 }, { id: "seven_day_opus", used_percent: 5 }] } });
     expect(report.limited).toBeUndefined();
     const { readFileSync } = await import("node:fs");

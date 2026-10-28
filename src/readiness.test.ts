@@ -4,9 +4,9 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "./config.js";
 import { Events } from "./events.js";
 import { silentLogger } from "./logger.js";
-import { checkReadiness, ReadinessCache, RUNNER_NAMES } from "./readiness.js";
+import { checkReadiness, probeDeadlineMs, ReadinessCache, ReadinessProbeTimeout, ReadinessProbeUnanswered, RUNNER_NAMES, type RunnerReadiness } from "./readiness.js";
 import { mergedPath } from "./runners/env.js";
-import { FAKE_CLAUDE, FAKE_CODEX, tempHome, writeConfigFile } from "./test-support/helpers.js";
+import { FAKE_CLAUDE, FAKE_CODEX, HUNG_CLAUDE, tempHome, writeConfigFile } from "./test-support/helpers.js";
 
 const ENV = { PATH: mergedPath(process.env.PATH), HOME: process.env.HOME ?? "/" };
 
@@ -103,5 +103,53 @@ describe("ReadinessCache", () => {
     expect(out).toMatchObject({ ready: false, config_dir: loggedOut, hint: `run \`CLAUDE_CONFIG_DIR=${loggedOut} claude login\` in a terminal as this user` });
     // Other runners ignore it.
     expect((await cache.get("codex", { claudeConfigDir: acme })).config_dir).toBeUndefined();
+  });
+});
+
+describe("a runner whose CLI hangs", () => {
+  it("checkReadiness gives up on a `claude` that ignores SIGTERM within the probe timeout and says it could not tell", async () => {
+    const paths = tempHome("skillhook-readiness-hung-");
+    writeConfigFile(paths, { runners: { claude: { command: HUNG_CLAUDE }, codex: { command: HUNG_CLAUDE } }, health: { probe_timeout_seconds: 1 } });
+    const config = loadConfig(paths);
+    const pidFile = path.join(paths.home, "claude.pid");
+    const started = Date.now();
+    await expect(checkReadiness("claude", config, { ...ENV, HUNG_CLAUDE_PID_FILE: pidFile })).rejects.toBeInstanceOf(ReadinessProbeUnanswered);
+    expect(Date.now() - started).toBeLessThan(8_000);
+    await expect(checkReadiness("codex", config, ENV)).rejects.toThrow(/could not tell whether the runner is ready: codex login status timed out/);
+    // Never a logged-out verdict from a probe that got no answer, and no orphan left behind.
+    expect(probeDeadlineMs(config)).toBe(2 * 1_000 + 1_000 + 5_000);
+    expect(probeDeadlineMs({ health: { cache_seconds: 60, probe_timeout_seconds: 20, readiness_cache_seconds: 60 } })).toBe(55_000);
+  });
+
+  it("ReadinessCache stops waiting for a probe that never settles, lets later callers probe again and never answers 'not ready' for it", async () => {
+    const { config } = configured();
+    let hang = true;
+    let probes = 0;
+    const ready: RunnerReadiness = { runner: "claude", found: true, authenticated: true, detail: "logged in", ready: true, checked_at: "now" };
+    const cache = new ReadinessCache({
+      config: () => config,
+      env: () => ENV,
+      deadlineMs: () => 300,
+      check: () => {
+        probes += 1;
+        return hang ? new Promise<RunnerReadiness>(() => {}) : Promise.resolve(ready);
+      },
+    });
+    const started = Date.now();
+    // Every concurrent caller shares the one probe and the one deadline: a job's pre-flight, GET /runners, a fallback check.
+    const results = await Promise.allSettled([cache.get("claude"), cache.get("claude"), cache.get("claude")]);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(results.map((r) => r.status)).toEqual(["rejected", "rejected", "rejected"]);
+    expect((results[0] as PromiseRejectedResult).reason).toBeInstanceOf(ReadinessProbeTimeout);
+    expect(String((results[0] as PromiseRejectedResult).reason)).toContain("claude readiness probe gave no answer within 0s");
+    expect(probes).toBe(1);
+    expect(cache.last("claude")).toBeUndefined();
+    // The next caller starts a fresh probe instead of inheriting the stuck one; once the CLI answers, the cache works as before.
+    await expect(cache.get("claude")).rejects.toBeInstanceOf(ReadinessProbeTimeout);
+    expect(probes).toBe(2);
+    hang = false;
+    expect(await cache.get("claude")).toBe(ready);
+    expect(cache.last("claude")).toBe(ready);
+    expect(probes).toBe(3);
   });
 });
