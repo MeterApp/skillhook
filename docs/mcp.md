@@ -174,7 +174,7 @@ Skillhook Cloud serves the same organisation tools itself, at `https://skillhook
 claude mcp add --transport http skillhook-cloud https://skillhook.dev/api/mcp
 ```
 
-Setup per client, the OAuth flow and the tools: https://skillhook.dev/docs/mcp; the plugin: https://skillhook.dev/install.
+Setup per client, the OAuth flow and the tools: https://skillhook.dev/docs/mcp?ref=skillhook-docs; the plugin: https://skillhook.dev/install?ref=skillhook-docs.
 
 ## The job API: `skillhook mcp --job`
 
