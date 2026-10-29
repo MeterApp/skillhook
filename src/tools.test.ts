@@ -246,3 +246,18 @@ describe("a tool that hangs", () => {
     for (const key of ["SKILLHOOK_ADMIN_TOKEN", "SKILLHOOK_SECRET_DEMO", "GITHUB_TOKEN", "SENTRY_DSN"]) expect(seen[key]).toBeUndefined();
   });
 });
+
+describe("tool deadlines", () => {
+  it("ends an unresponsive probe even when it ignores SIGTERM", async () => {
+    const started = Date.now();
+    const result = await execTool(process.execPath, ["-e", `
+      process.on("SIGTERM", () => {});
+      process.stdout.write("ready");
+      // Keep the regression finite even with the old SIGTERM-only implementation.
+      setTimeout(() => process.exit(0), 3000);
+    `], { env: { PATH: process.env.PATH ?? "" }, timeoutMs: 750 });
+    expect(result).toMatchObject({ code: null, stdout: "ready", timedOut: true });
+    expect(result.spawnError).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(2500);
+  });
+});

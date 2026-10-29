@@ -15,7 +15,7 @@ export const FEEDBACK_USAGE = `Usage:
   skillhook feedback upvote <number> [--remove]
   skillhook feedback comment <number> "<text>"
 
-The Skillhook feedback board (https://skillhook.dev/feedback), with the organisation API key of skillhook cloud login.
+The Skillhook feedback board (https://skillhook.dev/feedback?ref=cli), with the organisation API key of skillhook cloud login.
 request and report look for similar items first and list them instead of filing: upvote one of them, or add --force.
 report --last attaches the last request the cloud refused from this computer (its request id and error); --job and
 --delivery attach a job or delivery (the cloud's id or the machine's) and the machine it ran on. Reports stay private to
@@ -220,7 +220,7 @@ export async function reviewCommand(ctx: Ctx): Promise<number> {
     }
     if (bool(ctx.flags, "consent")) fields.marketing_consent = true;
     const result = (await callTool(client, "submit_review", fields)) as { created?: boolean; published?: boolean; note?: string };
-    ctx.print(printable(`${result.created ? "Posted" : "Updated"}. ${result.published ? "It is live on https://skillhook.dev/reviews." : (result.note ?? "")}`.trim()), result);
+    ctx.print(printable(`${result.created ? "Posted" : "Updated"}. ${result.published ? "It is live on https://skillhook.dev/reviews?ref=cli." : (result.note ?? "")}`.trim()), result);
     return 0;
   });
 }

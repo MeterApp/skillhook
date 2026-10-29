@@ -7,6 +7,16 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 - A hung runner probe no longer stops the queue. On 2026-10-27 a macOS keychain dialog left every `claude auth status` the daemon started blocked for ten hours; Claude Code's binary ignores the SIGTERM `execFile` sends on timeout, so the probe never ended, the one shared readiness promise never settled and every Claude Code job waited on it. Probes are now killed with SIGKILL when they time out (`timedOut` is reported either way, and a probe whose output stays open is given up on after a grace period), the readiness cache gives up on a probe after the longest a check legitimately takes (`health.probe_timeout_seconds` plus the quick calls and a margin: 55 s by default) and lets the next caller probe afresh, and a login check that got no answer is "could not tell" rather than "not logged in": the queue runs the job on its runner anyway (`readiness check failed; running anyway`) instead of failing it or sending it to the `fallback:` runner.
 - Version and login probes (`claude --version`, `claude auth status`, `codex login status`, the control-protocol login try) run with only PATH, the session basics and the runner's own variables (`ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*`, proxies and certificates) rather than the whole job environment, so nothing else from `.env` shows up in `ps` for a mere version check.
 
+## 0.14.4 (2026-10-28)
+
+- Keep human-answer session resumes on their original Claude or Codex account, including legacy jobs matched to registered login directories. A missing or unavailable profile fails safely with the answer retained; session resumes never fail over to another account or runner. Fresh jobs keep the configured pool and fallback behavior.
+
+- Links to Skillhook Cloud in the README, docs, `llms.txt`, the plugin's skills and manifest, and the CLI's output carry a `?ref=` slug (`readme`, `skillhook-docs`, `plugin`, `cli`), so the cloud can tell which of them brought a new account; the slugs are registered in Skillhook Cloud's `lib/attribution/sources.ts`. Base URLs (`--url`, `cloud.url`, API and MCP endpoints) are unchanged.
+
+## 0.14.3 (2026-10-28)
+
+- Bound runner and tool probes with a forced timeout so a CLI that ignores SIGTERM cannot hold queue slots indefinitely.
+
 ## 0.14.2 (2026-10-26)
 
 - Use the Sentry-compatible `skillhook-daemon@<version>` release name. Scoped npm package names contain a slash, which Sentry discards from accepted events.
