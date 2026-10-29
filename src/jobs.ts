@@ -412,8 +412,15 @@ export class JobStore {
   prune(keep = this.options.maxJobs): number {
     const ids = this.ids();
     if (ids.length <= keep) return 0;
+    // Creating a resume can prune its now-answered parent before answerJob links
+    // resolved_by or copies an ad-hoc skill. Keep that source until the resume ends.
+    const resumeParents = new Set(ids.flatMap((id) => {
+      const job = this.get(id);
+      return job?.resume_of && !isTerminal(job.status) ? [job.resume_of] : [];
+    }));
     let removed = 0;
     for (const id of ids.slice(keep).reverse()) {
+      if (resumeParents.has(id)) continue;
       const job = this.get(id);
       if (job && (!TERMINAL_STATUSES.includes(job.status) || isWaitingForHuman(job))) continue;
       rmSync(this.pathsFor(id).dir, { recursive: true, force: true });

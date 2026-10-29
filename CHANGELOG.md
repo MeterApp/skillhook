@@ -4,6 +4,10 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.14.6 (2026-10-29)
+
+- Preserve an answered job while its session resume is queued or running. At the retention limit, creating a resume could prune its original before recording the resume link, fail the answer with “Unknown job”, and leave the resume unqueued.
+
 ## 0.14.5 (2026-10-29)
 
 - Health checks ignore Claude configuration directories that a shell/Codex runner or a named account pool does not use, and skip the unnamed login and MCP servers when all enabled Claude skills use accounts or explicit profiles. Credential-free webhook warnings describe the configured IP allowlist instead of claiming any caller can trigger a localhost-only hook.
