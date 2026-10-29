@@ -328,7 +328,7 @@ The deep checks, in the `tools` and `skills` groups:
 | `codex doctor` | every check of `codex doctor --json` ok | it reports warnings (each listed, first remediation as the hint) | it reports errors |
 | `skill <name>` | as in the doctor, plus the last run (`status (outcome) finished_at`) | | |
 
-Probes run with the job environment (`baseRunEnv`): a `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or API key in `.env` applies exactly as it does to runs. `claude mcp list` connects to every server and is the slow one; `health.probe_timeout_seconds` (20) bounds it, and a listing that timed out is reported as incomplete rather than wrong.
+Probes run with the job environment (`baseRunEnv`) cut down to PATH, the session basics and the runner's own variables (`ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*`, proxies and certificates): a `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or API key in `.env` applies exactly as it does to runs, and nothing else from `.env` reaches a version or login check. `claude mcp list` connects to every server and is the slow one; `health.probe_timeout_seconds` (20) bounds it, the quick calls get 15 s (or that setting when it is shorter), and a listing that timed out is reported as incomplete rather than wrong. A probe that outlives its timeout is killed with SIGKILL (Claude Code's binary ignores SIGTERM, and a `claude auth status` stuck behind a macOS keychain dialog once held every job for hours), and a login check that got no answer is reported as unknown, never as logged out.
 
 The server keeps one report per flavour for `health.cache_seconds` (60) and publishes `health.changed` on the event stream when a check changes status (or on the first report), so a dashboard can watch logins expire and MCP servers fail without polling.
 

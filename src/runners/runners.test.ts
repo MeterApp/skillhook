@@ -5,7 +5,7 @@ import { defaultConfig } from "../config.js";
 import { parseSkillDocument } from "../skills.js";
 import { claudeRunner } from "./claude.js";
 import { codexRunner } from "./codex.js";
-import { buildRunEnv, claudeConfigDir, mergedPath } from "./env.js";
+import { buildRunEnv, claudeConfigDir, mergedPath, probeEnv } from "./env.js";
 import { shellRunner } from "./shell.js";
 import { shellQuote, type RunContext, type StreamState } from "./types.js";
 
@@ -287,5 +287,13 @@ describe("buildRunEnv", () => {
     expect(env.PATH?.startsWith("/custom/bin:")).toBe(true);
     expect(env.PATH).toContain("/opt/homebrew/bin");
     expect(mergedPath(undefined, "/h")).toContain("/h/.local/bin");
+  });
+});
+
+describe("probeEnv", () => {
+  it("keeps PATH, the session basics and the runner variables of a run environment, and drops everything else", () => {
+    const env = { PATH: "/bin", HOME: "/h", USER: "me", TMPDIR: "/tmp", LANG: "C", CLAUDE_CONFIG_DIR: "/cfg", CLAUDE_CODE_OAUTH_TOKEN: "tok", ANTHROPIC_API_KEY: "key", ANTHROPIC_BASE_URL: "https://p", OPENAI_API_KEY: "o", CODEX_HOME: "/codex", NODE_EXTRA_CA_CERTS: "/ca.pem", https_proxy: "http://proxy", SKILLHOOK_ADMIN_TOKEN: "admin", SKILLHOOK_SECRET_DEMO: "s", GITHUB_TOKEN: "g", SKILLHOOK_JOB_ID: "j1", MY_SECRET: "x" };
+    expect(probeEnv(env)).toEqual({ PATH: "/bin", HOME: "/h", USER: "me", TMPDIR: "/tmp", LANG: "C", CLAUDE_CONFIG_DIR: "/cfg", CLAUDE_CODE_OAUTH_TOKEN: "tok", ANTHROPIC_API_KEY: "key", ANTHROPIC_BASE_URL: "https://p", OPENAI_API_KEY: "o", CODEX_HOME: "/codex", NODE_EXTRA_CA_CERTS: "/ca.pem", https_proxy: "http://proxy" });
+    expect(probeEnv({})).toEqual({});
   });
 });

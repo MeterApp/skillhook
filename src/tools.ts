@@ -1,9 +1,12 @@
 // Probes of the external CLIs skillhook depends on: what `claude` and `codex` say about their version, login, MCP
-// servers, plugins and their own doctor. They run with the same environment as a job (`baseRunEnv`), so a
-// `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or API key in `.env` applies to the diagnosis exactly as to the runs. The parsers
-// are pure and exported so the captured real outputs in the tests pin them down; unknown lines never throw.
+// servers, plugins and their own doctor. They run with the job environment (`baseRunEnv`) cut down to what a probe
+// needs (`probeEnv`: PATH, the session basics and the runner's own credentials and settings), so a `CLAUDE_CONFIG_DIR`,
+// `CODEX_HOME` or API key in `.env` applies to the diagnosis exactly as to the runs, and nothing else from `.env` shows
+// up in the environment of a version check. The parsers are pure and exported so the captured real outputs in the
+// tests pin them down; unknown lines never throw.
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { probeEnv } from "./runners/env.js";
 import { commandParts } from "./runners/types.js";
 import { which } from "./tailscale.js";
 import { isPlainObject } from "./util.js";
@@ -17,15 +20,46 @@ export interface ToolExecResult {
   spawnError?: string;
 }
 
-/** Read-only probes must end at their deadline even when the CLI ignores SIGTERM; never throws. */
+/** The quick probes (`--version`, `auth status`, `login status`, `plugin list`) get this long, or the caller's `timeoutMs` when that is shorter. */
+export const QUICK_PROBE_MS = 15_000;
+
+/** Once a timed-out tool was killed, how long its pipes may stay open (a grandchild holding them) before the result is given up on. */
+const EXEC_GRACE_MS = 2_000;
+
+/**
+ * Runs one tool with the given environment (its PATH decides what is found); never throws, and always settles: a tool
+ * that outlives `timeoutMs` is killed with SIGKILL (Claude Code's binary ignores the default SIGTERM, and a probe that
+ * never ends once blocked the whole queue behind a stuck keychain dialog), and `timedOut` is reported even when the
+ * process refuses to die or something it started keeps its output open.
+ */
 export function execTool(command: string, args: string[], options: { env: Record<string, string>; timeoutMs?: number; cwd?: string }): Promise<ToolExecResult> {
+  const timeoutMs = options.timeoutMs ?? 20_000;
   return new Promise((resolve) => {
-    execFile(command, args, { env: options.env, cwd: options.cwd, timeout: options.timeoutMs ?? 20_000, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024, encoding: "utf8" }, (error, stdout, stderr) => {
-      if (!error) return resolve({ code: 0, stdout, stderr, timedOut: false });
+    let settled = false;
+    const finish = (result: ToolExecResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(backstop);
+      resolve(result);
+    };
+    const child = execFile(command, args, { env: options.env, cwd: options.cwd, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024, encoding: "utf8" }, (error, stdout, stderr) => {
+      if (!error) return finish({ code: 0, stdout, stderr, timedOut: false });
       const e = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string; stdout?: string; stderr?: string };
       const started = typeof e.code !== "string"; // execFile reports a numeric exit code once the process ran; ENOENT & co. are strings
-      resolve({ code: typeof e.code === "number" ? e.code : null, stdout: typeof stdout === "string" ? stdout : "", stderr: typeof stderr === "string" ? stderr : "", timedOut: e.killed === true && e.signal === "SIGKILL", ...(started ? {} : { spawnError: e.message }) });
+      const timedOut = e.killed === true && (e.signal === "SIGKILL" || e.signal === "SIGTERM");
+      finish({ code: typeof e.code === "number" ? e.code : null, stdout: typeof stdout === "string" ? stdout : "", stderr: typeof stderr === "string" ? stderr : "", timedOut, ...(started ? {} : { spawnError: e.message }) });
     });
+    // execFile's callback waits for stdout and stderr to close as well as for the exit: a child that handed its pipes
+    // to a grandchild keeps it from firing even once it is dead. Settle anyway after a grace period.
+    const backstop = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+      finish({ code: null, stdout: "", stderr: "", timedOut: true });
+    }, timeoutMs + EXEC_GRACE_MS);
+    backstop.unref();
   });
 }
 
@@ -59,6 +93,8 @@ export interface ToolAuth {
   org?: string;
   /** Claude Code had a login that ran out (`claude auth status --text` says `Login: Expired`). */
   expired?: boolean;
+  /** The CLI gave no answer in time (and was killed): nothing is known about the login, which is not the same as logged out. */
+  timedOut?: boolean;
   detail: string;
 }
 
@@ -213,29 +249,36 @@ function describeFailure(result: ToolExecResult, what: string): string {
 }
 
 export interface ProbeOptions {
-  /** The environment to run the CLI with (`baseRunEnv`); its PATH decides what is found. */
+  /** The environment to run the CLI with (`baseRunEnv`; cut down to `probeEnv` before anything starts); its PATH decides what is found. */
   env: Record<string, string>;
   /** Also list MCP servers and plugins (Claude) / MCP servers and `codex doctor` (Codex): slower, one process each. */
   deep?: boolean;
-  /** For the slow listings (`claude mcp list` connects to every server); the quick calls get 15 s. */
+  /** For the slow listings (`claude mcp list` connects to every server); the quick calls get `QUICK_PROBE_MS`, or this when it is shorter. */
   timeoutMs?: number;
   /** When Claude Code is not logged in, also ask whether a login expired (one more process). */
   explainLogout?: boolean;
 }
 
+/** How long one quick probe may take under these options. */
+export function quickProbeMs(options: Pick<ProbeOptions, "timeoutMs">): number {
+  return Math.min(QUICK_PROBE_MS, options.timeoutMs ?? QUICK_PROBE_MS);
+}
+
 export async function probeClaude(command: string | string[], options: ProbeOptions): Promise<ClaudeProbe> {
-  const resolved = resolveCommand(command, options.env.PATH);
+  const env = probeEnv(options.env);
+  const resolved = resolveCommand(command, env.PATH);
   if (!resolved.path) return { found: false, auth: { loggedIn: false, detail: `${resolved.command} not found on PATH` } };
-  const exec = (args: string[], timeoutMs: number) => execTool(resolved.path!, [...resolved.lead, ...args], { env: options.env, timeoutMs });
-  const [version, auth] = await Promise.all([exec(["--version"], 15_000), exec(["auth", "status"], 15_000)]);
-  const probe: ClaudeProbe = { found: true, path: resolved.path, version: parseVersion(version.stdout), auth: parseClaudeAuth(auth) };
+  const exec = (args: string[], timeoutMs: number) => execTool(resolved.path!, [...resolved.lead, ...args], { env, timeoutMs });
+  const quick = quickProbeMs(options);
+  const [version, auth] = await Promise.all([exec(["--version"], quick), exec(["auth", "status"], quick)]);
+  const probe: ClaudeProbe = { found: true, path: resolved.path, version: parseVersion(version.stdout), auth: auth.timedOut ? { loggedIn: false, timedOut: true, detail: describeFailure(auth, "claude auth status") } : parseClaudeAuth(auth) };
   // The JSON says only "not logged in"; the text form tells a login that expired from none at all.
-  if (!probe.auth.loggedIn && options.explainLogout) {
-    const text = await exec(["auth", "status", "--text"], 15_000);
+  if (!probe.auth.loggedIn && !probe.auth.timedOut && options.explainLogout) {
+    const text = await exec(["auth", "status", "--text"], quick);
     if (claudeLoginExpired(text.stdout)) probe.auth = { ...probe.auth, expired: true, detail: "login expired" };
   }
   if (options.deep) {
-    const [mcp, plugins] = await Promise.all([exec(["mcp", "list"], options.timeoutMs ?? 20_000), exec(["plugin", "list", "--json"], 15_000)]);
+    const [mcp, plugins] = await Promise.all([exec(["mcp", "list"], options.timeoutMs ?? 20_000), exec(["plugin", "list", "--json"], quick)]);
     const listed = parseClaudeMcpList(mcp.stdout);
     probe.mcp = { ...listed, ...(mcp.code !== 0 || mcp.timedOut ? { error: describeFailure(mcp, "claude mcp list") } : {}) };
     probe.plugins = { plugins: parseClaudePlugins(plugins.stdout), ...(plugins.code !== 0 ? { error: describeFailure(plugins, "claude plugin list") } : {}) };
@@ -362,13 +405,15 @@ export function parseCodexPlugins(text: string): CodexPlugin[] {
 }
 
 export async function probeCodex(command: string | string[], options: ProbeOptions): Promise<CodexProbe> {
-  const resolved = resolveCommand(command, options.env.PATH);
+  const env = probeEnv(options.env);
+  const resolved = resolveCommand(command, env.PATH);
   if (!resolved.path) return { found: false, auth: { loggedIn: false, detail: `${resolved.command} not found on PATH` } };
-  const exec = (args: string[], timeoutMs: number) => execTool(resolved.path!, [...resolved.lead, ...args], { env: options.env, timeoutMs });
-  const [version, login] = await Promise.all([exec(["--version"], 15_000), exec(["login", "status"], 15_000)]);
-  const probe: CodexProbe = { found: true, path: resolved.path, version: parseVersion(version.stdout), auth: parseCodexLogin(login) };
+  const exec = (args: string[], timeoutMs: number) => execTool(resolved.path!, [...resolved.lead, ...args], { env, timeoutMs });
+  const quick = quickProbeMs(options);
+  const [version, login] = await Promise.all([exec(["--version"], quick), exec(["login", "status"], quick)]);
+  const probe: CodexProbe = { found: true, path: resolved.path, version: parseVersion(version.stdout), auth: login.timedOut ? { loggedIn: false, timedOut: true, detail: describeFailure(login, "codex login status") } : parseCodexLogin(login) };
   if (options.deep) {
-    const [mcp, doctor] = await Promise.all([exec(["mcp", "list", "--json"], 15_000), exec(["doctor", "--json"], options.timeoutMs ?? 20_000)]);
+    const [mcp, doctor] = await Promise.all([exec(["mcp", "list", "--json"], quick), exec(["doctor", "--json"], options.timeoutMs ?? 20_000)]);
     probe.mcp = { servers: parseCodexMcpList(mcp.stdout), ...(mcp.code !== 0 ? { error: describeFailure(mcp, "codex mcp list") } : {}) };
     const parsed = parseCodexDoctor(doctor.stdout);
     probe.doctor = { ...parsed, ...(doctor.code !== 0 && !parsed.checks.length ? { error: describeFailure(doctor, "codex doctor") } : {}) };

@@ -19,6 +19,9 @@ const args = process.argv.slice(2);
 // install, `mcp-list.txt` and `plugins.json` replace the canned listings.
 const configDir = process.env.CLAUDE_CONFIG_DIR;
 const stateFile = (name) => (configDir && existsSync(`${configDir}/${name}`) ? readFileSync(`${configDir}/${name}`, "utf8") : undefined);
+// A probe gets none of the FAKE_* variables (probes run with the runner's own variables only), so a `record` file under
+// CLAUDE_CONFIG_DIR naming the record file stands in for FAKE_CLAUDE_RECORD there.
+const recordFile = process.env.FAKE_CLAUDE_RECORD ?? stateFile("record")?.trim();
 
 // Diagnostic subcommands (what `skillhook health` / `doctor` run) answer before anything is read from stdin.
 //   FAKE_CLAUDE_AUTH=out        -> `auth status` says logged out
@@ -65,7 +68,7 @@ if (args[0] === "setup-token") {
 // anywhere. `mcp_status` answers `mcp-status.json` from CLAUDE_CONFIG_DIR, else a canned list whose first answer still
 // has a server `pending` (as the real CLI does while it connects); `no-mcp-status` there makes it refuse (an older CLI).
 if (args.includes("--input-format") && args[args.indexOf("--input-format") + 1] === "stream-json") {
-  if (process.env.FAKE_CLAUDE_RECORD) writeFileSync(process.env.FAKE_CLAUDE_RECORD, JSON.stringify({ args, env: { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? null, CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN ? "set" : null, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ? "set" : null } }, null, 2));
+  if (recordFile) writeFileSync(recordFile, JSON.stringify({ args, env: { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? null, CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN ? "set" : null, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ? "set" : null } }, null, 2));
   const { createInterface } = await import("node:readline");
   let mcpAsked = 0;
   const reply = (id, response) => process.stdout.write(`${JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: id, response } })}\n`);
@@ -155,9 +158,9 @@ const sessionId = `fake-session-${randomBytes(4).toString("hex")}`;
 const out = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
 
 out({ type: "system", subtype: "init", session_id: sessionId, model: model ?? "default", cwd: process.cwd(), tools: [] });
-if (process.env.FAKE_CLAUDE_RECORD) {
+if (recordFile) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("SKILLHOOK_") || k.startsWith("FAKE_") || k.startsWith("ANTHROPIC_") || k === "CLAUDE_CONFIG_DIR" || k === "CLAUDE_CODE_OAUTH_TOKEN" || k === "PATH" || k === "HOME"));
-  writeFileSync(process.env.FAKE_CLAUDE_RECORD, JSON.stringify({ args, prompt, env, cwd: process.cwd() }, null, 2));
+  writeFileSync(recordFile, JSON.stringify({ args, prompt, env, cwd: process.cwd() }, null, 2));
 }
 const sleepMs = Number(process.env.FAKE_CLAUDE_SLEEP_MS ?? 0);
 if (sleepMs > 0) await new Promise((r) => setTimeout(r, sleepMs));

@@ -6,6 +6,7 @@
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import type { AccountIdentity, AccountUsage, ResolvedAccount, UsageWindow } from "./accounts.js";
+import { probeEnv } from "./runners/env.js";
 import { resolveCommand } from "./tools.js";
 import { isPlainObject, nowIso } from "./util.js";
 
@@ -172,7 +173,7 @@ const CLAUDE_PROBE_ARGS = ["-p", "--input-format", "stream-json", "--output-form
 export async function probeClaudeAccount(options: ProbeAccountOptions): Promise<AccountReport> {
   const resolved = resolveCommand(options.command, options.env.PATH);
   if (!resolved.path) return { ok: false, loggedIn: false, error: `${resolved.command} not found on PATH` };
-  const env = { ...options.env, ENABLE_CLAUDEAI_MCP_SERVERS: "false", CLAUDE_CODE_AUTO_CONNECT_IDE: "0", CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL: "1" };
+  const env = { ...probeEnv(options.env), ENABLE_CLAUDEAI_MCP_SERVERS: "false", CLAUDE_CODE_AUTO_CONNECT_IDE: "0", CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL: "1" };
   const answers: Record<string, unknown> = {};
   const result = await converse(
     resolved.path,
@@ -262,7 +263,7 @@ export async function probeCodexAccount(options: ProbeAccountOptions): Promise<A
   const result = await converse(
     resolved.path,
     [...resolved.lead, "app-server"],
-    options.env,
+    probeEnv(options.env),
     options.timeoutMs ?? 20_000,
     (session) => session.send({ id: 1, method: "initialize", params: { clientInfo: { name: "skillhook", title: "skillhook", version: "1" } } }),
     (message, session) => {

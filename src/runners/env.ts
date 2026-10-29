@@ -75,6 +75,21 @@ export function baseRunEnv(input: Pick<RunEnvInput, "secrets" | "fileSecrets" | 
   return env;
 }
 
+/**
+ * What a probe of `claude` / `codex` (a version or login check, a listing, the control protocol) runs with: `env` cut
+ * down to PATH, the session basics (`BASE_KEYS`) and the runner's own credentials and settings (`ANTHROPIC_*`,
+ * `CLAUDE_*`, `OPENAI_*`, `CODEX_*`, proxies and certificates). A probe does no work for a skill, so nothing a skill
+ * was given (`env_passthrough`, `env:`, the job variables) and nothing else `.env` holds reaches its environment, where
+ * `ps` would show it.
+ */
+export function probeEnv(env: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (key === "PATH" || BASE_KEYS.includes(key) || PASSTHROUGH_EXACT.includes(key) || PASSTHROUGH_PREFIXES.some((p) => key.startsWith(p))) out[key] = value;
+  }
+  return out;
+}
+
 /** Credentials Claude Code prefers to the login in its configuration directory: dropped when a skill names one. */
 const CLAUDE_LOGIN_OVERRIDES = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"];
 
