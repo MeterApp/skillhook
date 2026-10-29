@@ -78,6 +78,9 @@ export function classifyFailure(input: ClassifyInput): JobFailure {
   if (input.status === "timed_out") return done("timeout");
   if (input.spawnFailed) return done("not_found");
   if (subtype && CLAUDE_SUBTYPES[subtype]) return done(CLAUDE_SUBTYPES[subtype]!);
+  // Codex's primary provider failure can be capacity while unrelated MCP stderr mentions OAuth.
+  // Only the explicit primary message wins here: an auth denial with incidental capacity stderr stays auth.
+  if ((input.error ?? "").trim().toLowerCase().startsWith("selected model is at capacity.")) return done("rate_limit");
   const text = `${input.error ?? ""}\n${input.stderr ?? ""}`.toLowerCase();
   for (const { kind, needles } of PATTERNS) if (needles.some((needle) => text.includes(needle))) return done(kind);
   if (input.signal || (input.exitCode !== null && input.exitCode !== 0 && !input.reported)) return done("crash");

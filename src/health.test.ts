@@ -29,6 +29,18 @@ function byName(report: HealthReport, name: string) {
 }
 
 describe("runHealth", () => {
+  it("reports the IP restriction on credential-free hooks without hiding other failures", async () => {
+    const paths = home();
+    writeSkill(paths, "internal", "description: local dispatch\nskillhook:\n  auth:\n    type: none\n    allow_ips: [localhost]");
+    writeSkill(paths, "public", "description: public dispatch\nskillhook:\n  auth:\n    type: none");
+    writeSkill(paths, "broken-internal", `description: broken local dispatch\nskillhook:\n  cwd: ${path.join(paths.home, "absent-cwd")}\n  auth:\n    type: none\n    allow_ips: [localhost]`);
+    const report = await runHealth(paths, OFFLINE);
+    expect(byName(report, "skill internal")).toMatchObject({ status: "warn", detail: expect.stringContaining("IP allowlist: localhost (no credential required for matching callers)") });
+    expect(byName(report, "skill internal")?.detail).not.toContain("anyone with the URL");
+    expect(byName(report, "skill public")).toMatchObject({ status: "warn", detail: expect.stringContaining("anyone with the URL") });
+    expect(byName(report, "skill broken-internal")).toMatchObject({ status: "fail", detail: expect.stringContaining("cwd does not exist") });
+  });
+
   it("groups every check and probes the CLIs, their MCP servers, plugins and doctors when deep", async () => {
     const paths = home();
     const store = new JobStore(paths.jobsDir, { maxJobs: 100, dedupeWindowSeconds: 60 });
@@ -142,6 +154,35 @@ describe("cloud link check", () => {
 });
 
 describe("claude.config_dir", () => {
+  it("ignores Claude profiles a shell or Codex runner never uses", async () => {
+    const paths = home();
+    for (const runner of ["shell", "codex"]) {
+      writeSkill(paths, `${runner}-profile`, `description: unused profile\nskillhook:\n  runner: ${runner}\n  shell:\n    command: [node, --version]\n  claude:\n    config_dir: ${path.join(paths.home, `${runner}-missing`)}`);
+    }
+    const report = await runHealth(paths, OFFLINE);
+    expect(report.checks.filter((c) => c.name.endsWith("-missing"))).toEqual([]);
+    expect(byName(report, "skill shell-profile")?.data).not.toHaveProperty("claude_config_dir");
+    expect(byName(report, "skill codex-profile")?.data).not.toHaveProperty("claude_config_dir");
+  });
+
+  it("uses named account profiles instead of overridden skill profiles", async () => {
+    const paths = home();
+    writeConfigFile(paths, { runners: { claude: { command: FAKE_CLAUDE }, codex: { command: FAKE_CODEX } }, accounts: { work: { runner: "claude" } }, defaults: { accounts: { claude: "work" } } });
+    mkdirSync(path.join(paths.home, "accounts", "work"), { recursive: true });
+    for (const [name, account] of [["explicit", "  account: work\n"], ["default", ""]]) {
+      writeSkill(paths, name!, `description: named profile\nskillhook:\n${account}  claude:\n    config_dir: ${path.join(paths.home, `${name}-missing`)}`);
+    }
+    const report = await runHealth(paths, OFFLINE);
+    expect(byName(report, "account work")).toMatchObject({ status: "ok" });
+    expect(report.checks.filter((c) => c.name.endsWith("-missing"))).toEqual([]);
+    expect(byName(report, "skill explicit")?.data).not.toHaveProperty("claude_config_dir");
+    expect(byName(report, "skill default")?.data).not.toHaveProperty("claude_config_dir");
+    expect(byName(report, "claude")).toBeUndefined();
+    const deep = await runHealth(paths, { ...OFFLINE, deep: true });
+    expect(deep.checks.some((c) => c.name.startsWith("claude mcp"))).toBe(false);
+    expect(deep.checks.some((c) => c.name.startsWith("account work mcp"))).toBe(true);
+  });
+
   it("checks the login of every Claude Code configuration directory a skill names, with the account and its skills", async () => {
     const paths = home();
     const acme = path.join(paths.home, "claude-acme");

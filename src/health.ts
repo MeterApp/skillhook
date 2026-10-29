@@ -225,7 +225,8 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
     for (const skill of loaded.skills) {
       const settings = resolveRunSettings(skill, config);
       runnersNeeded.add(settings.runner);
-      const configDir = claudeConfigDir(skill);
+      // Named accounts supply their own profile; a shell/Codex run does not use Claude's profile at all.
+      const configDir = settings.runner === "claude" && !poolFor(skill, config, settings.runner).length ? claudeConfigDir(skill) : undefined;
       if (configDir && skill.enabled) claudeDirs.set(configDir, [...(claudeDirs.get(configDir) ?? []), skill.name]);
       const auth = skill.auth;
       const where = `cwd ${settings.cwd}${skill.source.type === "project" ? `, from ${displayPath(skill.source.file)}` : ""}`;
@@ -247,8 +248,10 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
       const data = { runner: settings.runner, model: settings.model ?? null, cwd: settings.cwd, ...(configDir ? { claude_config_dir: configDir } : {}), auth: auth.type, schedule: skill.schedule?.cron ?? null, source: skill.source.type, ...(last ? { last_job: { id: last.id, status: last.status, outcome: jobOutcome(last) ?? null, finished_at: last.finished_at ?? null } } : {}), ...(missingEnv.length ? { missing_env: missingEnv } : {}) };
       const suffix = problems.length ? `; ${problems.join("; ")}` : "";
       if (!skill.webhook) check("skills", `skill ${skill.name}`, status, `${settings.runner}${settings.model ? ` ${settings.model}` : ""}${scheduleNote}, schedule only, ${where}${lastNote}${suffix}`, hints[0], data);
-      else if (auth.type === "none") check("skills", `skill ${skill.name}`, status === "fail" ? "fail" : "warn", `auth: none — anyone with the URL can trigger it${scheduleNote}${lastNote}${suffix}`, hints[0] ?? "set skillhook.auth.type in SKILL.md (or webhook: false for a schedule-only hook)", data);
-      else if (!secrets[auth.secret_env]) check("skills", `skill ${skill.name}`, "fail", `secret ${auth.secret_env} not set (webhooks will get 503)${scheduleNote}${lastNote}${suffix}`, `run: skillhook secret generate ${skill.name}  (or: skillhook secret set ${auth.secret_env}${skill.schedule ? ", or webhook: false when only the schedule should run it" : ""})`, data);
+      else if (auth.type === "none") {
+        const access = auth.allow_ips?.length ? `IP allowlist: ${auth.allow_ips.join(", ")} (no credential required for matching callers)` : "anyone with the URL can trigger it";
+        check("skills", `skill ${skill.name}`, status === "fail" ? "fail" : "warn", `auth: none — ${access}${scheduleNote}${lastNote}${suffix}`, hints[0] ?? "set skillhook.auth.type in SKILL.md (or webhook: false for a schedule-only hook)", data);
+      } else if (!secrets[auth.secret_env]) check("skills", `skill ${skill.name}`, "fail", `secret ${auth.secret_env} not set (webhooks will get 503)${scheduleNote}${lastNote}${suffix}`, `run: skillhook secret generate ${skill.name}  (or: skillhook secret set ${auth.secret_env}${skill.schedule ? ", or webhook: false when only the schedule should run it" : ""})`, data);
       else check("skills", `skill ${skill.name}`, status, `${settings.runner}${settings.model ? ` ${settings.model}` : ""}, auth ${auth.type}${scheduleNote}, ${where}${lastNote}${suffix}`, hints[0], data);
     }
   }
@@ -271,7 +274,12 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
   let claude: ClaudeProbe | undefined;
   let codex: CodexProbe | undefined;
   if (config) {
-    const wantClaude = runnersNeeded.has("claude") || config.defaults.runner === "claude";
+    const claudeSkills = loaded.skills.filter((skill) => skill.enabled && resolveRunSettings(skill, config).runner === "claude");
+    // Account rows and explicit profile rows probe their own identities and MCP configuration below.
+    // The unnamed profile matters only when a current skill (or an otherwise unused default) can run as it.
+    const wantClaude = claudeSkills.length
+      ? claudeSkills.some((skill) => !poolFor(skill, config, "claude").length && !claudeConfigDir(skill))
+      : config.defaults.runner === "claude" && !refNames(config.defaults.accounts?.claude).length;
     const wantCodex = runnersNeeded.has("codex") || config.defaults.runner === "codex";
     [claude, codex] = await Promise.all([wantClaude ? probeClaude(config.runners.claude.command, { env: probeEnv, deep, timeoutMs }) : undefined, wantCodex ? probeCodex(config.runners.codex.command, { env: probeEnv, deep, timeoutMs }) : undefined]);
   }
@@ -290,7 +298,10 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
       const name = `claude ${displayPath(dir)}`;
       const used = `${skills.length} skill(s): ${skills.join(", ")}`;
       const data = { config_dir: dir, found: probe.found, logged_in: probe.auth.loggedIn, method: probe.auth.method ?? null, account: probe.auth.account ?? null, skills };
-      if (!probe.found) continue; // the claude row already says it is not installed
+      if (!probe.found) {
+        check("runners", name, "fail", probe.auth.detail, "install Claude Code: https://claude.com/claude-code, or set runners.claude.command", data);
+        continue;
+      }
       if (!isDirectory(dir)) check("runners", name, "fail", `${dir} does not exist (${used})`, `run: CLAUDE_CONFIG_DIR=${dir} claude login`, data);
       else if (probe.auth.loggedIn) check("runners", name, "ok", `${probe.auth.detail}${probe.auth.account ? ` as ${probe.auth.account}` : ""} (${used})`, undefined, data);
       else check("runners", name, "fail", `${probe.auth.detail} (${used})`, `run: CLAUDE_CONFIG_DIR=${dir} claude login`, data);
