@@ -296,7 +296,7 @@ skillhook config set defaults.model sonnet
 | `secrets` | `.env` has mode 600 | `.env` missing or another mode | |
 | `admin token` | `SKILLHOOK_ADMIN_TOKEN` set | unset (admin API localhost-only) | |
 | `skills` | all `SKILL.md` files parse | no skills yet | one or more invalid |
-| `skill <name>` | runner, model, auth type, schedule and cwd (and the `skillhook.yaml` it comes from); a `webhook: false` skill needs no secret | `auth: none`; a name in `env:` that is not set | secret missing (`webhooks will get 503`); cwd does not exist; a shell command whose binary is not on PATH |
+| `skill <name>` | runner, model, auth type, schedule and cwd (and the `skillhook.yaml` it comes from); a `webhook: false` skill needs no secret | `auth: none` (reports its IP allowlist when present); a name in `env:` that is not set | secret missing (`webhooks will get 503`); cwd does not exist; a shell command whose binary is not on PATH |
 | `schedules` | every enabled `schedule:` with its next run | | (`skip` when there is none) |
 | `sleep` (macOS, when schedules exist) | `pmset` reports `sleep 0` | the Mac may sleep; schedules only fire while it is awake | (`skip` when `pmset` is unavailable) |
 | `project <dir>` | the linked repository's `skillhook.yaml` parses; hooks listed | | file missing or invalid; a hook that does not compile (`skip` when nothing is linked) |
@@ -331,6 +331,8 @@ The deep checks, in the `tools` and `skills` groups:
 Probes run with the job environment (`baseRunEnv`) cut down to PATH, the session basics and the runner's own variables (`ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*`, proxies and certificates): a `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or API key in `.env` applies exactly as it does to runs, and nothing else from `.env` reaches a version or login check. `claude mcp list` connects to every server and is the slow one; `health.probe_timeout_seconds` (20) bounds it, the quick calls get 15 s (or that setting when it is shorter), and a listing that timed out is reported as incomplete rather than wrong. A probe that outlives its timeout is killed with SIGKILL (Claude Code's binary ignores SIGTERM, and a `claude auth status` stuck behind a macOS keychain dialog once held every job for hours), and a login check that got no answer is reported as unknown, never as logged out.
 
 The server keeps one report per flavour for `health.cache_seconds` (60) and publishes `health.changed` on the event stream when a check changes status (or on the first report), so a dashboard can watch logins expire and MCP servers fail without polling.
+
+Per-skill Claude profile checks apply only to enabled Claude skills that actually use `claude.config_dir`. Shell and Codex runners do not use that profile, and a named account or default account pool supplies its own profile and is checked through the account rows instead. When all enabled Claude skills use named accounts or explicit profiles, the unused unnamed Claude login and its MCP servers are not probed; account/profile checks still run. A credential-free webhook remains a warning even with `allow_ips`, but its detail states that restriction rather than claiming every caller can trigger it.
 
 ## Stats
 

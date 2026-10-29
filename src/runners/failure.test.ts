@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import { classifyFailure, FAILURE_KINDS, FallbackSchema, RetrySchema } from "./failure.js";
 
 describe("classifyFailure", () => {
+  it("keeps provider capacity separate from incidental MCP OAuth warnings", () => {
+    expect(classifyFailure({ status: "failed", error: "Selected model is at capacity. Please try a different model.", stderr: "MCP server authentication failed: OAuth login required", exitCode: 1, signal: null, reported: true })).toMatchObject({ kind: "rate_limit", retryable: true });
+    expect(classifyFailure({ status: "failed", error: "Failed to authenticate: OAuth session expired (401)", stderr: "Selected model is at capacity. Please try a different model.", exitCode: 1, signal: null, reported: true })).toMatchObject({ kind: "auth", retryable: false });
+  });
+
   it("recognises the failures the CLIs print", () => {
     // Claude Code reports an auth failure as an is_error result with subtype "success".
     expect(classifyFailure({ status: "failed", error: "Failed to authenticate: OAuth session expired and could not be refreshed", exitCode: 1, signal: null, resultEvent: { subtype: "success", is_error: true } })).toEqual({ kind: "auth", retryable: false, message: "Failed to authenticate: OAuth session expired and could not be refreshed" });
