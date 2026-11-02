@@ -90,7 +90,7 @@ publish rights as the `NPM_TOKEN` repository secret; Publish uses it when presen
 
 ## Reporting security issues
 
-Please email hello@meterapp.co instead of opening a public issue. See `SECURITY.md`.
+Please email jonathan@skillhook.dev instead of opening a public issue. See `SECURITY.md`.
 
 ### Shared dependency cache
 

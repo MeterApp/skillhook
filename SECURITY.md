@@ -3,7 +3,7 @@
 skillhook exposes an HTTP endpoint that runs coding agents with real credentials on
 your machine, so we take reports seriously.
 
-- **Report privately** to hello@meterapp.co with steps to reproduce. Do not open a
+- **Report privately** to jonathan@skillhook.dev with steps to reproduce. Do not open a
   public issue for vulnerabilities. We aim to acknowledge within 3 business days.
 - **Supported versions**: the latest minor release on npm.
 

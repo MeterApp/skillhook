@@ -307,4 +307,4 @@ Retention: `jobs.max_jobs` (1000) newest jobs are kept; older finished jobs are 
 - Set `enabled: false` on skills you are not using instead of leaving them reachable.
 - Run `skillhook doctor` after changes; it flags `auth: none`, missing secrets and a permissive `.env` mode.
 
-To report a vulnerability, email hello@meterapp.co instead of opening a public issue (see [SECURITY.md](../SECURITY.md)).
+To report a vulnerability, email jonathan@skillhook.dev instead of opening a public issue (see [SECURITY.md](../SECURITY.md)).
