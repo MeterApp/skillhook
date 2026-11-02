@@ -3,7 +3,7 @@
   "name": "meterapp-skillhook",
   "owner": {
     "name": "Meter",
-    "email": "hello@meterapp.co",
+    "email": "jonathan@skillhook.dev",
     "url": "https://meterapp.co"
   },
   "description": "skillhook by Meter: a permanent, secure webhook endpoint on your own machine that runs Agent Skills with Claude Code or Codex.",
