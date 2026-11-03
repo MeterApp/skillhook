@@ -4,6 +4,10 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.14.7 (2026-11-03)
+
+- `package.json` declares `mcpName` (`dev.skillhook/skillhook`) so the stdio MCP server (`skillhook mcp`) can be listed on the official MCP Registry.
+
 ## 0.14.6 (2026-10-29)
 
 - Preserve an answered job while its session resume is queued or running. At the retention limit, creating a resume could prune its original before recording the resume link, fail the answer with “Unknown job”, and leave the resume unqueued.
