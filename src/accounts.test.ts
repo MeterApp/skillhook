@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, statSync,
 import { homedir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { AccountStateStore, defaultAccountSecretEnv, getAccount, isLimited, orderPool, parseLimitReset, poolFor, prepareAccountDir, resolveAccount, runnerOfAccounts, stateAfterRun, usageFromRun, withAccountEnv } from "./accounts.js";
+import { AccountStateStore, defaultAccountSecretEnv, getAccount, isLimited, orderPool, parseLimitReset, peakUsage, poolFor, prepareAccountDir, resolveAccount, runnerOfAccounts, stateAfterRun, usageFromRun, windowUsed, withAccountEnv } from "./accounts.js";
 import { createResumeJob } from "./answer.js";
 import { getRunner } from "./runners/index.js";
 import { AccountWatch } from "./account-watch.js";
@@ -85,10 +85,53 @@ describe("accounts: configuration and environment", () => {
       c: { limited_until: "2026-10-23T14:00:00Z" },
       d: { last_used_at: "2026-10-23T09:00:00Z" },
     };
-    expect(orderPool(["c", "a", "b", "d"], states, "ordered", now)).toEqual(["a", "b", "d", "c"]);
-    expect(orderPool(["c", "a", "b", "d"], states, "balanced", now)).toEqual(["d", "b", "a", "c"]);
+    expect(orderPool(["c", "a", "b", "d"], states, "ordered", { now })).toEqual(["a", "b", "d", "c"]);
+    expect(orderPool(["c", "a", "b", "d"], states, "balanced", { now })).toEqual(["d", "b", "a", "c"]);
     expect(isLimited(states.c, now)).toBe(true);
     expect(isLimited(states.c, Date.parse("2026-10-23T15:00:00Z"))).toBe(false);
+  });
+
+  it("balanced is a round robin by when each account was last picked, and spreads concurrent jobs", () => {
+    const now = Date.parse("2026-10-23T12:00:00Z");
+    const names = ["a", "b", "c"];
+    const states: Record<string, { last_picked_at?: string; last_used_at?: string }> = {};
+    const picks: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      const first = orderPool(names, states, "balanced", { now })[0] as string;
+      picks.push(first);
+      states[first] = { last_picked_at: new Date(now + i * 1000).toISOString() };
+    }
+    expect(picks).toEqual(["a", "b", "c", "a", "b", "c"]);
+    // `last_picked_at` (set when a job is handed out) wins over `last_used_at` (set when a run ends).
+    expect(orderPool(["a", "b"], { a: { last_used_at: "2026-10-23T09:00:00Z", last_picked_at: "2026-10-23T11:00:00Z" }, b: { last_used_at: "2026-10-23T10:00:00Z" } }, "balanced", { now })).toEqual(["b", "a"]);
+    // An account already running a job goes behind idle ones, even if it was picked longest ago.
+    expect(orderPool(["a", "b", "c"], { a: { last_picked_at: "2026-10-23T08:00:00Z" }, b: { last_picked_at: "2026-10-23T11:00:00Z" }, c: { last_picked_at: "2026-10-23T10:00:00Z" } }, "balanced", { now, inFlight: { a: 1 } })).toEqual(["c", "b", "a"]);
+  });
+
+  it("puts accounts about to hit a limit behind those with usage left, and forgets windows that have reset", () => {
+    const now = Date.parse("2026-10-23T12:00:00Z");
+    const usage = (used_percent: number, resets_at?: string, id = "five_hour") => ({ usage: { fetched_at: "2026-10-23T11:00:00Z", windows: [{ id, label: id, used_percent, ...(resets_at ? { resets_at } : {}) }] } });
+    const states = {
+      full5h: { ...usage(95, "2026-10-23T13:00:00Z"), last_picked_at: "2026-10-23T01:00:00Z" },
+      fullWeek: { ...usage(92, "2026-10-27T00:00:00Z", "seven_day"), last_picked_at: "2026-10-23T02:00:00Z" },
+      reset: { ...usage(99, "2026-10-23T11:30:00Z"), last_picked_at: "2026-10-23T11:00:00Z" },
+      half: { ...usage(60), last_picked_at: "2026-10-23T03:00:00Z" },
+      fresh: { last_picked_at: "2026-10-23T11:50:00Z" },
+      limited: { limited_until: "2026-10-23T14:00:00Z" },
+    };
+    // Usage left first (less used band first, then least recently picked), then the near-full ones (most left first), then limited.
+    expect(orderPool(Object.keys(states), states, "balanced", { now, avoidPercent: 90 })).toEqual(["reset", "fresh", "half", "fullWeek", "full5h", "limited"]);
+    // `ordered` keeps the listed order among accounts with usage left, but still moves near-full ones back.
+    expect(orderPool(Object.keys(states), states, "ordered", { now, avoidPercent: 90 })).toEqual(["reset", "half", "fresh", "fullWeek", "full5h", "limited"]);
+    // Without a threshold only an actual limit moves an account back.
+    expect(orderPool(["full5h", "limited", "half"], states, "ordered", { now })).toEqual(["full5h", "half", "limited"]);
+    expect(peakUsage(states.reset, now)).toBe(0);
+    expect(peakUsage(states.full5h, now)).toBe(95);
+    expect(peakUsage(states.full5h, Date.parse("2026-10-23T13:00:00Z"))).toBe(0);
+    // A window with no reset time is empty once its length has gone by since it was read.
+    expect(windowUsed({ id: "primary", label: "5h", used_percent: 70, window_minutes: 300 }, "2026-10-23T06:00:00Z", now)).toBe(0);
+    expect(windowUsed({ id: "primary", label: "5h", used_percent: 70, window_minutes: 300 }, "2026-10-23T08:00:00Z", now)).toBe(70);
+    expect(peakUsage({}, now)).toBeUndefined();
   });
 
   it("reads when a usage limit ends from what the CLIs print", () => {
@@ -294,6 +337,28 @@ describe("accounts: the queue picks, fails over and remembers", () => {
     // A limited account sorts last, so b is tried first and nothing was skipped on the way.
     expect(next?.attempts).toBeUndefined();
     expect(next?.runner_reason).toBeUndefined();
+    await queue.shutdown();
+  });
+
+  it("spreads jobs over the pool: concurrent jobs get different accounts, later ones rotate, near-full accounts go last", async () => {
+    const { paths, config, store, registry, queue } = setup({ a: { runner: "claude" }, b: { runner: "claude" }, c: { runner: "claude" } }, { concurrency: 3 });
+    writeSkill(paths, "pooled", `description: Pooled.\nskillhook:\n  account: [a, b, c]\n  concurrency: 3\n  env: [FAKE_CLAUDE_SLEEP_MS]\n  auth:\n    type: none`);
+    writeEnv(paths, { FAKE_CLAUDE_SLEEP_MS: "300" });
+    const run = async (count: number) => {
+      const jobs = Array.from({ length: count }, () => createManualJob({ config, store }, { skill: registry.get("pooled")!, payload: {}, trigger: "cli" }));
+      for (const job of jobs) queue.enqueue(job);
+      return Promise.all(jobs.map(async (job) => (await queue.waitFor(job.id, 20_000))?.account));
+    };
+    expect((await run(3)).sort()).toEqual(["a", "b", "c"]);
+    // Nobody has picked c since a and b; one job at a time now goes round in pick order.
+    const states = new AccountStateStore(paths.jobsDir);
+    const order = ["a", "b", "c"].sort((x, y) => Date.parse(states.get(x).last_picked_at!) - Date.parse(states.get(y).last_picked_at!));
+    expect(await run(1)).toEqual([order[0]]);
+    expect(await run(1)).toEqual([order[1]]);
+    // A weekly window at 95% (resetting in days) puts that account behind the others whatever its turn.
+    const next = order[2] as string;
+    states.update(next, { usage: { fetched_at: new Date().toISOString(), windows: [{ id: "seven_day", label: "weekly", used_percent: 95, resets_at: new Date(Date.now() + 3 * 86_400_000).toISOString() }] } });
+    expect(await run(1)).not.toEqual([next]);
     await queue.shutdown();
   });
 

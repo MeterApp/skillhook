@@ -4,7 +4,7 @@
 // `collectAccounts` answers `skillhook accounts`, `GET /accounts`, the MCP tool `list_accounts` and the health report.
 import { probeAccountMcp, type AccountMcp } from "./account-mcp.js";
 import { probeAccount } from "./account-probe.js";
-import { AccountStateStore, defaultLoginDir, isLimited, listAccounts, peakUsage, poolFor, refNames, type AccountIdentity, type AccountKind, type AccountRunner, type AccountState, type AccountUsage, type ResolvedAccount } from "./accounts.js";
+import { AccountStateStore, defaultLoginDir, isLimited, listAccounts, peakUsage, poolFor, refNames, windowUsed, type AccountIdentity, type AccountKind, type AccountRunner, type AccountState, type AccountUsage, type ResolvedAccount } from "./accounts.js";
 import type { Config, RunnerName } from "./config.js";
 import type { Secrets } from "./env.js";
 import type { Events } from "./events.js";
@@ -135,9 +135,9 @@ export function accountAttention(account: ResolvedAccount, readiness: RunnerRead
     else out.push({ level: "fail", code: "not_logged_in", message: `not logged in (${readiness.detail})`, fix: login });
   }
   if (!account.disabled && isLimited(state, now)) out.push({ level: "warn", code: "limited", message: `${state.limited_reason ?? "usage limit reached"}; skipped until ${state.limited_until}`, fix: `wait, or skillhook accounts reset ${account.name} once the plan allows runs again` });
-  const peak = peakUsage(state);
+  const peak = peakUsage(state, now);
   if (!account.disabled && !isLimited(state, now) && peak !== undefined && peak >= config.account_policy.usage_warn_percent) {
-    const full = (state.usage?.windows ?? []).filter((w) => w.used_percent >= config.account_policy.usage_warn_percent).map((w) => `${w.label} ${Math.round(w.used_percent)}%${w.resets_at ? ` (resets ${w.resets_at})` : ""}`);
+    const full = (state.usage?.windows ?? []).filter((w) => windowUsed(w, state.usage?.fetched_at, now) >= config.account_policy.usage_warn_percent).map((w) => `${w.label} ${Math.round(w.used_percent)}%${w.resets_at ? ` (resets ${w.resets_at})` : ""}`);
     out.push({ level: "warn", code: "usage_high", message: `usage high: ${full.join(", ")}` });
   }
   const failure = state.last_failure;

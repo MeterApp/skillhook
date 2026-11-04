@@ -235,6 +235,8 @@ export interface AccountIdentity {
 }
 
 export interface AccountState {
+  /** When the pool last gave the account a job (before it ran): the round robin's clock. */
+  last_picked_at?: string;
   last_used_at?: string;
   last_job?: string;
   last_success_at?: string;
@@ -296,28 +298,66 @@ export function isLimited(state: AccountState | undefined, now = Date.now()): bo
   return Number.isFinite(until) && until > now;
 }
 
-/** The fullest usage window, 0–100 (undefined when no usage is known). */
-export function peakUsage(state: AccountState | undefined): number | undefined {
+/**
+ * How much of the window is used now: a window whose reset has passed (or, with no reset time, whose whole length
+ * has gone by since it was read) is empty again, whatever the last reading said.
+ */
+export function windowUsed(window: UsageWindow, fetchedAt: string | undefined, now = Date.now()): number {
+  const resets = window.resets_at ? Date.parse(window.resets_at) : Number.NaN;
+  if (Number.isFinite(resets)) return resets <= now ? 0 : window.used_percent;
+  const fetched = fetchedAt ? Date.parse(fetchedAt) : Number.NaN;
+  if (window.window_minutes && Number.isFinite(fetched) && fetched + window.window_minutes * 60_000 <= now) return 0;
+  return window.used_percent;
+}
+
+/** The fullest usage window as of `now`, 0–100 (undefined when no usage is known). */
+export function peakUsage(state: AccountState | undefined, now = Date.now()): number | undefined {
   const windows = state?.usage?.windows ?? [];
-  return windows.length ? Math.max(...windows.map((w) => w.used_percent)) : undefined;
+  return windows.length ? Math.max(...windows.map((w) => windowUsed(w, state?.usage?.fetched_at, now))) : undefined;
+}
+
+/** When the pool last handed the account a job (`last_picked_at`, set when the job is given to it), else when a run of it ended. */
+function lastPicked(state: AccountState | undefined): number {
+  const at = Date.parse(state?.last_picked_at ?? state?.last_used_at ?? "");
+  return Number.isFinite(at) ? at : 0;
+}
+
+/** Accounts whose usage differs by less than one band count as equally used, so the least recently used decides. */
+const USAGE_BAND_PERCENT = 25;
+
+export interface PoolOrderOptions {
+  now?: number;
+  /** Jobs running on each account right now. */
+  inFlight?: Record<string, number>;
+  /** `account_policy.usage_avoid_percent`: a window at or above it puts the account behind those with more left. */
+  avoidPercent?: number;
 }
 
 /**
- * The order in which a pool's accounts are tried: disabled and limited ones last (they are only used when nothing
- * else is left, and then only the limited ones whose limit may be over), `balanced` puts the one with the most usage
- * left first, then the one used least recently.
+ * The order in which a pool's accounts are tried, in tiers: accounts with usage left first, then those with a window
+ * at or above `avoidPercent` (about to hit a limit, so a long run would likely be cut off mid-session; the one with
+ * the most left first), then limited ones (used only when nothing else is left, and then only once their limit may be
+ * over). Within the first tier, `ordered` keeps the order listed; `balanced` takes the account running the fewest jobs,
+ * then the least used (in bands of 25 points), then the one picked least recently: with no usage known that is a
+ * round robin, and an account a person also uses by hand gets fewer jobs as its windows fill.
  */
-export function orderPool(names: string[], states: AccountStates, strategy: Config["account_policy"]["strategy"], now = Date.now()): string[] {
-  const indexed = names.map((name, index) => ({ name, index, state: states[name] }));
-  const rank = (entry: (typeof indexed)[number]) => (isLimited(entry.state, now) ? 1 : 0);
+export function orderPool(names: string[], states: AccountStates, strategy: Config["account_policy"]["strategy"], options: PoolOrderOptions = {}): string[] {
+  const now = options.now ?? Date.now();
+  const avoid = options.avoidPercent ?? 100;
+  const indexed = names.map((name, index) => {
+    const state = states[name];
+    const used = peakUsage(state, now) ?? 0;
+    return { name, index, state, used, tier: isLimited(state, now) ? 2 : used >= avoid ? 1 : 0, running: options.inFlight?.[name] ?? 0 };
+  });
   indexed.sort((a, b) => {
-    const limited = rank(a) - rank(b);
-    if (limited) return limited;
-    if (strategy === "balanced") {
-      const usage = (peakUsage(a.state) ?? 0) - (peakUsage(b.state) ?? 0);
-      if (usage) return usage;
-      const used = (a.state?.last_used_at ? Date.parse(a.state.last_used_at) : 0) - (b.state?.last_used_at ? Date.parse(b.state.last_used_at) : 0);
-      if (used) return used;
+    if (a.tier !== b.tier) return a.tier - b.tier;
+    if (a.tier === 1 && a.used !== b.used) return a.used - b.used;
+    if (strategy === "balanced" && a.tier === 0) {
+      if (a.running !== b.running) return a.running - b.running;
+      const band = Math.floor(a.used / USAGE_BAND_PERCENT) - Math.floor(b.used / USAGE_BAND_PERCENT);
+      if (band) return band;
+      const picked = lastPicked(a.state) - lastPicked(b.state);
+      if (picked) return picked;
     }
     return a.index - b.index;
   });

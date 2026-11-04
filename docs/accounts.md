@@ -66,7 +66,7 @@ shared directory gained since.
 ```yaml
 skillhook:
   account: work                  # one account
-  # account: [work, personal]    # a pool: the first usable one runs (account_policy.strategy)
+  # account: [work, personal]    # a pool: jobs are spread over it (account_policy.strategy)
 ```
 
 - `account:` sets the runner when the skill does not set `runner:` (all accounts of a pool share one runner).
@@ -81,9 +81,22 @@ skillhook:
 
 Before a job runs, the queue goes through the pool:
 
-1. **Order.** With `account_policy.strategy: ordered` (the default), accounts are tried in the order listed. With
-   `balanced`, the account with the most usage left goes first, then the one used least recently. Either way, a limited
-   account goes last.
+1. **Order.** The pool is sorted in three tiers:
+   1. Accounts with usage left.
+   2. Accounts with a usage window (5-hour or weekly) at or above `account_policy.usage_avoid_percent` (90 by
+      default). They are close to a limit, so a run started there is likely to be cut off partway through its
+      session. The one with the most left goes first. Set the threshold to `100` to turn this tier off.
+   3. Accounts that hit a limit whose reset has not come yet.
+
+   Within the first tier, `account_policy.strategy: balanced` (the default) spreads the load. It picks the account
+   running the fewest jobs right now, then the least used one, then the one picked longest ago. Usage is compared in
+   bands of 25 points (0–24 %, 25–49 %, …), so accounts that are about equally used simply take turns. With no usage
+   known, this is a round robin. An account that a person also uses by hand gets fewer jobs as its windows fill.
+   `ordered` keeps the order listed instead: the first account takes every job, and the next ones are backups.
+   A window counts as empty once its reset time has passed, whatever the last reading said.
+
+   Picks happen one at a time. The chosen account is reserved for the job at once (`last_picked_at` in
+   `jobs/.accounts.json`), so jobs that start together go to different accounts. The rotation survives a restart.
 2. **Skip** accounts that are disabled, limited until a reset that has not come yet, not defined, or that fail the
    readiness check: not logged in, login expired, token missing, CLI not installed. The check is cached for
    `health.readiness_cache_seconds`.
@@ -105,7 +118,7 @@ unknown session profile fails safely, with the answer retained, instead of openi
 
 The queue writes it to `jobs/.accounts.json` (`accounts reset <name>` forgets it):
 
-- **When it was last used, and when it last succeeded.**
+- **When the pool last picked it, when it was last used, and when it last succeeded.**
 - **A usage limit.** The account is skipped until the limit resets. The reset time is taken from the first of these
   that gives one:
   1. Claude Code's own `rate_limit_event` with a rejected window.
@@ -113,7 +126,9 @@ The queue writes it to `jobs/.accounts.json` (`accounts reset <name>` forgets it
      `try again in 2 days 3 hours`.
   3. Otherwise `account_policy.limited_cooldown_minutes` after the failure.
 - **A failed login**, until the account's next success.
-- **Usage windows.** Every Claude Code run reports how much of its 5-hour and weekly windows is used.
+- **Usage windows.** Every Claude Code run reports how much of its 5-hour and weekly windows is used. Codex runs do
+  not. For a Codex pool, or for accounts also used outside skillhook, set `account_policy.usage_poll_minutes` (for
+  example `15`). `balanced` and `usage_avoid_percent` then work from current figures.
 
 ## Usage and plan
 
@@ -261,7 +276,7 @@ account of each attempt.
     "pro": { "runner": "codex", "share_from": "~/.codex" }
   },
   "defaults": { "accounts": { "claude": ["work", "personal"], "codex": "pro" } },
-  "account_policy": { "strategy": "ordered", "failover": true, "limited_cooldown_minutes": 60, "usage_poll_minutes": 0, "usage_warn_percent": 85, "notify": "none" }
+  "account_policy": { "strategy": "balanced", "usage_avoid_percent": 90, "failover": true, "limited_cooldown_minutes": 60, "usage_poll_minutes": 0, "usage_warn_percent": 85, "notify": "none" }
 }
 ```
 
