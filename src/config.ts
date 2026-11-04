@@ -100,8 +100,10 @@ export const ConfigSchema = z
     accounts: z.record(AccountNameSchema, AccountConfigSchema).default({}),
     account_policy: z
       .object({
-        /** How a pool picks: `ordered` (the first usable account, in the order listed) or `balanced` (the usable account with the most usage left, then the one used least recently). */
-        strategy: z.enum(["ordered", "balanced"]).default("ordered"),
+        /** How a pool picks among its accounts with usage left: `balanced` (the one running the fewest jobs, then the least used, then the one picked least recently: a round robin that steers away from fuller accounts) or `ordered` (the first, in the order listed). */
+        strategy: z.enum(["ordered", "balanced"]).default("balanced"),
+        /** A usage window (5-hour, weekly) at or above this percentage puts the account behind every account with more left, so a run does not start on an account about to hit its limit mid-session (100: only an actual limit does). */
+        usage_avoid_percent: z.number().int().min(1).max(100).default(90),
         /** Try the pool's next account when a run fails for an account reason (`auth`, `usage_limit`) before the agent produced anything. */
         failover: z.boolean().default(true),
         /** How long an account that hit a usage limit is skipped when the limit's reset time is unknown. */

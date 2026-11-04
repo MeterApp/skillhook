@@ -220,12 +220,18 @@
       "type": "object",
       "properties": {
         "strategy": {
-          "default": "ordered",
+          "default": "balanced",
           "type": "string",
           "enum": [
             "ordered",
             "balanced"
           ]
+        },
+        "usage_avoid_percent": {
+          "default": 90,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
         },
         "failover": {
           "default": true,

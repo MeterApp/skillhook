@@ -103,6 +103,10 @@ const WAIT_GRACE_MS = 30_000;
 export class JobQueue extends EventEmitter {
   private queued: JobRecord[] = [];
   private running = new Map<string, Running>();
+  /** The account each job was given (by job id), so concurrent picks spread out; cleared when the job finishes. */
+  private accountOf = new Map<string, string>();
+  /** Pool picks run one at a time: each sees the accounts the ones before it handed out. */
+  private picking: Promise<unknown> = Promise.resolve();
   private stopping = false;
   private dispatchPaused = false;
   private lastStartedWasReplay = true;
@@ -360,6 +364,7 @@ export class JobQueue extends EventEmitter {
 
   private finish(job: JobRecord, patch: Partial<JobRecord>): void {
     this.running.delete(job.id);
+    this.accountOf.delete(job.id);
     const finished_at = nowIso();
     const started = job.started_at ? Date.parse(job.started_at) : Date.parse(job.created_at);
     const outcome = patch.outcome ?? deriveOutcome(patch.status ?? job.status, job.runner, patch.response ?? job.response);
@@ -375,16 +380,39 @@ export class JobQueue extends EventEmitter {
   }
 
   /**
-   * The account of `pool` this run should use: in the pool's order (`account_policy.strategy`), skipping accounts that
-   * are not defined, disabled, limited (until their reset) or `exclude`d, and those whose readiness check fails.
+   * The account of `pool` job `jobId` should use: in the pool's order (`account_policy.strategy`, `usage_avoid_percent`,
+   * the jobs each account runs now), skipping accounts that are not defined, disabled, limited (until their reset) or
+   * `exclude`d, and those whose readiness check fails. The account it returns is reserved for the job at once
+   * (`last_picked_at`, and counted as running), so the next pick, even of a job starting at the same moment, rotates on.
    */
-  private async pickAccount(pool: string[], exclude: Set<string>): Promise<PoolVerdict> {
+  private pickAccount(jobId: string, pool: string[], exclude: Set<string>): Promise<PoolVerdict> {
+    const pick = this.picking.then(() => this.pickAccountNow(jobId, pool, exclude));
+    this.picking = pick.catch(() => undefined);
+    return pick;
+  }
+
+  private async pickAccountNow(jobId: string, pool: string[], exclude: Set<string>): Promise<PoolVerdict> {
+    const verdict = await this.choosePoolAccount(jobId, pool, exclude);
+    if (verdict.account) {
+      this.accountOf.set(jobId, verdict.account);
+      try {
+        this.accountStates.update(verdict.account, { last_picked_at: nowIso() });
+      } catch (error) {
+        this.deps.logger.warn("could not record the account's state", { job: jobId, account: verdict.account, error: errorMessage(error) });
+      }
+    }
+    return verdict;
+  }
+
+  private async choosePoolAccount(jobId: string, pool: string[], exclude: Set<string>): Promise<PoolVerdict> {
     const { config } = this.deps;
     const home = path.dirname(this.deps.store.jobsDir);
     const states = this.accountStates.all();
+    const inFlight: Record<string, number> = {};
+    for (const [id, name] of this.accountOf) if (id !== jobId && name !== "__proto__") inFlight[name] = (inFlight[name] ?? 0) + 1;
     const skipped: string[] = [];
     let readiness: RunnerReadiness | undefined;
-    for (const name of orderPool(pool, states, config.account_policy.strategy)) {
+    for (const name of orderPool(pool, states, config.account_policy.strategy, { inFlight, avoidPercent: config.account_policy.usage_avoid_percent })) {
       if (exclude.has(name)) continue;
       const account = getAccount(config, home, name);
       if (!account) {
@@ -413,7 +441,7 @@ export class JobQueue extends EventEmitter {
   }
 
   /** The first usable runner of `candidates` other than `exclude` (`shell` only for a skill that has a command), with an account of its pool when it has one. */
-  private async firstReady(candidates: FallbackConfig["runners"], exclude: Set<RunnerName>, skill: Skill): Promise<Target | undefined> {
+  private async firstReady(jobId: string, candidates: FallbackConfig["runners"], exclude: Set<RunnerName>, skill: Skill): Promise<Target | undefined> {
     for (const entry of candidates) {
       const target: Target = typeof entry === "string" ? { runner: entry } : { ...entry };
       const candidate = target.runner;
@@ -421,7 +449,7 @@ export class JobQueue extends EventEmitter {
       if (candidate === "shell" && !skill.config.shell?.command) continue;
       const pool = poolFor(skill, this.deps.config, candidate, target.account);
       if (pool.length) {
-        const verdict = await this.pickAccount(pool, new Set());
+        const verdict = await this.pickAccount(jobId, pool, new Set());
         if (verdict.account) return { ...target, account: verdict.account };
         continue;
       }
@@ -496,7 +524,7 @@ export class JobQueue extends EventEmitter {
       return;
     }
     if (pool.length) {
-      const verdict = await this.pickAccount(pool, triedAccounts);
+      const verdict = await this.pickAccount(job.id, pool, triedAccounts);
       if (verdict.account) {
         triedAccounts.add(verdict.account);
         if (verdict.skipped.length) logger.info("account pool: skipped accounts", { job: job.id, account: verdict.account, skipped: verdict.skipped });
@@ -504,7 +532,7 @@ export class JobQueue extends EventEmitter {
         this.events.emit("job.updated", { job: running.job, fields: ["account", ...(verdict.skipped.length ? (["runner_reason"] as const) : [])] });
       } else {
         const why = `no usable ${running.job.runner} account (${verdict.skipped.join("; ") || "empty pool"})`;
-        const alternative = !sessionResume && policy.on.includes("not_ready") ? await this.firstReady(policy.runners, tried, skill) : undefined;
+        const alternative = !sessionResume && policy.on.includes("not_ready") ? await this.firstReady(job.id, policy.runners, tried, skill) : undefined;
         if (!alternative) {
           const limited = verdict.skipped.length > 0 && verdict.skipped.every((line) => line.includes("usage limit until"));
           this.finish(running.job, { status: "failed", started_at: nowIso(), error: why, failure: { kind: limited ? "usage_limit" : verdict.readiness && !verdict.readiness.found ? "not_found" : "auth", retryable: false, message: why } });
@@ -524,7 +552,7 @@ export class JobQueue extends EventEmitter {
         logger.warn("readiness check failed; running anyway", { job: job.id, runner: running.job.runner, error: errorMessage(error) });
       }
       if (readiness && !readiness.ready) {
-        const alternative = !sessionResume && policy.on.includes("not_ready") ? await this.firstReady(policy.runners, tried, skill) : undefined;
+        const alternative = !sessionResume && policy.on.includes("not_ready") ? await this.firstReady(job.id, policy.runners, tried, skill) : undefined;
         if (!alternative) {
           this.finish(running.job, { status: "failed", started_at: nowIso(), error: `${running.job.runner} is not ready: ${readiness.detail}${readiness.hint ? ` (${readiness.hint})` : ""}`, failure: { kind: readiness.found ? "auth" : "not_found", retryable: false, message: readiness.detail } });
           return;
@@ -550,9 +578,9 @@ export class JobQueue extends EventEmitter {
         if (kind === "auth") this.deps.readiness?.invalidate(running.job.runner, account ? { account } : { claudeConfigDir: claudeConfigDir(skill) });
         // An account problem is the account's, not the skill's: the pool's next account tries first (same runner, same prompt).
         const accountPool = !sessionResume && running.job.account && config.account_policy.failover && (kind === "auth" || kind === "usage_limit") ? poolFor(skill, config, running.job.runner, job.account_requested) : [];
-        const nextAccount = accountPool.length > 1 ? (await this.pickAccount(accountPool, triedAccounts)).account : undefined;
+        const nextAccount = accountPool.length > 1 ? (await this.pickAccount(job.id, accountPool, triedAccounts)).account : undefined;
         const sameRunner = !nextAccount && retriesLeft > 0 && retryOn.includes(kind);
-        const alternative = !sessionResume && !nextAccount && !sameRunner && (policy.on as string[]).includes(kind) ? await this.firstReady(policy.runners, tried, skill) : undefined;
+        const alternative = !sessionResume && !nextAccount && !sameRunner && (policy.on as string[]).includes(kind) ? await this.firstReady(job.id, policy.runners, tried, skill) : undefined;
         if (nextAccount || sameRunner || alternative) {
           attempts.push({ runner: running.job.runner, ...(running.job.account ? { account: running.job.account } : {}), started_at: attempt.startedAt, finished_at: nowIso(), status: attempt.status, ...(attempt.error ? { error: attempt.error } : {}), failure: attempt.failure });
           const fields: (keyof JobRecord)[] = ["attempts"];

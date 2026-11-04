@@ -241,7 +241,8 @@ Once the cause is fixed (a secret pasted, a filter corrected, a skill installed)
 | `defaults.fallback` | none | `{ "runners": ["codex"], "on": ["not_ready"] }`: fallback runners for every skill that sets no `fallback:` of its own ([runners.md](runners.md#fallback-and-retry)). |
 | `accounts.<name>` | `{}` | A Claude Code or Codex login skills run as: `{ "runner": "claude"\|"codex", "kind": "login"\|"token"\|"api_key", "dir", "share_from", "secret_env", "label", "disabled" }`. Managed with `skillhook accounts`; see [accounts.md](accounts.md). |
 | `defaults.accounts.claude` / `.codex` | unset | The account, or pool of accounts, a runner uses when a skill names none (`skillhook accounts default …`). |
-| `account_policy.strategy` | `"ordered"` | How a pool picks: `ordered` (first usable, in the order listed) or `balanced` (most usage left, then least recently used). |
+| `account_policy.strategy` | `"balanced"` | How a pool picks among its accounts with usage left. `balanced`: the one running the fewest jobs, then the least used (in 25-point bands), then the one picked longest ago, which makes it a round robin. `ordered`: the first one, in the order listed ([accounts.md](accounts.md#how-a-pool-picks)). |
+| `account_policy.usage_avoid_percent` | `90` | A usage window at or above this puts the account behind every account with more left, so a run does not start on an account about to hit its limit (`100`: only an actual limit does). |
 | `account_policy.failover` | `true` | Run the job again as the pool's next account when it failed with `auth` or `usage_limit` before the agent produced anything. |
 | `account_policy.limited_cooldown_minutes` | `60` | How long a limited account is skipped when the CLI did not say when its limit resets. |
 | `account_policy.usage_poll_minutes` | `0` | While `serve` runs, read every account's usage windows this often through its own CLI (0: only on `skillhook accounts usage`). |
