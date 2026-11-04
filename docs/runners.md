@@ -22,6 +22,22 @@ Both agent runners use whatever login the CLI already has on the machine:
 
 Log in as the same user that runs the server (the launchd LaunchAgent / systemd user unit runs as you). Any variable in `~/.skillhook/.env` starting with `ANTHROPIC_`, `CLAUDE_`, `OPENAI_` or `CODEX_` (for example `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK`, `OPENAI_BASE_URL`) is forwarded, so gateway and enterprise setups work unchanged. From the server's own environment only `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and the proxy/CA variables are copied.
 
+### Choosing the credential
+
+When both a login and a key are present, Claude Code uses the key or token from its environment (`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`) rather than the login in its configuration directory. A key in the server's environment, from a shell profile or a parent Claude Code session, then decides silently that jobs are billed per use. `runners.claude.auth` makes the choice explicit:
+
+| Value | Runs | Readiness (`skillhook runners`, the pre-flight, `skillhook health`) |
+|---|---|---|
+| `auto` (default) | the environment as it is: a key or token wins over the login | ready with a login or a key |
+| `login` | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` are removed, so the login in `CLAUDE_CONFIG_DIR` / `~/.claude` runs | ready only when that directory is logged in; the probe never sees a key |
+| `api_key` | the key is used; a skill's own `claude.config_dir` still sets the directory (settings, plugins) but keeps `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | ready only when `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` is set, whatever the login says |
+
+```bash
+skillhook config set runners.claude.auth login
+```
+
+It applies to Claude Code runs only (a shell or Codex skill keeps what it is given), and a skill that lists a variable in its `env:` still gets it. It is server-wide on purpose: a skill that should run as another login names its own `claude.config_dir` or an account. Named accounts ([accounts.md](accounts.md)) are not affected: an account always runs with its own credential and nothing else.
+
 ### Several Claude accounts on one machine
 
 Named accounts ([accounts.md](accounts.md)) are the managed way to do this, for Codex too: `skillhook accounts add work --runner claude --login`, then `account: work` (or a pool, `account: [work, personal]`) in a skill. skillhook picks a usable account per job, fails over on a usage limit, reads each account's plan and usage windows, and says which one needs a person. `claude.config_dir`, below, keeps working for a single directory.
@@ -175,7 +191,7 @@ In a repository's `skillhook.yaml` a shell hook is written as `run: <command>` (
 
 ## Readiness
 
-Before a job spawns, skillhook checks that its runner is usable: installed (`runners.<name>.command` resolves) and logged in, or given an API key (`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`). The check runs `claude auth status` / `codex login status` with the same environment as a job and its answer is trusted for `health.readiness_cache_seconds` (60), then re-checked; a run that fails to authenticate forgets it at once. A check that gets no answer (the CLI hangs; it is killed after `health.probe_timeout_seconds`, 15 s at most for these quick calls) is a failed check, not a logged-out runner: the job runs on its runner anyway, logged as `readiness check failed; running anyway`, and no probe is awaited longer than the quick calls and the login try together plus a margin (55 s with the defaults), so a stuck CLI never holds the queue. `skillhook runners [--refresh] [--local]`, `GET /runners?refresh=1` and the MCP tool `get_runners` show the answer per runner (`found`, `version`, `authenticated`, `method`: `subscription` or `api_key`, `detail`, `hint`, `ready`), and `runners.changed` is published on the event stream when it changes. The shell runner is always ready; `skillhook health` checks each shell skill's binary.
+Before a job spawns, skillhook checks that its runner is usable: installed (`runners.<name>.command` resolves) and logged in, or given an API key (`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`); for Claude Code, `runners.claude.auth` narrows that to the login or to the key ([Choosing the credential](#choosing-the-credential)). The check runs `claude auth status` / `codex login status` with the same environment as a job and its answer is trusted for `health.readiness_cache_seconds` (60), then re-checked; a run that fails to authenticate forgets it at once. A check that gets no answer (the CLI hangs; it is killed after `health.probe_timeout_seconds`, 15 s at most for these quick calls) is a failed check, not a logged-out runner: the job runs on its runner anyway, logged as `readiness check failed; running anyway`, and no probe is awaited longer than the quick calls and the login try together plus a margin (55 s with the defaults), so a stuck CLI never holds the queue. `skillhook runners [--refresh] [--local]`, `GET /runners?refresh=1` and the MCP tool `get_runners` show the answer per runner (`found`, `version`, `authenticated`, `method`: `subscription` or `api_key`, `detail`, `hint`, `ready`), and `runners.changed` is published on the event stream when it changes. The shell runner is always ready; `skillhook health` checks each shell skill's binary.
 
 A job whose runner is not ready never starts: it fails at once with `error: <runner> is not ready: …`, `failure.kind: auth` (or `not_found`), no `command` and no process, unless a [fallback](#fallback-and-retry) runner is ready.
 

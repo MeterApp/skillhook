@@ -18,6 +18,9 @@ export type CommandSpec = z.infer<typeof CommandSpecSchema>;
 export const ClaudePermissionModeSchema = z.enum(["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"]);
 export const CodexSandboxSchema = z.enum(["read-only", "workspace-write", "danger-full-access"]);
 
+export const ClaudeAuthModeSchema = z.enum(["auto", "api_key", "login"]);
+export type ClaudeAuthMode = z.infer<typeof ClaudeAuthModeSchema>;
+
 export const ClaudeRunnerConfigSchema = z
   .object({
     /** Executable (default `claude`). Use an absolute path when the server runs as a service. */
@@ -26,6 +29,14 @@ export const ClaudeRunnerConfigSchema = z
     permission_mode: ClaudePermissionModeSchema.default("bypassPermissions"),
     /** Extra CLI args appended to every claude invocation. */
     args: z.array(z.string()).default([]),
+    /**
+     * Which credential Claude Code runs and readiness probes use. `auto`: whatever the environment holds (an
+     * `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` wins over the login, as Claude Code itself
+     * decides). `login`: those variables are removed, so the subscription login in the configuration directory is used.
+     * `api_key`: the key is kept even for a skill with its own `claude.config_dir`, and the runner is ready only with one.
+     * Named accounts bring their own credential and are not affected.
+     */
+    auth: ClaudeAuthModeSchema.default("auto"),
   })
   .strict();
 

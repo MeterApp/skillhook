@@ -41,7 +41,7 @@ keychain entry after a `CLAUDE_CONFIG_DIR` other than `~/.claude`.
 A run that uses an account gets **only that account's credentials**. skillhook removes `ANTHROPIC_API_KEY`,
 `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` (Claude Code), or `OPENAI_API_KEY` and `CODEX_API_KEY` (Codex),
 from the run's environment, wherever they came from, so the run is billed to that account. Even when a skill's `env:`
-lists them, they are removed. Tokens and keys kept as `SKILLHOOK_ACCOUNT_*` in `.env` never reach a run directly; a run
+lists them, they are removed, and `runners.claude.auth` does not apply to an account's runs. Tokens and keys kept as `SKILLHOOK_ACCOUNT_*` in `.env` never reach a run directly; a run
 gets them only as the CLI's own variable, and only for its own account.
 
 ### Settings shared with the machine's own login

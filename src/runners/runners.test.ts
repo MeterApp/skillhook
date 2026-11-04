@@ -269,6 +269,35 @@ describe("buildRunEnv", () => {
     expect(claudeRunner.resumeCommand?.("s1", "/w", env)).toBe(`cd /w && CLAUDE_CONFIG_DIR=${shellQuote(path.join(homedir(), ".claude-acme"))} claude --resume s1`);
   });
 
+  it("follows runners.claude.auth for Claude Code runs only: auto keeps the keys, login drops them, api_key keeps them even with a config_dir", () => {
+    const plain = parseSkillDocument(`---\nname: demo\ndescription: d\n---\nb`, "/skills/demo");
+    const profiled = parseSkillDocument(`---\nname: demo\ndescription: d\nskillhook:\n  claude:\n    config_dir: /acme\n---\nb`, "/skills/demo");
+    const fileSecrets = { ANTHROPIC_API_KEY: "file", ANTHROPIC_AUTH_TOKEN: "tok", ANTHROPIC_BASE_URL: "https://gateway", CLAUDE_CONFIG_DIR: "/global", CLAUDE_CODE_OAUTH_TOKEN: "oauth" };
+    const processEnv = { HOME: "/h", PATH: "/bin" };
+    const run = (auth: "auto" | "api_key" | "login", skill = plain, runner: "claude" | "codex" | "shell" = "claude") => {
+      const config = defaultConfig();
+      config.runners.claude.auth = auth;
+      return buildRunEnv({ secrets: fileSecrets, fileSecrets, skill, config, jobVars: {}, processEnv, runner });
+    };
+    expect(defaultConfig().runners.claude.auth).toBe("auto");
+    expect(run("auto")).toMatchObject({ ANTHROPIC_API_KEY: "file", ANTHROPIC_AUTH_TOKEN: "tok", CLAUDE_CODE_OAUTH_TOKEN: "oauth", CLAUDE_CONFIG_DIR: "/global" });
+    const login = run("login");
+    expect(login).toMatchObject({ CLAUDE_CONFIG_DIR: "/global", ANTHROPIC_BASE_URL: "https://gateway" });
+    expect([login.ANTHROPIC_API_KEY, login.ANTHROPIC_AUTH_TOKEN, login.CLAUDE_CODE_OAUTH_TOKEN]).toEqual([undefined, undefined, undefined]);
+    // Only Claude Code runs: a shell or Codex skill keeps what it was given.
+    expect(run("login", plain, "shell").ANTHROPIC_API_KEY).toBe("file");
+    expect(run("login", plain, "codex").ANTHROPIC_API_KEY).toBe("file");
+    // A skill that lists the key in env: still gets it.
+    const listed = parseSkillDocument(`---\nname: demo\ndescription: d\nskillhook:\n  env: [ANTHROPIC_API_KEY]\n---\nb`, "/skills/demo");
+    expect(run("login", listed).ANTHROPIC_API_KEY).toBe("file");
+    expect(run("api_key")).toMatchObject({ ANTHROPIC_API_KEY: "file", ANTHROPIC_AUTH_TOKEN: "tok" });
+    // With a config_dir, auto drops every credential (the directory's login runs); api_key keeps the keys, not the OAuth token.
+    expect(run("auto", profiled).ANTHROPIC_API_KEY).toBeUndefined();
+    const keyed = run("api_key", profiled);
+    expect(keyed).toMatchObject({ CLAUDE_CONFIG_DIR: "/acme", ANTHROPIC_API_KEY: "file", ANTHROPIC_AUTH_TOKEN: "tok" });
+    expect(keyed.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
   it("passes runner credentials and explicit names only", () => {
     const skill = parseSkillDocument(`---\nname: demo\ndescription: d\nskillhook:\n  env: [GITHUB_TOKEN]\n---\nb`, "/skills/demo");
     const config = defaultConfig();

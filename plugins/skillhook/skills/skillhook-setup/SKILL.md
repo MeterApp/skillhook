@@ -57,7 +57,7 @@ skillhook config set defaults.effort high         # low | medium | high | xhigh 
 skillhook config show
 ```
 
-A skill overrides these in its `skillhook:` frontmatter (`runner`, `model`, `effort`). Runs are unattended: Claude runs with `--permission-mode bypassPermissions`, Codex with the `workspace-write` sandbox plus network access. Tighten one skill with `claude: { permission_mode: acceptEdits, allowed_tools: [...] }` or `codex: { sandbox: read-only }`, or all of them under `runners.claude` / `runners.codex` in `skillhook.json`. A fast model as the default and an `opus`-class model only for skills that edit code is the usual split.
+A skill overrides these in its `skillhook:` frontmatter (`runner`, `model`, `effort`). Runs are unattended: Claude runs with `--permission-mode bypassPermissions`, Codex with the `workspace-write` sandbox plus network access. Tighten one skill with `claude: { permission_mode: acceptEdits, allowed_tools: [...] }` or `codex: { sandbox: read-only }`, or all of them under `runners.claude` / `runners.codex` in `skillhook.json`. A fast model as the default and an `opus`-class model only for skills that edit code is the usual split. If the machine has both a `claude login` and an `ANTHROPIC_API_KEY`, the key wins; `skillhook config set runners.claude.auth login` (or `api_key`) makes the choice explicit.
 
 ## 5. Run the server
 

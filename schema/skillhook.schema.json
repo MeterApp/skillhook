@@ -346,6 +346,15 @@
               "items": {
                 "type": "string"
               }
+            },
+            "auth": {
+              "default": "auto",
+              "type": "string",
+              "enum": [
+                "auto",
+                "api_key",
+                "login"
+              ]
             }
           },
           "additionalProperties": false

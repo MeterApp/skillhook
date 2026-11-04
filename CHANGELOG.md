@@ -4,6 +4,9 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- New `runners.claude.auth` (`auto`, `login`, `api_key`) chooses whether Claude Code runs and readiness checks use an API key or the subscription login, instead of whichever the environment happens to hold. `auto` (the default) behaves as before. `login` removes `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` from Claude Code runs and probes, so readiness reflects the login in `CLAUDE_CONFIG_DIR` / `~/.claude`. `api_key` counts the runner as ready only with a key and keeps the key for skills with their own `claude.config_dir`. Named accounts keep their own credential either way. `skillhook health` reports by the same rule. Changing it is answered by a fresh readiness probe at once.
+- The test suite no longer depends on the developer's shell: runner credentials (`ANTHROPIC_*`, `OPENAI_*`, `CODEX_*`, `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`) are cleared before every test file, so `pnpm test` passes inside a Claude Code session too.
+
 ## 0.15.2 (2026-11-05)
 
 - The published plugin (Anthropic's plugin directory and `MeterApp/skillhook-plugins`) no longer starts its MCP servers with `npx` in Claude Code. It ships a `package.json` and a `package-lock.json` that pin this `@meterapp/skillhook` release and the runtime dependencies CI tested, with registry sources and integrity hashes; Claude Code installs them into the plugin when it installs or updates it, and `.mcp.json` starts `node server/skillhook.mjs mcp` (and `mcp --cloud`) on that copy. This answers the directory's `LAUNCHER_LOCK_MISSING` warnings. Codex and Cursor, which install no lockfile, keep the pinned `npx` launchers (`.mcp.npx.json` in the mirror), and so does this repository's own marketplace. The CLI itself is unchanged.

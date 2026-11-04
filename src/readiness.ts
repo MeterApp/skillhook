@@ -6,7 +6,7 @@ import { withAccountEnv, type ResolvedAccount } from "./accounts.js";
 import type { Config, RunnerName } from "./config.js";
 import type { Secrets } from "./env.js";
 import type { Events } from "./events.js";
-import { withClaudeConfigDir } from "./runners/env.js";
+import { CLAUDE_API_KEY_VARS, withClaudeAuth, withClaudeConfigDir } from "./runners/env.js";
 import { probeClaude, probeCodex, QUICK_PROBE_MS } from "./tools.js";
 import { displayPath, nowIso } from "./util.js";
 
@@ -64,23 +64,34 @@ export async function checkReadiness(runner: RunnerName, config: Config, baseEnv
   const checked_at = nowIso();
   if (runner === "shell") return { runner, found: true, authenticated: null, detail: "runs the skill's own command", ready: true, checked_at };
   if (runner === "claude") {
-    const env = withClaudeConfigDir(baseEnv, claudeConfigDir);
+    const auth = config.runners.claude.auth;
+    const env = withClaudeAuth(withClaudeConfigDir(baseEnv, claudeConfigDir, [], auth), auth);
     const where = claudeConfigDir ? { config_dir: claudeConfigDir } : {};
     const hintDir = claudeConfigDir ? `CLAUDE_CONFIG_DIR=${claudeConfigDir} ` : "";
     const probe = await probeClaude(config.runners.claude.command, { env, deep: false, timeoutMs: config.health.probe_timeout_seconds * 1000 });
-    const apiKey = Boolean(env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN);
+    // Under `login` the keys are gone from `env`; under `api_key` only a key counts, whatever the directory's login says.
+    const keyVar = CLAUDE_API_KEY_VARS.find((key) => env[key]);
     if (!probe.found) return { runner, found: false, authenticated: false, detail: probe.auth.detail, hint: "install Claude Code: https://claude.com/claude-code, or set runners.claude.command", ready: false, ...where, checked_at };
     if (probe.auth.timedOut) throw new ReadinessProbeUnanswered(probe.auth.detail);
-    const authenticated = probe.auth.loggedIn || apiKey;
+    const byLogin = auth !== "api_key" && probe.auth.loggedIn;
+    const authenticated = byLogin || Boolean(keyVar);
+    const hint =
+      auth === "api_key"
+        ? "put ANTHROPIC_API_KEY in .env (skillhook secret set ANTHROPIC_API_KEY), or set runners.claude.auth to auto to use the login"
+        : auth === "login"
+          ? `run \`${hintDir}claude login\` in a terminal as this user (runners.claude.auth is login: API keys are not used)`
+          : claudeConfigDir
+            ? `run \`${hintDir}claude login\` in a terminal as this user`
+            : "run `claude login` in a terminal as this user, or put ANTHROPIC_API_KEY in .env";
     return {
       runner,
       found: true,
       path: probe.path,
       version: probe.version,
       authenticated,
-      method: probe.auth.loggedIn ? claudeMethod(probe.auth.method) : apiKey ? "api_key" : undefined,
-      detail: probe.auth.loggedIn ? probe.auth.detail : apiKey ? "ANTHROPIC_API_KEY set" : probe.auth.detail,
-      ...(authenticated ? {} : { hint: claudeConfigDir ? `run \`${hintDir}claude login\` in a terminal as this user` : "run `claude login` in a terminal as this user, or put ANTHROPIC_API_KEY in .env" }),
+      method: byLogin ? claudeMethod(probe.auth.method) : keyVar ? "api_key" : undefined,
+      detail: byLogin ? probe.auth.detail : keyVar ? `${keyVar} set` : auth === "api_key" ? "no ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN (runners.claude.auth is api_key)" : probe.auth.detail,
+      ...(authenticated ? {} : { hint }),
       ready: authenticated,
       ...where,
       checked_at,
@@ -167,10 +178,13 @@ export class ReadinessProbeTimeout extends Error {
 
 type KeyOptions = Pick<ReadinessOptions, "claudeConfigDir" | "account">;
 
-function cacheKey(runner: RunnerName, options: KeyOptions): string {
+/** For Claude Code the key carries `runners.claude.auth` too, so changing it is answered by a new probe at once. */
+function cacheKey(runner: RunnerName, options: KeyOptions, config: Pick<Config, "runners">): string {
   if (options.account) return `account\0${options.account.name}\0${options.account.dir}\0${options.account.kind}`;
-  const claudeConfigDir = runner === "claude" ? options.claudeConfigDir : undefined;
-  return claudeConfigDir ? `${runner}\0${claudeConfigDir}` : runner;
+  if (runner !== "claude") return runner;
+  const auth = config.runners.claude.auth;
+  const base = auth === "auto" ? runner : `${runner}\0auth=${auth}`;
+  return options.claudeConfigDir ? `${base}\0${options.claudeConfigDir}` : base;
 }
 
 export class ReadinessCache {
@@ -182,12 +196,12 @@ export class ReadinessCache {
 
   async get(runner: RunnerName, options: ReadinessOptions = {}): Promise<RunnerReadiness> {
     const account = options.account;
-    const key = cacheKey(runner, options);
+    const config = this.deps.config();
+    const key = cacheKey(runner, options, config);
     const hit = this.cached.get(key);
     if (!options.refresh && hit && Date.now() - hit.at < (this.deps.ttlMs?.() ?? 60_000)) return hit.readiness;
     const inflight = this.pending.get(key);
     if (inflight) return inflight;
-    const config = this.deps.config();
     const check = this.deps.check ? this.deps.check(runner, options) : account ? checkAccountReadiness(account, config, this.deps.env(), this.deps.secrets?.() ?? {}) : checkReadiness(runner, config, this.deps.env(), runner === "claude" ? options.claudeConfigDir : undefined);
     // A probe that never settles (a CLI stuck behind a system dialog, with every caller awaiting this one promise)
     // must not hold the queue: past the deadline it fails like any other failed check, and the next `get` probes afresh.
@@ -233,12 +247,12 @@ export class ReadinessCache {
 
   /** Stop trusting what is known about a runner or account (after a run failed to authenticate): the next `get` probes again. */
   invalidate(runner: RunnerName, options: KeyOptions = {}): void {
-    const key = cacheKey(runner, options);
+    const key = cacheKey(runner, options, this.deps.config());
     const hit = this.cached.get(key);
     if (hit) this.cached.set(key, { readiness: hit.readiness, at: 0 });
   }
 
   last(runner: RunnerName, options: KeyOptions = {}): RunnerReadiness | undefined {
-    return this.cached.get(cacheKey(runner, options))?.readiness;
+    return this.cached.get(cacheKey(runner, options, this.deps.config()))?.readiness;
   }
 }
