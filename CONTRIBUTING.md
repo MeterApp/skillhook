@@ -21,14 +21,20 @@ so you never touch your real `~/.skillhook`.
 - Add or update tests next to the code (`src/**/*.test.ts`); the HTTP and CLI suites
   use the fake runners in `test/fixtures/`.
 - Update the docs that describe what you changed (`README.md`, `docs/`, the plugin
-  skills under `skills/`) in the same PR, and run `pnpm run schema` after touching
+  skills under `plugins/skillhook/skills/`) in the same PR, and run `pnpm run schema` after touching
   `src/config.ts`.
-- The repository root is the plugin folder that Claude Code and Anthropic's plugin directory install.
-  Keep every committed file under 256 KiB, the whole tree under 512 files, text and images only
-  (no binaries, archives, `.ico` or `.pdf`), no symlinks, and no `CLAUDE.md` at the root (contributor
-  context is `.claude/CLAUDE.md`). `.mcp.json` pins the package at the version in `package.json`;
-  `pnpm run release --check` fails otherwise. `claude plugin validate . --strict --profile directory`
-  checks the rest.
+- The plugin is the folder `plugins/skillhook/` (manifests, icon, `.mcp.json`, skills, its own
+  `README.md`); the repository root is only its marketplace (`.claude-plugin/marketplace.json`,
+  `.agents/plugins/marketplace.json`). Anthropic's plugin directory reads every file in the plugin
+  folder and holds the plugin for review (`MCP_FORWARDS_CREDENTIAL_ENV`) when one looks like it reads
+  a credential, examples and denials included. So nothing in `plugins/skillhook/` may show a shell
+  variable holding a key, a `process.env` read, an `export` of one, a path to the secrets file or
+  wording about environment variables: describe secrets as "saved with `skillhook secret set`" and
+  link to `docs/` on GitHub for the rest. `pnpm run release --check` runs that audit
+  (`scripts/plugin-audit.ts`, the fleet's patterns) along with the manifest rules (no `userConfig`,
+  no `env` block, no headers, the `npx` launchers pinned at the version in `package.json`). Keep
+  every file there under 256 KiB, text and images only, and no symlinks.
+  `claude plugin validate plugins/skillhook --strict --profile directory` checks the rest.
 - Describe the security impact of the change in the PR description when it touches
   `src/auth.ts`, `src/server.ts`, `src/runners/env.ts` or `src/prompt.ts`.
 
@@ -47,7 +53,7 @@ Versions are cut from `main` by pull request:
 
 1. Describe changes under `## Unreleased` in `CHANGELOG.md` as they land.
 2. Run `pnpm run release minor` (or `patch`, `major`, `1.2.3`). It bumps `package.json`,
-   the plugin manifests, the pinned `npx -y @meterapp/skillhook@X.Y.Z` launchers in `.mcp.json`
+   the plugin manifests, the pinned `npx -y @meterapp/skillhook@X.Y.Z` launchers in `plugins/skillhook/.mcp.json`
    and moves the Unreleased entries under
    `## 1.2.0 (date)`. Nothing is committed; `pnpm run release --check` verifies the result.
 3. Commit on a branch, open a pull request, let CI pass, merge.
@@ -102,12 +108,10 @@ Keep the shared download store warm; prune only occasionally, and retire complet
 
 ## Publishing the plugin directory mirror
 
-Claude's directory safety scan reads the whole submitted repository. Submit
-[MeterApp/skillhook-plugins](https://github.com/MeterApp/skillhook-plugins), the
-plugin-only mirror, rather than the CLI development repository (whose tests
-contain fake credentials and whose workspace config is unrelated to installation).
-The root manifests, icon, MCP launchers, skills and supporting docs remain the
-source of truth here. The mirror preserves both local and cloud capabilities.
+[MeterApp/skillhook-plugins](https://github.com/MeterApp/skillhook-plugins) is a
+plugin-only mirror: the contents of `plugins/skillhook/` at its root, with marketplaces
+that point at `./`. `plugins/skillhook/` remains the source of truth here, and
+`MeterApp/skillhook` itself installs the same plugin through its root marketplace.
 
 After merging a plugin change and verifying its pinned npm version is published,
 run from a clean `main` checkout:
@@ -117,7 +121,7 @@ node scripts/publish-plugins.mjs --dry-run
 node scripts/publish-plugins.mjs
 ```
 
-Both commands stage an explicit allowlist and run
+Both commands stage the plugin folder and run
 `claude plugin validate <snapshot> --strict --profile directory` before publishing.
 `--output=<empty-directory>` preserves the validated snapshot for inspection.
 Set `CLAUDE_BIN` if the Claude CLI is not on PATH. Never edit the generated public

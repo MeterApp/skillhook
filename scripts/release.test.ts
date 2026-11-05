@@ -79,10 +79,10 @@ describe("release script", () => {
   it("passes the check when everything agrees and names each mismatch otherwise", () => {
     const root = fakeRepo();
     expect(checkRelease(root)).toEqual({ version: "0.1.0", problems: [] });
-    writeFileSync(path.join(root, ".codex-plugin/plugin.json"), JSON.stringify({ name: "skillhook", version: "0.0.9" }));
+    writeFileSync(path.join(root, "plugins/skillhook/.codex-plugin/plugin.json"), JSON.stringify({ name: "skillhook", version: "0.0.9" }));
     writeFileSync(path.join(root, "CHANGELOG.md"), "# Changelog\n\n## 0.0.9 (2026-01-01)\n\n- old\n");
     const { problems } = checkRelease(root);
-    expect(problems.some((p) => p.includes(".codex-plugin/plugin.json version is 0.0.9"))).toBe(true);
+    expect(problems.some((p) => p.includes("plugins/skillhook/.codex-plugin/plugin.json version is 0.0.9"))).toBe(true);
     expect(problems.some((p) => p.includes('"## Unreleased"'))).toBe(true);
     expect(problems.some((p) => p.includes('no "## 0.1.0" section'))).toBe(true);
     const r = io();
@@ -129,8 +129,8 @@ describe("release script", () => {
     expect(JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version).toBe("0.1.0"); // nothing written
     writeFileSync(path.join(root, MCP_CONFIG), mcpConfig("skillhook@0.0.9"));
     expect(checkRelease(root).problems).toEqual([
-      '.mcp.json server "local" launches skillhook@0.0.9, package.json says 0.1.0 (pin it: skillhook@0.1.0)',
-      '.mcp.json server "cloud" launches skillhook@0.0.9, package.json says 0.1.0 (pin it: skillhook@0.1.0)',
+      'plugins/skillhook/.mcp.json server "local" launches skillhook@0.0.9, package.json says 0.1.0 (pin it: skillhook@0.1.0)',
+      'plugins/skillhook/.mcp.json server "cloud" launches skillhook@0.0.9, package.json says 0.1.0 (pin it: skillhook@0.1.0)',
     ]);
     unlinkSync(path.join(root, MCP_CONFIG));
     expect(checkRelease(root).problems).toEqual([]);

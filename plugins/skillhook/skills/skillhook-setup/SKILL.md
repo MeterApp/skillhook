@@ -10,7 +10,7 @@ skillhook is a small server on the user's machine. `POST <public_url>/hooks/<ski
 | Path | What |
 | --- | --- |
 | `skillhook.json` | server config: port 8787, bound to 127.0.0.1, defaults for runner/model/timeout |
-| `.env` | secrets, mode 600: `SKILLHOOK_ADMIN_TOKEN`, `SKILLHOOK_SECRET_<SKILL>`, provider secrets, API keys |
+| secrets file | mode 600, written only by `skillhook secret set` / `secret generate` / `init`: the admin token, each skill's webhook secret, provider signing secrets, API keys |
 | `skills/<name>/SKILL.md` | one directory per skill |
 | `jobs/<id>/` | `payload.json`, `event.json`, `prompt.md`, `stdout.log`, `result.md` for every run |
 | `logs/service.log` | output of the background service |
@@ -26,7 +26,7 @@ codex login status        # … Codex logged in (ChatGPT)
 tailscale status          # optional, but the easiest permanent HTTPS URL; install from tailscale.com/download
 ```
 
-No Claude or Codex login? An API key works instead: after step 2, `skillhook secret set ANTHROPIC_API_KEY` or `skillhook secret set OPENAI_API_KEY`. `ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*` and `CODEX_*` variables in `.env` are passed to every run automatically.
+No Claude or Codex login? An API key works instead: after step 2, `skillhook secret set ANTHROPIC_API_KEY` or `skillhook secret set OPENAI_API_KEY`. Saved `ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*` and `CODEX_*` secrets are passed to every run automatically.
 
 ## 2. Install and initialize
 
@@ -35,7 +35,7 @@ npm install -g @meterapp/skillhook   # install globally: the background service 
 skillhook init                       # add --runner codex, --model <name>, --port <n> as needed
 ```
 
-`init` creates the directory, `skillhook.json`, `.env` with an admin token, and copies the bundled `hello` skill with a fresh bearer secret. Re-running it keeps existing files (`--force` rewrites the config). `npx -y @meterapp/skillhook <command>` works for one-off commands, but install globally before `service install`. The package is `@meterapp/skillhook`; the command it installs is `skillhook`. It keeps itself current from then on: new versions install in the background and the service restarts itself onto them when it is idle (`"auto_update": false` in `skillhook.json` only reports them). `skillhook update --install` upgrades right away and updates this plugin in Claude Code and Codex too; it changes what is installed, so run it when the person asks.
+`init` creates the directory, `skillhook.json`, the secrets file with an admin token, and copies the bundled `hello` skill with a fresh bearer secret. Re-running it keeps existing files (`--force` rewrites the config). `npx -y @meterapp/skillhook <command>` works for one-off commands, but install globally before `service install`. The package is `@meterapp/skillhook`; the command it installs is `skillhook`. It keeps itself current from then on: new versions install in the background and the service restarts itself onto them when it is idle (`"auto_update": false` in `skillhook.json` only reports them). `skillhook update --install` upgrades right away and updates this plugin in Claude Code and Codex too; it changes what is installed, so run it when the person asks.
 
 ## 3. Read the doctor
 
@@ -110,7 +110,7 @@ A team keeps the webhook → action mapping in the repository instead of on one 
 ```bash
 skillhook link ~/dev/the-repo             # or, in the repository: skillhook projects init  (writes a starter file, then links)
 skillhook projects                        # every linked repository with its hooks and URLs
-skillhook secret set GITHUB_WEBHOOK_SECRET   # the file names secrets; values stay in .env
+skillhook secret set GITHUB_WEBHOOK_SECRET   # the file names secrets; values stay in skillhook's secrets file
 ```
 
 Hooks are live without a restart, `git pull` deploys changes, and `skillhook unlink <dir>` stops serving them. Names in `~/.skillhook/skills` win over repositories; a duplicate is reported by `skillhook skills list` and `doctor`. MCP: `link_project` (`init: true` to scaffold), `list_projects`, `unlink_project`. Writing the file itself is covered by skillhook-authoring.
@@ -153,7 +153,7 @@ Install the plugin (`/plugin install skillhook --marketplace MeterApp/skillhook`
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `503 skill_not_configured` | the skill's secret is not in `.env` | `skillhook secret generate <skill>` (bearer) or `skillhook secret set <ENV>` (provider); `skillhook doctor` names the variable |
+| `503 skill_not_configured` | the skill's secret was never saved | `skillhook secret generate <skill>` (bearer) or `skillhook secret set <ENV>` (provider); `skillhook doctor` names the variable |
 | `401 missing_token` / `invalid_token` / `missing_signature` / `invalid_signature` | wrong secret, wrong header, or the sender signs differently than the skill's `auth.type` | compare `skillhook skills show <skill>` with the sender's settings; re-paste the secret; `skillhook send <skill>` proves the server side works |
 | `401 stale_timestamp` | sender clock off, or a replayed delivery outside the 5-minute tolerance | check the machine clock; raise `tolerance_seconds` for that skill only |
 | `429 too_many_failures` | 10+ failed auth attempts per minute from one IP | stop the sender, fix the secret, wait a minute |

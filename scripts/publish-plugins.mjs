@@ -1,20 +1,21 @@
 #!/usr/bin/env node
-// Publish only plugin assets, not the CLI's source, tests, or package-manager configuration.
+// Publish only the plugin folder (plugins/skillhook/), not the CLI's source, docs, tests, or package-manager configuration.
+// The mirror is a single-plugin repository: the folder's contents go to its root, with marketplaces pointing at "./".
 // Run from main after merging changes: node scripts/publish-plugins.mjs [--dry-run].
 // --output=<directory> stages and validates a local snapshot without publishing.
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repo = 'MeterApp/skillhook-plugins';
-const assets = ['.claude-plugin', '.codex-plugin', '.cursor-plugin', '.mcp.json', 'skills', 'docs', 'LICENSE'];
+const pluginDir = join(root, 'plugins/skillhook');
 const dryRun = process.argv.includes('--dry-run');
 const output = process.argv.find((arg) => arg.startsWith('--output='))?.slice(9);
 const run = (command, args, cwd = root) => execFileSync(command, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-const version = JSON.parse(readFileSync(join(root, '.claude-plugin/plugin.json'), 'utf8')).version;
+const version = JSON.parse(readFileSync(join(pluginDir, '.claude-plugin/plugin.json'), 'utf8')).version;
 const checkout = output ? resolve(output) : mkdtempSync(join(tmpdir(), 'skillhook-plugins-'));
 
 try {
@@ -36,14 +37,22 @@ try {
     }
   }
   if (output && existsSync(checkout) && readdirSync(checkout).length) throw new Error('--output must be an empty directory');
-  for (const asset of assets) cpSync(join(root, asset), join(checkout, asset), { recursive: true });
+  cpSync(pluginDir, checkout, { recursive: true });
+  const marketplace = JSON.parse(readFileSync(join(root, '.claude-plugin/marketplace.json'), 'utf8'));
+  for (const plugin of marketplace.plugins) plugin.source = './';
+  writeFileSync(join(checkout, '.claude-plugin/marketplace.json'), `${JSON.stringify(marketplace, null, 2)}\n`);
+  const codexMarketplace = JSON.parse(readFileSync(join(root, '.agents/plugins/marketplace.json'), 'utf8'));
+  for (const plugin of codexMarketplace.plugins) plugin.source = { source: 'local', path: './' };
+  mkdirSync(join(checkout, '.agents/plugins'), { recursive: true });
+  writeFileSync(join(checkout, '.agents/plugins/marketplace.json'), `${JSON.stringify(codexMarketplace, null, 2)}\n`);
   for (const directory of ['.claude-plugin', '.codex-plugin', '.cursor-plugin']) {
     const file = join(checkout, directory, 'plugin.json');
     const manifest = JSON.parse(readFileSync(file, 'utf8'));
     manifest.repository = `https://github.com/${repo}`;
     writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
   }
-  writeFileSync(join(checkout, 'README.md'), `# Skillhook plugin\n\nWebhook in, agent out. Set up secure webhooks on your own machine, write Agent Skills, and operate your Skillhook Cloud organisation.\n\n## Install\n\n\`\`\`text\n/plugin marketplace add ${repo}\n/plugin install skillhook@meterapp-skillhook\n\`\`\`\n\nThe plugin launches the pinned npm package \`@meterapp/skillhook@${version}\` with npx and includes three skills and two MCP servers (local and cloud). Node.js 22 or later is required. Cloud access is optional; run \`skillhook cloud login\` to sign in.\n\n[Website](https://skillhook.dev/?ref=plugin) · [Documentation](https://skillhook.dev/docs?ref=plugin) · [Source and support](https://github.com/MeterApp/skillhook) · [Privacy](https://skillhook.dev/privacy) · [Terms](https://skillhook.dev/terms)\n\nThis repository is generated from [MeterApp/skillhook](https://github.com/MeterApp/skillhook) with \`scripts/publish-plugins.mjs\`. Make changes there and republish; do not edit this mirror. Only plugin assets and supporting documentation are published here.\n`);
+  const readme = readFileSync(join(pluginDir, 'README.md'), 'utf8').replaceAll('/plugin marketplace add MeterApp/skillhook', `/plugin marketplace add ${repo}`).replaceAll('codex plugin marketplace add MeterApp/skillhook', `codex plugin marketplace add ${repo}`);
+  writeFileSync(join(checkout, 'README.md'), `${readme}\nThis repository is generated from [MeterApp/skillhook](https://github.com/MeterApp/skillhook) (\`plugins/skillhook/\`) with \`scripts/publish-plugins.mjs\`. Make changes there and republish; do not edit this mirror.\n`);
   console.log(run(process.env.CLAUDE_BIN || 'claude', ['plugin', 'validate', checkout, '--strict', '--profile', 'directory']));
   if (output || dryRun) console.log(`Validated skillhook ${version}: ${checkout}`);
   else {

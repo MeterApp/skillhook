@@ -21,7 +21,7 @@ organisation), and give them the link when `browser_opened` is false. Then call 
 tools appear once they approved. In a terminal the same is:
 
 ```bash
-skillhook cloud login    # opens the browser; the person approves the code, the key is kept in ~/.skillhook/.env
+skillhook cloud login    # opens the browser; the person approves the code, the key is kept in skillhook's configuration under ~/.skillhook
 ```
 
 That is Skillhook Cloud at https://skillhook.dev/?ref=plugin; only a person on another deployment adds `--url https://…` (the

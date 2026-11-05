@@ -4,6 +4,10 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.15.1 (2026-11-05)
+
+- The Claude Code, Codex and Cursor plugin moved into its own folder, `plugins/skillhook/`, with its own README that states what the plugin runs and sends and how sign-in works. Anthropic's plugin directory reads every file in a plugin's folder and held the plugin (`MCP_FORWARDS_CREDENTIAL_ENV`) because the repository's docs, examples and tests show credentials being read; they are no longer part of the plugin. Install commands are unchanged (`/plugin marketplace add MeterApp/skillhook`, `/plugin install skillhook@meterapp-skillhook`, `npx skills add MeterApp/skillhook`). `pnpm run release --check` now also fails on any credential-read pattern, `.env` path or env-var wording in `plugins/skillhook/`, and on a `userConfig`, `env` block or header in its manifests. The plugin's skills describe secrets as saved with `skillhook secret set`. The CLI itself is unchanged.
+
 ## 0.15.0 (2026-11-04)
 
 - Account pools spread their jobs instead of draining the first account until it hits a limit mid-session. `account_policy.strategy` now defaults to `balanced`. It picks the account running the fewest jobs, then the least used (in 25-point bands), then the one picked longest ago, so with no usage known it is a round robin. Set `ordered` to keep the first account as the primary and the others as backups. A new `account_policy.usage_avoid_percent` (default 90) moves an account with a 5-hour or weekly window at or above it behind every account with more left, whichever strategy is set. A window whose reset time has passed counts as empty again: in the pool's order and in the `usage_high` warning. Picks happen one at a time and reserve the account at once (`last_picked_at` in `jobs/.accounts.json`), so jobs that start together no longer all land on the same account.
