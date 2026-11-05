@@ -15,5 +15,6 @@
   "icon": "./.claude-plugin/icon.png",
   "privacyPolicyUrl": "https://skillhook.dev/privacy",
   "termsOfServiceUrl": "https://skillhook.dev/terms",
+  "supportUrl": "https://skillhook.dev/docs?ref=plugin",
   "keywords": ["webhook", "agent-skills", "claude-code", "codex", "mcp", "tailscale", "automation", "granola", "sentry", "github"]
 }
