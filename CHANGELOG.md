@@ -4,6 +4,10 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.15.2 (2026-11-05)
+
+- The published plugin (Anthropic's plugin directory and `MeterApp/skillhook-plugins`) no longer starts its MCP servers with `npx` in Claude Code. It ships a `package.json` and a `package-lock.json` that pin this `@meterapp/skillhook` release and the runtime dependencies CI tested, with registry sources and integrity hashes; Claude Code installs them into the plugin when it installs or updates it, and `.mcp.json` starts `node server/skillhook.mjs mcp` (and `mcp --cloud`) on that copy. This answers the directory's `LAUNCHER_LOCK_MISSING` warnings. Codex and Cursor, which install no lockfile, keep the pinned `npx` launchers (`.mcp.npx.json` in the mirror), and so does this repository's own marketplace. The CLI itself is unchanged.
+
 ## 0.15.1 (2026-11-05)
 
 - The Claude Code, Codex and Cursor plugin moved into its own folder, `plugins/skillhook/`, with its own README that states what the plugin runs and sends and how sign-in works. Anthropic's plugin directory reads every file in a plugin's folder and held the plugin (`MCP_FORWARDS_CREDENTIAL_ENV`) because the repository's docs, examples and tests show credentials being read; they are no longer part of the plugin. Install commands are unchanged (`/plugin marketplace add MeterApp/skillhook`, `/plugin install skillhook@meterapp-skillhook`, `npx skills add MeterApp/skillhook`). `pnpm run release --check` now also fails on any credential-read pattern, `.env` path or env-var wording in `plugins/skillhook/`, and on a `userConfig`, `env` block or header in its manifests. The plugin's skills describe secrets as saved with `skillhook secret set`. The CLI itself is unchanged.
