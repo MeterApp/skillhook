@@ -24,11 +24,20 @@ or newer is required.
 
 ## What it runs
 
-Both servers are local (stdio). The host starts them with `npx -y @meterapp/skillhook@<version> mcp`
-and `npx -y @meterapp/skillhook@<version> mcp --cloud` ([`.mcp.json`](.mcp.json)), pinned to this
-plugin's release: the first start downloads exactly that version of the
+Both servers are local (stdio) and run exactly this plugin's release of the
 [`@meterapp/skillhook`](https://www.npmjs.com/package/@meterapp/skillhook) npm package, published with
 provenance from [MeterApp/skillhook](https://github.com/MeterApp/skillhook).
+
+- **Claude Code, installed from the plugin directory or
+  [MeterApp/skillhook-plugins](https://github.com/MeterApp/skillhook-plugins):** the plugin ships a
+  `package.json` and a `package-lock.json` that pin that version and its dependencies (registry
+  sources and integrity hashes). Claude Code installs them into the plugin's `node_modules` when it
+  installs or updates the plugin, and starts `node server/skillhook.mjs mcp` and
+  `node server/skillhook.mjs mcp --cloud`, which run the installed command line.
+- **Codex, Cursor, and this source repository's marketplace:** the host starts
+  `npx -y @meterapp/skillhook@<version> mcp` and `npx -y @meterapp/skillhook@<version> mcp --cloud`
+  (`.mcp.json` in the source repository, `.mcp.npx.json` in the published plugin); the first start
+  downloads exactly that version.
 
 - **`skillhook`** reads and writes skillhook's own configuration under `~/.skillhook` on this machine
   (settings, skills, the secrets you saved with `skillhook secret set`, jobs) and talks to the local
@@ -60,7 +69,7 @@ when a person runs `skillhook cloud connect` in a terminal. What that link sends
 ## Also sent
 
 - **Update check.** At most once an hour the CLI asks the npm registry for the latest version of
-  `@meterapp/skillhook`. A pinned `npx` copy never installs anything; the plugin moves to a new version
+  `@meterapp/skillhook`. The plugin's copy never installs anything itself; it moves to a new version
   when the plugin updates.
 - **Nothing else.** No telemetry or analytics. Skillhook Cloud's
   [privacy policy](https://skillhook.dev/privacy?ref=plugin) and [terms](https://skillhook.dev/terms?ref=plugin)
