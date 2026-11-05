@@ -54,7 +54,7 @@ jobs:
       - name: Config schema is current
         run: pnpm run schema --check
 
-      - name: Release metadata is consistent
+      - name: Release metadata is consistent, plugin audit is clean
         run: pnpm run release --check
 
       - name: CLI smoke test

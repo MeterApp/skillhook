@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "skillhook",
-      "source": { "source": "local", "path": "./" },
+      "source": { "source": "local", "path": "./plugins/skillhook" },
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
     }

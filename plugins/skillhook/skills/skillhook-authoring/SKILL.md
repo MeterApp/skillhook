@@ -39,7 +39,7 @@ Start from an example when one is close — `skillhook skills examples`, then `s
 | `auth` | how the sender is verified (next table) | `bearer` |
 | `when` | list of conditions; all must hold or the delivery is acknowledged and skipped | always run |
 | `dedupe` | `{ path: … }` or `{ header: … }`: the value that identifies a delivery; `in_flight: false` lets identical payloads run at the same time | the provider's delivery id; in-flight de-duplication on |
-| `env` | names of `.env` variables the agent may see, e.g. `[GRANOLA_API_KEY]` | none |
+| `env` | names of secrets saved with `skillhook secret set` that the agent may see, e.g. `[GRANOLA_API_KEY]` | none |
 | `concurrency` | jobs of this skill allowed at once | 1 |
 | `claude` | `permission_mode`, `allowed_tools`, `disallowed_tools`, `add_dirs`, `max_budget_usd`, `append_system_prompt`, `args`, `config_dir` (the Claude login to run as: `CLAUDE_CONFIG_DIR`) | server `runners.claude` |
 | `codex` | `sandbox` (`read-only` \| `workspace-write` \| `danger-full-access`), `network_access`, `profile`, `add_dirs`, `args` | `workspace-write`, network on |
@@ -141,9 +141,9 @@ Dedupe runs before the filter. GitHub, Sentry, Linear and Standard-Webhooks send
 
 Separately, after the filter, a delivery whose payload and query string equal those of a job of the same skill that is still queued or running is folded into that job (`200 {"duplicate": true, "in_flight": true, "job_id": …}`; with `?wait=` the caller gets that job's result). It runs again once the job has finished. This is on by default; set `dedupe: { in_flight: false }` only when each identical delivery must produce its own run (a button that queues one job per press).
 
-## Secrets and environment
+## Secrets
 
-Nothing from `.env` reaches the agent unless listed in `env:` — except `ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*` and proxy/CA variables, which pass automatically; `SKILLHOOK_SECRET_*` and the admin token never do. Store keys with `skillhook secret set NAME` (MCP `set_secret`) and refer to them by name in the body ("`$GRANOLA_API_KEY` is in your environment"). Never write a value into SKILL.md.
+A secret the agent needs is a secret saved with `skillhook secret set NAME` (MCP `set_secret`) and listed by name in `env:`; nothing else skillhook keeps reaches the agent, except the model provider's own settings (`ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*`) and proxy/CA settings, which pass automatically. Webhook secrets (`SKILLHOOK_SECRET_*`) and the admin token never do. In the body, refer to a secret by its name ("the Granola API key is available as `GRANOLA_API_KEY`"); how a shell command in the body uses it is shown in [docs/skills.md](https://github.com/MeterApp/skillhook/blob/main/docs/skills.md#what-the-agent-receives). Never write a value into SKILL.md.
 
 ## Writing the body
 

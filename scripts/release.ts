@@ -1,5 +1,6 @@
-// Keeps the version in package.json, legacy npm lockfiles (when present), the plugin manifests, the pinned package
-// launcher in .mcp.json (`npx -y @meterapp/skillhook@X.Y.Z mcp`) and CHANGELOG.md in step.
+// Keeps the version in package.json, legacy npm lockfiles (when present), the plugin manifests in plugins/skillhook/,
+// the pinned package launcher in plugins/skillhook/.mcp.json (`npx -y @meterapp/skillhook@X.Y.Z mcp`) and CHANGELOG.md
+// in step. --check also runs the plugin credential audit (scripts/plugin-audit.ts) over plugins/skillhook/.
 //
 //   pnpm run release --check              verify that they agree (runs in CI and in `pnpm run check`)
 //   pnpm run release patch|minor|major    bump everything and move the "Unreleased" changelog entries under the new version
@@ -15,12 +16,13 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { auditPlugin, PLUGIN_DIR, PLUGIN_MANIFESTS, PLUGIN_MCP_CONFIG } from "./plugin-audit.js";
 
-/** Files that carry the package version, relative to the repository root. */
-export const VERSIONED_MANIFESTS = [".claude-plugin/plugin.json", ".codex-plugin/plugin.json", ".cursor-plugin/plugin.json"];
+/** Files that carry the package version, relative to the repository root: the plugin's manifests in its own folder. */
+export const VERSIONED_MANIFESTS = PLUGIN_MANIFESTS.map((manifest) => `${PLUGIN_DIR}/${manifest}`);
 export const CHANGELOG = "CHANGELOG.md";
 /** The plugin's MCP servers. Every server launched with a package runner must pin this package at the released version. */
-export const MCP_CONFIG = ".mcp.json";
+export const MCP_CONFIG = `${PLUGIN_DIR}/${PLUGIN_MCP_CONFIG}`;
 const PACKAGE_LAUNCHERS = new Set(["npx", "pnpx", "bunx"]);
 
 export class ReleaseError extends Error {}
@@ -174,6 +176,8 @@ export function checkRelease(root: string): { version: string; problems: string[
       if (spec !== `${name}@${version}`) problems.push(`${MCP_CONFIG} server "${server}" launches ${spec}, package.json says ${version} (pin it: ${name}@${version})`);
     }
   }
+  // The plugin folder must pass the Anthropic Directory's credential check (scripts/plugin-audit.ts).
+  if (existsSync(path.join(root, PLUGIN_DIR))) problems.push(...auditPlugin(root).map((p) => `plugin audit: ${p}`));
   const changelogFile = path.join(root, CHANGELOG);
   if (!existsSync(changelogFile)) problems.push(`${CHANGELOG} is missing`);
   else {
@@ -294,7 +298,7 @@ export function runRelease(argv: string[], io: ReleaseIO, defaultRoot: string): 
           io.stderr(`Release metadata for ${version} is inconsistent:\n${problems.map((p) => `  - ${p}`).join("\n")}\n`);
           return 1;
         }
-        io.stdout(`release metadata ok: ${version} in package.json, ${VERSIONED_MANIFESTS.length} plugin manifests, ${MCP_CONFIG} and ${CHANGELOG}\n`);
+        io.stdout(`release metadata ok: ${version} in package.json, ${VERSIONED_MANIFESTS.length} plugin manifests, ${MCP_CONFIG} and ${CHANGELOG}; plugin audit of ${PLUGIN_DIR} clean\n`);
         return 0;
       }
       case "notes": {

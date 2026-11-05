@@ -1,6 +1,6 @@
 # AGENTS.md — conventions for humans and agents
 
-Read this before changing anything. `.claude/CLAUDE.md` points here (it lives there, not at the root, because the root is the plugin and the plugin directory warns about a root `CLAUDE.md`).
+Read this before changing anything. `.claude/CLAUDE.md` points here (it lives there, not at the root, so the root stays free of agent context files).
 
 ## What this is
 
@@ -39,10 +39,10 @@ is `skillhook`. User docs: `README.md`, `docs/`, `llms.txt`.
 | `src/tailscale.ts`, `src/service.ts` | Funnel/Serve, launchd/systemd. |
 | `src/health.ts`, `src/doctor.ts`, `src/tools.ts` | The grouped health report (`runHealth`, `HealthCache` behind `GET /health/checks`, `health.changed`); `doctor.ts` is its quick flavour printed flat; `tools.ts` probes `claude` / `codex` (version, login, `mcp list`, `plugin list`, `codex doctor`) with the job environment (`baseRunEnv`) and holds the pure parsers of their output. New checks: add them in `runHealth` with a group, a fixture answer in `test/fixtures/` when a CLI is involved, a row in `docs/operations.md`. |
 | `src/update.ts`, `src/commands/update.ts` | Updates: the registry lookup (1 h cache in `<home>/update-check.json`), install-method detection, the background update (`update --refresh`: the check and, with `auto_update`, the install, one at a time under `<home>/update.lock`), the plugin refresh of `update --install`, and `skillhook update`. `serve` restarts itself onto a newer installed version once no job runs. |
-| `scripts/release.ts` | Version bump / consistency check / release notes across `package.json`, the lockfile, the plugin manifests, the pinned `npx` launchers in `.mcp.json` and `CHANGELOG.md`. |
+| `scripts/release.ts`, `scripts/plugin-audit.ts` | Version bump / consistency check / release notes across `package.json`, the lockfile, the plugin manifests, the pinned `npx` launchers in `plugins/skillhook/.mcp.json` and `CHANGELOG.md`; `--check` also runs the plugin credential audit over `plugins/skillhook/`. |
 | `.github/workflows/` | `ci.yml` (PRs and main: checks + packed-tarball install), `release.yml` (tags merged version bumps), `publish.yml` (npm publish with provenance, GitHub release, verification). |
 | `examples/skills/` | Bundled webhook skills; `skillhook skills add <name>` copies them. Shipped in the npm package. |
-| `skills/` | Agent-facing plugin skills (setup, authoring). This repo is itself a Claude Code / Codex / Cursor plugin via the manifests at the root. |
+| `plugins/skillhook/` | The Claude Code / Codex / Cursor plugin: its manifests, `.mcp.json`, `README.md` and the agent-facing skills in `skills/` (setup, authoring, cloud). The root holds only the marketplaces that point at it (`.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`). Anthropic's plugin directory reads every file in it: no credential reads, `.env` paths or env-var wording there, even in examples (`scripts/plugin-audit.ts` fails the check). `scripts/publish-plugins.mjs` mirrors it to `MeterApp/skillhook-plugins`. |
 | `schema/skillhook.schema.json`, `schema/skillhook.yaml.schema.json` | Generated from `src/config.ts` and `src/projects.ts` by `pnpm run schema`. Never edit by hand. |
 | `test/fixtures/` | `fake-claude.mjs` / `fake-codex.mjs` emulate the real CLIs' output formats. |
 
@@ -54,7 +54,7 @@ Runtime state lives outside the repo in `~/.skillhook` (`SKILLHOOK_HOME`):
 - **Runtime dependencies stay at three**: `@modelcontextprotocol/server`, `yaml`, `zod`. Everything else is `node:` built-ins. Node >= 22, ESM, TypeScript strict, imports end in `.js`.
 - **Security is not optional.** The server binds `127.0.0.1` by default; TLS and public exposure are Tailscale's job. Every webhook goes through `verifyRequest`; every admin route through `requireAdmin`. Compare secrets only with `safeEqual`. A skill without `auth` gets a bearer token (`SKILLHOOK_SECRET_<NAME>`); `auth: none` must be explicit and is warned about. Secret values are never logged, never returned by an API/tool except once at generation, and never written into job files (`redactHeaders`). The agent's environment is an allow-list (`src/runners/env.ts`); `SKILLHOOK_ADMIN_TOKEN` and `SKILLHOOK_SECRET_*` are never forwarded implicitly.
 - **Payloads are data.** Anything that reaches the prompt from a webhook is wrapped in `<webhook_payload>` and the guardrails say so. Never build a prompt by concatenating payload text outside those blocks.
-- **Skills are Agent Skills.** Standard frontmatter (`name`, `description`, `license`, `compatibility`, `metadata`, `allowed-tools`) plus a `skillhook:` block. `name` must equal the directory name. New fields: add to the zod schema in `src/skills.ts`, to `docs/skills.md`, to `skills/skillhook-authoring/SKILL.md`, and cover them in `src/skills.test.ts` — in the same PR. `schedule` and `webhook` are block fields like any other (normalized by `resolveSchedule`, documented in `docs/schedules.md`). A hook in `skillhook.yaml` is the same block plus exactly one of `run` / `skill` / `prompt` (`HookSchema` in `src/projects.ts` extends `SkillhookBlockSchema`, so new block fields reach hooks automatically); hook-only fields go in `src/projects.ts`, `docs/projects.md`, `pnpm run schema` and `src/projects.test.ts`. A compiled hook is an ordinary `Skill` (with `source.type === "project"`); never special-case hooks in the server, queue or runners.
+- **Skills are Agent Skills.** Standard frontmatter (`name`, `description`, `license`, `compatibility`, `metadata`, `allowed-tools`) plus a `skillhook:` block. `name` must equal the directory name. New fields: add to the zod schema in `src/skills.ts`, to `docs/skills.md`, to `plugins/skillhook/skills/skillhook-authoring/SKILL.md`, and cover them in `src/skills.test.ts` — in the same PR. `schedule` and `webhook` are block fields like any other (normalized by `resolveSchedule`, documented in `docs/schedules.md`). A hook in `skillhook.yaml` is the same block plus exactly one of `run` / `skill` / `prompt` (`HookSchema` in `src/projects.ts` extends `SkillhookBlockSchema`, so new block fields reach hooks automatically); hook-only fields go in `src/projects.ts`, `docs/projects.md`, `pnpm run schema` and `src/projects.test.ts`. A compiled hook is an ordinary `Skill` (with `source.type === "project"`); never special-case hooks in the server, queue or runners.
 - **Config changes** go in `src/config.ts` (zod, `.prefault({})` for nested objects so defaults apply), then `pnpm run schema`, then `docs/operations.md`. The running server owns one live `Config` object (`ConfigRef`): a reload (`PATCH /config`, `POST /config/reload`, `skillhook config set`, a file edit noticed within 5 s) patches that object in place, so read config values at use time, never copy them at construction (the rate limiter takes a getter; the logger has `setLevel`, the job store `configure`). Only `host` and `port` need a restart (`RESTART_CONFIG_KEYS`); a new key is hot unless it is added there, and `config.changed` says what a reload did.
 - **Runners never shell-interpolate.** Argv arrays only; the prompt travels on stdin; parse the CLI's structured output (`stream-json`, JSONL). When Claude Code or Codex change flags, update the runner, `test/fixtures/`, `docs/runners.md` and the version note in `README.md` together.
 - **Jobs are directories.** `job.json` is the record; artifacts sit next to it; nothing outside `~/.skillhook/jobs` is written by the server, with the cloud link's control commands as the documented exceptions (`skill.put` writes `skills/<name>/SKILL.md`, `secret.generate` / `secret.set` and a token rotation write `.env`, `config.patch` writes `skillhook.json`); its own state is `jobs/.cloud/`, skills it removes go to `jobs/.removed-skills/`. Statuses: `queued running succeeded failed timed_out cancelled interrupted`. The running agent talks to skillhook only through files in its job directory (`src/progress.ts`): no token, no HTTP, so the shell runner and a restart are covered; the queue turns them into events and record fields.
@@ -71,7 +71,7 @@ pnpm run typecheck          # tsc --noEmit (strict)
 pnpm test                   # vitest: unit + HTTP integration (src/server.test.ts) + CLI (src/cli.test.ts)
 pnpm run build              # tsc -p tsconfig.build.json → dist/
 pnpm run schema --check  # schema/skillhook.schema.json and schema/skillhook.yaml.schema.json are current
-pnpm run release --check # package.json, plugin manifests, .mcp.json's pinned npx launchers and CHANGELOG.md agree on the version
+pnpm run release --check # package.json, plugin manifests, .mcp.json's pinned npx launchers and CHANGELOG.md agree on the version; plugin audit
 pnpm run check              # all of the above
 ```
 
@@ -92,16 +92,16 @@ node dist/cli.js run hello --dir /tmp/sh --payload '{"name":"world"}' --dry-run
 ## Releasing
 
 `pnpm run release <patch|minor|major|X.Y.Z>` bumps `package.json`, the
-plugin manifests (`.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`,
-`.cursor-plugin/plugin.json`) and the pinned launchers in `.mcp.json`
+plugin manifests (`plugins/skillhook/.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`,
+`.cursor-plugin/plugin.json`) and the pinned launchers in `plugins/skillhook/.mcp.json`
 (`npx -y @meterapp/skillhook@X.Y.Z mcp`) together and moves the `## Unreleased` entries of `CHANGELOG.md`
 under the new version; `pnpm run release --check` (part of `pnpm run check` and CI) fails when
 they disagree. Open a pull request with the bump. When it merges, `.github/workflows/release.yml`
 tags `vX.Y.Z` and dispatches `.github/workflows/publish.yml`, which publishes to npm with
 provenance (trusted publishing, or an `NPM_TOKEN` secret), creates the GitHub release from the
-changelog section and installs the published package to verify it. `.mcp.json` must
+changelog section and installs the published package to verify it. The plugin's `.mcp.json` must
 always pin the exact version in `package.json`: Anthropic's plugin directory refuses an unpinned
 package launcher, and the plugin on `main` points at a version that exists on npm once Publish
-finishes. Check the plugin with `claude plugin validate . --strict --profile directory`. `main` is protected by a
+finishes. Check the plugin with `claude plugin validate plugins/skillhook --strict --profile directory`. `main` is protected by a
 ruleset (pull requests only, CI green, linear history); the full procedure including the one-time
 first publish is in `CONTRIBUTING.md`.

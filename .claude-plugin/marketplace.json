@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "skillhook",
-      "source": "./",
+      "source": "./plugins/skillhook",
       "description": "Webhook in, agent out. Skills for installing and exposing skillhook, authoring webhook skills and operating Skillhook Cloud, plus two MCP servers: skillhook (status, skills, secrets, jobs, Tailscale exposure, signed test webhooks) and skillhook-cloud (every machine of the organisation, as the dashboard shows and runs it).",
       "category": "productivity"
     }
