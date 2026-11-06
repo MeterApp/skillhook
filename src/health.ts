@@ -18,7 +18,7 @@ import { probeAccountMcp } from "./account-mcp.js";
 import { accountAttention } from "./account-report.js";
 import { AccountStateStore, listAccounts, poolFor, refNames, withAccountEnv } from "./accounts.js";
 import { checkAccountReadiness } from "./readiness.js";
-import { baseRunEnv, claudeConfigDir, withClaudeConfigDir } from "./runners/env.js";
+import { baseRunEnv, CLAUDE_API_KEY_VARS, claudeConfigDir, withClaudeAuth, withClaudeConfigDir } from "./runners/env.js";
 import { commandParts } from "./runners/types.js";
 import { nextRun } from "./schedule.js";
 import { serviceStatus } from "./service.js";
@@ -281,14 +281,20 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
       ? claudeSkills.some((skill) => !poolFor(skill, config, "claude").length && !claudeConfigDir(skill))
       : config.defaults.runner === "claude" && !refNames(config.defaults.accounts?.claude).length;
     const wantCodex = runnersNeeded.has("codex") || config.defaults.runner === "codex";
-    [claude, codex] = await Promise.all([wantClaude ? probeClaude(config.runners.claude.command, { env: probeEnv, deep, timeoutMs }) : undefined, wantCodex ? probeCodex(config.runners.codex.command, { env: probeEnv, deep, timeoutMs }) : undefined]);
+    [claude, codex] = await Promise.all([wantClaude ? probeClaude(config.runners.claude.command, { env: withClaudeAuth(probeEnv, config.runners.claude.auth), deep, timeoutMs }) : undefined, wantCodex ? probeCodex(config.runners.codex.command, { env: probeEnv, deep, timeoutMs }) : undefined]);
   }
+  const claudeAuth = config?.runners.claude.auth ?? "auto";
+  // `runners.claude.auth`: under `login` a key does not count, under `api_key` only a key does.
+  const claudeKey = claudeAuth === "login" ? undefined : CLAUDE_API_KEY_VARS.find((key) => secrets[key]);
   if (claude) {
-    const apiKey = Boolean(secrets.ANTHROPIC_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN);
+    const apiKey = Boolean(claudeKey);
+    const byLogin = claudeAuth !== "api_key" && claude.auth.loggedIn;
     const version = claude.version ? `${claude.version}, ` : "";
-    const data = { found: claude.found, path: claude.path ?? null, version: claude.version ?? null, logged_in: claude.auth.loggedIn, method: claude.auth.method ?? null, api_key: apiKey };
+    const data = { found: claude.found, path: claude.path ?? null, version: claude.version ?? null, logged_in: claude.auth.loggedIn, method: claude.auth.method ?? null, api_key: apiKey, auth: claudeAuth };
     if (!claude.found) check("runners", "claude", "fail", claude.auth.detail, "install Claude Code: https://claude.com/claude-code, or set runners.claude.command", data);
-    else if (claude.auth.loggedIn || apiKey) check("runners", "claude", "ok", `${version}${apiKey && !claude.auth.loggedIn ? "ANTHROPIC_API_KEY set" : claude.auth.detail}`, undefined, data);
+    else if (byLogin || apiKey) check("runners", "claude", "ok", `${version}${byLogin ? claude.auth.detail : `${claudeKey} set`}`, undefined, data);
+    else if (claudeAuth === "api_key") check("runners", "claude", "fail", `${version}no ANTHROPIC_API_KEY (runners.claude.auth is api_key)`, "skillhook secret set ANTHROPIC_API_KEY, or skillhook config set runners.claude.auth auto", data);
+    else if (claudeAuth === "login") check("runners", "claude", "fail", `${version}${claude.auth.detail}`, "run `claude login` in a terminal (runners.claude.auth is login: API keys are not used)", data);
     else check("runners", "claude", "fail", `${version}${claude.auth.detail}`, "run `claude login` in a terminal (subscription) or put ANTHROPIC_API_KEY in .env", data);
   }
   // Each configuration directory skills name is its own login: one that is logged out sends its skills to the fallback.
@@ -302,7 +308,8 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
         check("runners", name, "fail", probe.auth.detail, "install Claude Code: https://claude.com/claude-code, or set runners.claude.command", data);
         continue;
       }
-      if (!isDirectory(dir)) check("runners", name, "fail", `${dir} does not exist (${used})`, `run: CLAUDE_CONFIG_DIR=${dir} claude login`, data);
+      if (claudeAuth === "api_key" && claudeKey) check("runners", name, "ok", `runs with ${claudeKey} (runners.claude.auth is api_key; ${used})`, undefined, data);
+      else if (!isDirectory(dir)) check("runners", name, "fail", `${dir} does not exist (${used})`, `run: CLAUDE_CONFIG_DIR=${dir} claude login`, data);
       else if (probe.auth.loggedIn) check("runners", name, "ok", `${probe.auth.detail}${probe.auth.account ? ` as ${probe.auth.account}` : ""} (${used})`, undefined, data);
       else check("runners", name, "fail", `${probe.auth.detail} (${used})`, `run: CLAUDE_CONFIG_DIR=${dir} claude login`, data);
     }

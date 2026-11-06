@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import path from "node:path";
-import type { Config } from "../config.js";
+import type { ClaudeAuthMode, Config, RunnerName } from "../config.js";
 import type { Secrets } from "../env.js";
 import type { Skill } from "../skills.js";
 import { expandTilde } from "../util.js";
@@ -49,6 +49,8 @@ export interface RunEnvInput {
   config: Config;
   jobVars: Record<string, string>;
   processEnv?: NodeJS.ProcessEnv;
+  /** The runner the job runs with: for `claude`, `runners.claude.auth` decides which credentials stay. */
+  runner?: RunnerName;
 }
 
 /**
@@ -92,6 +94,8 @@ export function probeEnv(env: Record<string, string>): Record<string, string> {
 
 /** Credentials Claude Code prefers to the login in its configuration directory: dropped when a skill names one. */
 const CLAUDE_LOGIN_OVERRIDES = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"];
+/** Of those, the API keys: what `runners.claude.auth: api_key` keeps, and what makes the runner ready under it. */
+export const CLAUDE_API_KEY_VARS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 
 /** The skill's `claude.config_dir` as an absolute path (`~` expanded, relative to the skill's directory), if it names one. */
 export function claudeConfigDir(skill: Pick<Skill, "dir" | "config">): string | undefined {
@@ -101,18 +105,32 @@ export function claudeConfigDir(skill: Pick<Skill, "dir" | "config">): string | 
 
 /**
  * `env` with Claude Code pointed at `configDir`: `CLAUDE_CONFIG_DIR` set and the variables that would authenticate as
- * someone else instead (an API key, an OAuth token) removed, unless `keep` names them.
+ * someone else instead (an API key, an OAuth token) removed, unless `keep` names them or `auth` is `api_key` (which
+ * keeps the API keys: the directory then supplies settings and plugins, the key the billing).
  */
-export function withClaudeConfigDir(env: Record<string, string>, configDir: string | undefined, keep: readonly string[] = []): Record<string, string> {
+export function withClaudeConfigDir(env: Record<string, string>, configDir: string | undefined, keep: readonly string[] = [], auth: ClaudeAuthMode = "auto"): Record<string, string> {
   if (!configDir) return env;
   const out: Record<string, string> = { ...env, CLAUDE_CONFIG_DIR: configDir };
+  const kept = auth === "api_key" ? [...keep, ...CLAUDE_API_KEY_VARS] : keep;
+  for (const key of CLAUDE_LOGIN_OVERRIDES) if (!kept.includes(key)) delete out[key];
+  return out;
+}
+
+/**
+ * `env` as `runners.claude.auth` says Claude Code authenticates: under `login` the API keys and tokens are removed
+ * (unless `keep` names them), so the login in the configuration directory is what runs; `auto` and `api_key` leave them.
+ */
+export function withClaudeAuth(env: Record<string, string>, auth: ClaudeAuthMode, keep: readonly string[] = []): Record<string, string> {
+  if (auth !== "login") return env;
+  const out: Record<string, string> = { ...env };
   for (const key of CLAUDE_LOGIN_OVERRIDES) if (!keep.includes(key)) delete out[key];
   return out;
 }
 
 export function buildRunEnv(input: RunEnvInput): Record<string, string> {
   const explicit = [...input.config.env_passthrough, ...(input.skill.config.env ?? [])];
-  const env = withClaudeConfigDir(baseRunEnv(input), claudeConfigDir(input.skill), explicit);
+  const auth = input.runner === "claude" ? input.config.runners.claude.auth : "auto";
+  const env = withClaudeAuth(withClaudeConfigDir(baseRunEnv(input), claudeConfigDir(input.skill), explicit, auth), auth, explicit);
   for (const key of explicit) {
     if (NEVER_EXPLICIT.test(key)) continue;
     const value = input.secrets[key];

@@ -229,6 +229,7 @@ Once the cause is fixed (a secret pasted, a filter corrected, a skill installed)
 | `runners.claude.command` | `"claude"` | Executable, or an array whose head is the executable (`["node", "/path/cli.js"]`). Use an absolute path for services. |
 | `runners.claude.permission_mode` | `"bypassPermissions"` | Default `--permission-mode`. |
 | `runners.claude.args` | `[]` | Extra argv for every Claude run. |
+| `runners.claude.auth` | `"auto"` | Which credential Claude Code runs and readiness checks use. `auto`: whatever the environment holds (an `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` wins over the login, as Claude Code decides). `login`: those variables are removed, so the subscription login in `CLAUDE_CONFIG_DIR` / `~/.claude` is used and readiness reflects it. `api_key`: the key is used (kept even for a skill's own `claude.config_dir`) and the runner is ready only when one is set. Named accounts bring their own credential and ignore it. See [runners.md](runners.md#choosing-the-credential). |
 | `runners.codex.command` | `"codex"` | Executable or array. |
 | `runners.codex.sandbox` | `"workspace-write"` | Default `-s`. |
 | `runners.codex.network_access` | `true` | Allow network in the `workspace-write` sandbox. |

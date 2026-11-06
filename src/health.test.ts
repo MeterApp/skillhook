@@ -109,6 +109,14 @@ describe("runHealth", () => {
     const keyed = await runHealth(paths, { ...OFFLINE, deep: false });
     expect(byName(keyed, "claude")).toMatchObject({ status: "ok", detail: "2.1.270, ANTHROPIC_API_KEY set", data: { api_key: true, logged_in: false } });
     expect(byName(keyed, "codex")).toMatchObject({ status: "ok", detail: "0.153.4, OPENAI_API_KEY set" });
+    // runners.claude.auth: login ignores the key (and the directory is logged out); api_key needs only the key.
+    writeConfigFile(paths, { runners: { claude: { command: FAKE_CLAUDE, auth: "login" }, codex: { command: FAKE_CODEX } } });
+    expect(byName(await runHealth(paths, { ...OFFLINE, deep: false }), "claude")).toMatchObject({ status: "fail", detail: "2.1.270, not logged in", hint: expect.stringContaining("runners.claude.auth is login"), data: { api_key: false, auth: "login" } });
+    writeConfigFile(paths, { runners: { claude: { command: FAKE_CLAUDE, auth: "api_key" }, codex: { command: FAKE_CODEX } } });
+    expect(byName(await runHealth(paths, { ...OFFLINE, deep: false }), "claude")).toMatchObject({ status: "ok", detail: "2.1.270, ANTHROPIC_API_KEY set", data: { auth: "api_key" } });
+    writeEnv(paths, { SKILLHOOK_ADMIN_TOKEN: "t", SKILLHOOK_SECRET_BETA: "b", SKILLHOOK_SECRET_ALPHA: "a", SKILLHOOK_SECRET_CODY: "c", SKILLHOOK_SECRET_SHELLY: "s" });
+    expect(byName(await runHealth(paths, { ...OFFLINE, deep: false }), "claude")).toMatchObject({ status: "fail", detail: expect.stringContaining("runners.claude.auth is api_key"), hint: expect.stringContaining("skillhook secret set ANTHROPIC_API_KEY") });
+    writeConfigFile(paths, { runners: { claude: { command: FAKE_CLAUDE }, codex: { command: FAKE_CODEX } } });
     // doctor is the quick flavour, printed flat.
     const doctor = await runDoctor(paths, { env: NO_NET });
     expect(doctor.deep).toBe(false);

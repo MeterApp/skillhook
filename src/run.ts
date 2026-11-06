@@ -128,8 +128,8 @@ export function prepareRun(input: PrepareRunInput): PreparedRun {
     SKILLHOOK_HUMAN_WAIT_SECONDS: String(humanWaitSeconds),
     ...(bin ? { SKILLHOOK_BIN: [bin.command, ...bin.args].map(shellQuote).join(" ") } : {}),
   };
-  let env = buildRunEnv({ secrets: input.secrets, fileSecrets: input.fileSecrets, skill, config, jobVars, processEnv: input.processEnv });
-  // The account the queue picked: its directory and only its credential (whatever `.env` or `claude.config_dir` said).
+  let env = buildRunEnv({ secrets: input.secrets, fileSecrets: input.fileSecrets, skill, config, jobVars, processEnv: input.processEnv, runner: settings.runner });
+  // The account the queue picked: its directory and only its credential (whatever `.env`, `claude.config_dir` or `runners.claude.auth` said).
   if (job.account) {
     const account = getAccount(config, home, job.account);
     if (!account) throw new Error(`account "${job.account}" is not defined (skillhook accounts list)`);

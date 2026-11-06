@@ -43,6 +43,50 @@ describe("checkReadiness", () => {
   });
 });
 
+describe("runners.claude.auth", () => {
+  function withAuth(auth: "auto" | "api_key" | "login") {
+    const { paths, config } = configured();
+    config.runners.claude.auth = auth;
+    const loggedOut = path.join(paths.home, "claude-out");
+    mkdirSync(loggedOut, { recursive: true });
+    writeFileSync(path.join(loggedOut, "logged-out"), "");
+    return { config, loggedIn: ENV, loggedOut: { ...ENV, CLAUDE_CONFIG_DIR: loggedOut }, loggedOutDir: loggedOut };
+  }
+
+  it("auto: a login or a key makes Claude Code ready", async () => {
+    const { config, loggedIn, loggedOut } = withAuth("auto");
+    expect(await checkReadiness("claude", config, loggedIn)).toMatchObject({ ready: true, method: "subscription" });
+    expect(await checkReadiness("claude", config, { ...loggedOut, ANTHROPIC_AUTH_TOKEN: "tok" })).toMatchObject({ ready: true, method: "api_key", detail: "ANTHROPIC_AUTH_TOKEN set" });
+    expect(await checkReadiness("claude", config, loggedOut)).toMatchObject({ ready: false, hint: expect.stringContaining("or put ANTHROPIC_API_KEY in .env") });
+  });
+
+  it("login: only the configuration directory's login counts, and the probe never sees a key", async () => {
+    const { config, loggedIn, loggedOut } = withAuth("login");
+    expect(await checkReadiness("claude", config, { ...loggedIn, ANTHROPIC_API_KEY: "sk-test" })).toMatchObject({ ready: true, method: "subscription", detail: "logged in (claude.ai)" });
+    const out = await checkReadiness("claude", config, { ...loggedOut, ANTHROPIC_API_KEY: "sk-test", CLAUDE_CODE_OAUTH_TOKEN: "oauth" });
+    expect(out).toMatchObject({ ready: false, authenticated: false, detail: "not logged in", hint: expect.stringContaining("runners.claude.auth is login") });
+    expect(out.method).toBeUndefined();
+  });
+
+  it("api_key: ready only with a key, whatever the login says, also for a skill's own config_dir", async () => {
+    const { config, loggedIn, loggedOut, loggedOutDir } = withAuth("api_key");
+    expect(await checkReadiness("claude", config, loggedIn)).toMatchObject({ ready: false, authenticated: false, detail: expect.stringContaining("runners.claude.auth is api_key"), hint: expect.stringContaining("ANTHROPIC_API_KEY") });
+    expect(await checkReadiness("claude", config, { ...loggedOut, ANTHROPIC_API_KEY: "sk-test" })).toMatchObject({ ready: true, method: "api_key", detail: "ANTHROPIC_API_KEY set" });
+    expect(await checkReadiness("claude", config, { ...ENV, ANTHROPIC_API_KEY: "sk-test" }, loggedOutDir)).toMatchObject({ ready: true, method: "api_key", config_dir: loggedOutDir });
+  });
+
+  it("is part of the cache key, so changing it is answered by a new probe at once", async () => {
+    const { config, loggedIn } = withAuth("auto");
+    const cache = new ReadinessCache({ config: () => config, env: () => loggedIn });
+    expect((await cache.get("claude")).ready).toBe(true);
+    config.runners.claude.auth = "api_key";
+    expect(cache.last("claude")).toBeUndefined();
+    expect((await cache.get("claude")).ready).toBe(false);
+    config.runners.claude.auth = "auto";
+    expect(cache.last("claude")?.ready).toBe(true);
+  });
+});
+
 describe("ReadinessCache", () => {
   it("caches per runner, shares concurrent checks, forgets on demand and reports changes", async () => {
     const { paths, config } = configured();
