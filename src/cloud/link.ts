@@ -9,8 +9,8 @@ import { listAccounts } from "../accounts.js";
 import type { Config } from "../config.js";
 import { readDeliveryBody, type DeliveryLog } from "../delivery-log.js";
 import { upsertEnvVar, type Secrets } from "../env.js";
-import type { Events, EventType, SkillhookEvent } from "../events.js";
-import type { HealthCache } from "../health.js";
+import type { EventMap, Events, EventType, SkillhookEvent } from "../events.js";
+import { claudeLoginFallback, type HealthCache } from "../health.js";
 import { isTerminal, type JobRecord, type JobStore } from "../jobs.js";
 import type { Logger } from "../logger.js";
 import type { Paths } from "../paths.js";
@@ -65,6 +65,8 @@ export interface LinkTiming {
   revokedRetryMs: number;
   upgradeRetryMs: number;
   stopSyncTimeoutMs: number;
+  /** The shortest gap between two health reports sent early because a login changed (a burst of fallbacks sends one). */
+  healthSoonMs: number;
 }
 
 /** A single event larger than this is replaced by a note (it would never fit a request). */
@@ -91,7 +93,7 @@ function utf8SafeLength(buf: Buffer): number {
   return end;
 }
 
-const DEFAULT_TIMING: LinkTiming = { disabledPollMs: 5_000, syncTimeoutMs: 35_000, backoffMinMs: 1_000, backoffMaxMs: 60_000, revokedRetryMs: 300_000, upgradeRetryMs: 600_000, stopSyncTimeoutMs: 3_000 };
+const DEFAULT_TIMING: LinkTiming = { disabledPollMs: 5_000, syncTimeoutMs: 35_000, backoffMinMs: 1_000, backoffMaxMs: 60_000, revokedRetryMs: 300_000, upgradeRetryMs: 600_000, stopSyncTimeoutMs: 3_000, healthSoonMs: 60_000 };
 
 export interface LinkStatusView extends LinkStatus {
   enabled: boolean;
@@ -110,6 +112,22 @@ const RESNAPSHOT: ReadonlySet<string> = new Set(["skill.put", "skill.delete", "c
 
 /** Event types that travel; `server.*` stays local. */
 const UPLOADED: Set<string> = new Set(["delivery.received", "job.queued", "job.started", "job.updated", "job.finished", "job.cancelled", "job.progress", "job.waiting_human", "job.answered", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed", "config.changed", "health.changed", "runners.changed", "account.changed", "account.updated"]);
+
+/**
+ * A job fell back from Claude Code because its login failed, or a runner or account became usable or unusable: the
+ * cloud raises (or resolves) its alert from the health report, so that report should not wait for the next interval.
+ */
+function loginNews(event: SkillhookEvent): boolean {
+  if (event.type === "job.updated") {
+    const { job, fields } = event.data as EventMap["job.updated"];
+    return fields.includes("runner_reason") && claudeLoginFallback(job);
+  }
+  if (event.type === "runners.changed" || event.type === "account.changed") {
+    const { readiness, previous } = event.data as EventMap["runners.changed" | "account.changed"];
+    return previous !== undefined && previous.ready !== readiness.ready;
+  }
+  return false;
+}
 
 export class CloudLink {
   private state: LinkState = "disabled";
@@ -140,6 +158,8 @@ export class CloudLink {
   private hints: Hints = {};
   private lastSnapshotAt = 0;
   private lastHealthAt = 0;
+  /** A login stopped (or started) working: send a fresh health report at the next sync, not at the next interval. */
+  private healthDue = false;
   private lastSyncAt: string | null = null;
   private lastError: string | null = null;
   private connectedSince: string | null = null;
@@ -208,6 +228,10 @@ export class CloudLink {
     this.unsubscribe = this.deps.events.onAny((event) => {
       // A config change may have enabled, disabled or re-pointed the link: look again now rather than at the next tick.
       if (event.type === "config.changed") this.wake();
+      if (loginNews(event)) {
+        this.healthDue = true;
+        this.wake();
+      }
       this.spool(event);
     });
     this.loopDone = this.loop().catch((error: unknown) => this.deps.logger.error("cloud link loop ended", { error: errorMessage(error) }, error));
@@ -645,10 +669,12 @@ export class CloudLink {
       }
     }
     const snapshotDue = now - this.lastSnapshotAt >= (this.hints.snapshot_interval_s ?? cloud.snapshot_interval_seconds) * 1000;
-    if (this.deps.health && now - this.lastHealthAt >= (this.hints.health_interval_s ?? cloud.health_interval_seconds) * 1000) {
+    const healthSoon = this.healthDue && now - this.lastHealthAt >= this.timing.healthSoonMs;
+    if (this.deps.health && (healthSoon || now - this.lastHealthAt >= (this.hints.health_interval_s ?? cloud.health_interval_seconds) * 1000)) {
       this.lastHealthAt = now;
+      this.healthDue = false;
       void this.deps.health
-        .get({ deep: true, network: false })
+        .get({ deep: true, network: false, refresh: healthSoon })
         .then(({ report }) => this.outbox.append(machineId, "health.report", scrubSecrets(report, secretValues(this.deps.fileSecrets(), this.deps.config.cloud.public_env))))
         .catch((error: unknown) => this.deps.logger.warn("health report for the cloud failed", { error: errorMessage(error) }));
     }

@@ -26,7 +26,7 @@ Cloud requests keep their timeout through response-body reading. Machine sync an
 | `cloud.upload_artifacts` | `true` | Let the cloud fetch job artifacts and live output. |
 | `cloud.ingress` | `true` | Accept hosted-ingress deliveries (webhooks the cloud received for this machine). |
 | `cloud.snapshot_interval_seconds` | `60` | How often the full snapshot (skills, schedules, config, health summary) is sent. |
-| `cloud.health_interval_seconds` | `600` | How often a deep health report is sent. |
+| `cloud.health_interval_seconds` | `600` | How often a deep health report is sent (also sooner, at most once a minute, when a job falls back from a failed Claude Code login or a runner or account becomes usable or unusable). |
 | `cloud.outbox_max_events` | `5000` | Events kept on disk while the cloud is unreachable. |
 
 The machine token lives in `.env` as `SKILLHOOK_CLOUD_TOKEN` (an optional X25519 private key as `SKILLHOOK_CLOUD_PRIVATE_KEY`); both are written once by `skillhook cloud connect` and never printed again. An organisation API key that a person keeps with `skillhook cloud login` lives there as `SKILLHOOK_CLOUD_API_KEY`; the link never uses it. Like every `SKILLHOOK_CLOUD_*` variable, none of them ever reaches a run.
@@ -226,7 +226,7 @@ The running server opens HTTPS requests to `cloud.url` (`POST /api/agent/sync`);
 
 - **Events**: every delivery (the delivery record with redacted headers, and the body when `cloud.upload_payloads` allows it and it is at most 256 KiB), every job change (the job record without its command line; the result up to 8 KiB), progress lines (at most one per job every five seconds, questions and answers always), schedule and skill changes, configuration changes, health changes, runner readiness (checked once when the link connects, then whenever a job checks it) and the health of each [account](accounts.md) (`account.changed`, `account.updated`: checked once when the link connects, then whenever a job or a usage read learns something; [what travels](#accounts)), plus `link.started` / `link.stopped`.
 - **A snapshot** on connect and every `cloud.snapshot_interval_seconds`: skill summaries, projects, schedules, the effective configuration, the last health and readiness answers and a day of stats.
-- **A deep health report** every `cloud.health_interval_seconds`.
+- **A deep health report** every `cloud.health_interval_seconds`, and at the next sync (at most once a minute) after a job fell back from a failed Claude Code login or a runner or account became usable or unusable, so the alert on a failing check is not late.
 - **Command results** and **hosted-ingress acknowledgements** (below).
 
 Every string is scrubbed of private values in `.env` before it leaves, `authorization`, cookie, signature and token headers never leave, and command lines, environments and `.env` itself never do. Events wait in `jobs/.cloud/outbox.jsonl` while the cloud is unreachable (at most `cloud.outbox_max_events`, oldest dropped first and counted); a server restart loses nothing that was spooled. On errors the link backs off exponentially up to a minute, is reported `degraded` after three failures, stops on a revoked token (`401`) or a disabled machine (`403`) until the configuration or the token changes, halves its batches on `413`, honours `429`'s retry delay and waits ten minutes on `426` (update skillhook).

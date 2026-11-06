@@ -134,7 +134,13 @@ export function converse(command: string, args: string[], env: Record<string, st
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (child.exitCode === null) child.kill("SIGTERM");
+      if (child.exitCode === null) {
+        child.kill("SIGTERM");
+        // Claude Code ignores SIGTERM while it waits on the keychain: a probe never outlives its conversation by much.
+        setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        }, 2_000).unref();
+      }
       resolve({ ...result, stderr });
     };
     const timer = setTimeout(() => finish({ done: false, error: `no answer within ${Math.round(timeoutMs / 1000)}s` }), timeoutMs);
