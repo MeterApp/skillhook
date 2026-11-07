@@ -202,7 +202,7 @@ Every job that ends `failed` or `timed_out` carries `failure: {kind, code?, retr
 | `kind` | When | `retryable` |
 |---|---|---|
 | `auth` | not logged in, an expired OAuth session, an invalid API key, a `401`; also a job refused by the readiness check | no |
-| `usage_limit` | the subscription's usage or quota is exhausted (`You've hit your usage limit`) | no |
+| `usage_limit` | the subscription's usage or quota is exhausted (`You've hit your usage limit`, `You've hit your 5-hour limit`, or any `hit your … limit`) | no |
 | `rate_limit` | a `429`, "rate limit", "overloaded", "too many requests" | yes |
 | `budget` | Claude's `error_max_budget_usd` (`claude.max_budget_usd`) | no |
 | `max_turns` | Claude's `error_max_turns` | no |
