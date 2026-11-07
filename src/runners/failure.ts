@@ -44,9 +44,10 @@ export type RetryConfig = z.infer<typeof RetrySchema>;
 
 const RETRYABLE: FailureKind[] = ["rate_limit", "crash"];
 
-const PATTERNS: { kind: FailureKind; needles: string[] }[] = [
+// Matched against the lowercased error and stderr, in order: rate_limit wins over usage_limit ("hit your rate limit").
+const PATTERNS: { kind: FailureKind; needles: string[]; pattern?: RegExp }[] = [
   { kind: "rate_limit", needles: ["rate limit", "rate_limit", "too many requests", "overloaded", " 429", "429 "] },
-  { kind: "usage_limit", needles: ["usage limit", "usage_limit", "hit your limit", "hit your session limit", "hit your weekly limit", "credit balance is too low", "out of credits", "out of extra usage", "quota", "insufficient_quota", "limit will reset"] },
+  { kind: "usage_limit", needles: ["usage limit", "usage_limit", "credit balance is too low", "out of credits", "out of extra usage", "quota", "insufficient_quota", "limit will reset"], pattern: /hit your [\w -]{0,20}limit/ }, // "You've hit your limit / session / weekly / 5-hour / Opus limit"
   { kind: "auth", needles: ["failed to authenticate", "not logged in", "please run /login", "claude login", "codex login", "oauth", "invalid api key", "invalid x-api-key", "authentication", "unauthorized", "unauthenticated", " 401", "401 ", "credentials", "login required", "please log in"] },
   { kind: "budget", needles: ["max_budget", "max budget", "budget"] },
   { kind: "max_turns", needles: ["max_turns", "max turns", "maximum turns", "maximum number of turns"] },
@@ -82,7 +83,7 @@ export function classifyFailure(input: ClassifyInput): JobFailure {
   // Only the explicit primary message wins here: an auth denial with incidental capacity stderr stays auth.
   if ((input.error ?? "").trim().toLowerCase().startsWith("selected model is at capacity.")) return done("rate_limit");
   const text = `${input.error ?? ""}\n${input.stderr ?? ""}`.toLowerCase();
-  for (const { kind, needles } of PATTERNS) if (needles.some((needle) => text.includes(needle))) return done(kind);
+  for (const { kind, needles, pattern } of PATTERNS) if (needles.some((needle) => text.includes(needle)) || pattern?.test(text)) return done(kind);
   if (input.signal || (input.exitCode !== null && input.exitCode !== 0 && !input.reported)) return done("crash");
   return done("unknown");
 }

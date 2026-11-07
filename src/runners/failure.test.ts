@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyFailure, FAILURE_KINDS, FallbackSchema, RetrySchema } from "./failure.js";
+import { classifyFailure, FALLBACK_TRIGGERS, FAILURE_KINDS, FallbackSchema, RetrySchema } from "./failure.js";
 
 describe("classifyFailure", () => {
   it("keeps provider capacity separate from incidental MCP OAuth warnings", () => {
@@ -30,6 +30,19 @@ describe("classifyFailure", () => {
       expect(classifyFailure({ status: "failed", error, exitCode: 1, signal: null, reported: true })).toMatchObject({ kind: "usage_limit", retryable: false });
     }
     expect(FAILURE_KINDS).toHaveLength(9);
+  });
+
+  it("counts every \"hit your … limit\" wording as a usage limit, and a rate limit stays one", () => {
+    for (const error of ["You've hit your 5-hour limit · resets 6pm (America/New_York)", "You\u2019ve hit your 5-hour limit · resets 6pm (America/New_York)", "You've hit your limit · resets 3am", "You've hit your Opus limit", "You've hit your daily limit"]) {
+      const failure = classifyFailure({ status: "failed", error, exitCode: 1, signal: null, reported: true });
+      expect(failure).toMatchObject({ kind: "usage_limit", retryable: false });
+      expect(FALLBACK_TRIGGERS).toContain(failure.kind);
+    }
+    expect(classifyFailure({ status: "failed", error: "claude exited with code 1", exitCode: 1, signal: null, stderr: "You've hit your 5-hour limit · resets 6pm (America/New_York)" })).toMatchObject({ kind: "usage_limit" });
+    expect(classifyFailure({ status: "failed", error: "You've hit your rate limit. Try again in 20s.", exitCode: 1, signal: null, reported: true })).toMatchObject({ kind: "rate_limit", retryable: true });
+    expect(classifyFailure({ status: "failed", error: "API Error: 429 Too Many Requests", exitCode: 1, signal: null, reported: true })).toMatchObject({ kind: "rate_limit", retryable: true });
+    // "hit your" far from "limit" is not a limit message.
+    expect(classifyFailure({ status: "failed", error: "The request hit your proxy, which closed the connection before any limit applied", exitCode: 0, signal: null, reported: true })).toMatchObject({ kind: "unknown" });
   });
 
   it("validates fallback and retry policies", () => {
