@@ -28,6 +28,7 @@ import { collectStats, parseSince } from "./stats.js";
 import { enqueueReplay, planReplay, ReplayError, replayOfFor, type ReplayPlan } from "./replay.js";
 import { JOB_OUTCOMES, jobOutcome, type JobOutcome } from "./response.js";
 import type { JobQueue } from "./queue.js";
+import { webhookPolicy } from "./project-refresh.js";
 import { resolveRunSettings } from "./run.js";
 import { RunnerNameSchema } from "./config.js";
 import type { SkillRegistry } from "./registry.js";
@@ -292,8 +293,8 @@ function parseWait(url: URL, headers: Record<string, string>, max: number): numb
 }
 
 export function publicJob(job: JobRecord): Record<string, unknown> {
-  const { command, ...rest } = job;
-  void command;
+  const { command, project_dir, webhook_policy, run_overrides, ...rest } = job;
+  void command; void project_dir; void webhook_policy; void run_overrides;
   return rest;
 }
 
@@ -566,6 +567,11 @@ export function createServer(deps: ServerDeps): Server {
       delivery_id: args.deliveryId,
       fingerprint: args.fingerprint,
       skill_file: args.skill.file,
+      ...(args.skill.source.type === "project" ? {
+        project_dir: args.skill.source.dir,
+        run_overrides: args.overrides ?? {},
+        ...(args.trigger === "webhook" ? { webhook_policy: webhookPolicy(args.skill) } : {}),
+      } : {}),
       account_requested: args.overrides?.account,
       event,
       rawBody: args.rawBody,

@@ -9,6 +9,7 @@ import type { Secrets } from "./env.js";
 import { Events } from "./events.js";
 import { isTerminal, type JobAttempt, type JobRecord, type JobStatus, type JobStore } from "./jobs.js";
 import type { Logger } from "./logger.js";
+import { assertProjectCommit, assertProjectDefinition, refreshProject, refreshProjectDir, webhookPolicy } from "./project-refresh.js";
 import { answerQuestion, readTimeline, type JobAnswer, type JobQuestion, type ProgressEntry } from "./progress.js";
 import { deriveOutcome, resolveJobResponse } from "./response.js";
 import { AccountStateStore, getAccount, isLimited, orderPool, poolFor, stateAfterRun, usageFromRun, type AccountState } from "./accounts.js";
@@ -80,6 +81,7 @@ function fallbackPolicy(skill: Skill, config: Config): { runners: FallbackConfig
 interface Running {
   job: JobRecord;
   workspace?: { cwd: string; key: string; exclusive: boolean };
+  project?: { dir: string; commit: string };
   child?: ChildProcess;
   cancelled: boolean;
   timedOut: boolean;
@@ -254,9 +256,9 @@ export class JobQueue extends EventEmitter {
     }
   }
 
-  private workspaceFor(job: JobRecord): Running["workspace"] {
+  private workspaceFor(job: JobRecord, loaded?: Skill): Running["workspace"] {
     try {
-      const skill = job.adhoc ? loadAdhocSkill(this.deps.store.pathsFor(job.id).skillDir, job.id, job.skill) : this.deps.registry.get(job.skill);
+      const skill = loaded ?? (job.adhoc ? loadAdhocSkill(this.deps.store.pathsFor(job.id).skillDir, job.id, job.skill) : this.deps.registry.get(job.skill));
       if (!skill) return undefined; // execute records the missing/invalid skill failure
       const cwd = path.resolve(resolveRunSettings(skill, this.deps.config, { cwd: job.cwd }).cwd);
       const canonical = existsSync(cwd) ? realpathSync(cwd) : cwd;
@@ -496,9 +498,41 @@ export class JobQueue extends EventEmitter {
 
     let skill: Skill | undefined;
     try {
-      // An ad-hoc job carries its own SKILL.md; everything else is looked up as it is now.
-      skill = job.adhoc ? loadAdhocSkill(store.pathsFor(job.id).skillDir, job.id, job.skill) : registry.get(job.skill);
-      if (!skill) throw new Error(`skill "${job.skill}" no longer exists`);
+      // Admission and scheduling use the local inventory. Refresh before resolving the definition that runs.
+      const source = job.project_dir ?? (!job.adhoc && config.project_refresh.length ? registry.get(job.skill)?.source : undefined);
+      const dir = typeof source === "string" ? source : source && source.type === "project" ? source.dir : undefined;
+      const project = dir ? refreshProjectDir(config.project_refresh, dir, path.dirname(store.jobsDir)) : undefined;
+      const commit = project ? await refreshProject(project) : undefined;
+      if (running.cancelled || this.stopping) {
+        this.finish(job, { status: this.stopping ? "interrupted" : "cancelled", error: "stopped before the runner started" });
+        return;
+      }
+      skill = job.adhoc ? loadAdhocSkill(store.pathsFor(job.id).skillDir, job.id, job.skill) : registry.get(job.skill, { reloadProject: commit ? dir : undefined });
+      if (!skill || (project && !skill.enabled)) throw new Error(`skill "${job.skill}" no longer exists or is disabled`);
+      if (project && commit) {
+        if (skill.source.type !== "project" || refreshProjectDir([project], skill.source.dir, path.dirname(store.jobsDir)) !== project) {
+          throw new Error("project refresh: the hook no longer belongs to the project that queued it");
+        }
+        assertProjectDefinition(project, commit, skill.source.file, skill.file);
+        if (job.trigger === "webhook" && job.webhook_policy !== webhookPolicy(skill)) {
+          throw new Error("project refresh: webhook policy changed since admission; send a new delivery for verification");
+        }
+        const settings = resolveRunSettings(skill, config, {
+          ...(job.run_overrides ?? { runner: job.runner, model: job.model, effort: job.effort }),
+          ...(job.resume ? { runner: job.resume.runner, model: job.model, effort: job.effort } : {}),
+        });
+        const freshWorkspace = this.workspaceFor(job, skill);
+        if (freshWorkspace && [...this.running.values()].some((other) => other !== running && other.workspace?.key === freshWorkspace.key && (freshWorkspace.exclusive || other.workspace.exclusive))) {
+          throw new Error("project refresh: working directory changed and is occupied; run the hook again");
+        }
+        running.workspace = freshWorkspace;
+        running.project = { dir: project, commit };
+        running.job = store.update(job.id, {
+          runner: settings.runner, model: settings.model, effort: settings.effort,
+          cwd: freshWorkspace?.cwd ?? settings.cwd, skill_file: skill.file,
+        });
+        this.events.emit("job.updated", { job: running.job, fields: ["runner", "model", "effort", "cwd", "skill_file"] });
+      }
     } catch (error) {
       this.finish(job, { status: "failed", started_at: nowIso(), error: errorMessage(error) });
       return;
@@ -625,13 +659,14 @@ export class JobQueue extends EventEmitter {
   /** One run of the job's runner: spawn, stream, wait, parse. Does not finish the job. */
   private async attempt(running: Running, skill: Skill, index: number): Promise<AttemptResult> {
     const { store, config, logger } = this.deps;
-    const job = running.job;
+    const job = running.project ? { ...running.job, project_commit: running.project.commit } : running.job;
     const startedAt = nowIso();
     running.timedOut = false;
     const fail = (error: string, failure?: JobFailure): AttemptResult => ({ status: "failed", patch: { status: "failed", started_at: job.started_at ?? startedAt, error, ...(failure ? { failure } : {}) }, failure, error, producedOutput: false, startedAt });
 
     let prepared: ReturnType<typeof prepareRun>;
     try {
+      if (running.project) assertProjectCommit(running.project.dir, running.project.commit);
       prepared = prepareRun({ skill, config, secrets: this.deps.secrets(), fileSecrets: this.deps.fileSecrets?.(), store, job, event: store.readEvent(job.id), cwd: running.workspace?.cwd ?? job.cwd, processEnv: this.deps.processEnv });
     } catch (error) {
       return fail(errorMessage(error));
@@ -641,13 +676,14 @@ export class JobQueue extends EventEmitter {
     const paths = store.pathsFor(job.id);
     running.job = store.update(job.id, {
       status: "running",
+      project_commit: job.project_commit,
       started_at: job.started_at ?? startedAt,
       cwd: invocation.cwd,
       command: [invocation.command, ...invocation.args],
       model: ctx.model,
       effort: ctx.effort,
     });
-    logger.info(index ? "job attempt started" : "job started", { job: job.id, skill: job.skill, runner: runner.name, model: ctx.model, cwd: invocation.cwd, timeout_s: ctx.timeoutSeconds, attempt: index + 1 });
+    logger.info(index ? "job attempt started" : "job started", { job: job.id, skill: job.skill, runner: runner.name, model: ctx.model, cwd: invocation.cwd, timeout_s: ctx.timeoutSeconds, project_commit: job.project_commit, attempt: index + 1 });
     if (!index) this.events.emit("job.started", { job: running.job });
 
     let child: ChildProcess;
@@ -664,6 +700,7 @@ export class JobQueue extends EventEmitter {
     let lineBuffer = "";
     const outFile = createWriteStream(paths.stdout, { mode: 0o600, flags: index ? "a" : "w" });
     const errFile = createWriteStream(paths.stderr, { mode: 0o600, flags: index ? "a" : "w" });
+    if (job.project_commit) errFile.write(`Skillhook project commit: ${job.project_commit}\n`);
     if (index) {
       outFile.write(`\n--- attempt ${index + 1} (${runner.name}) ---\n`);
       errFile.write(`\n--- attempt ${index + 1} (${runner.name}) ---\n`);

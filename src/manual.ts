@@ -81,6 +81,7 @@ export function createManualJob(ops: { config: Config; store: JobStore }, input:
     fingerprint: deliveryFingerprint({ kind: event.body_kind, payload: event.payload, rawBody: input.body?.raw, query: event.query }),
     adhoc: input.adhoc,
     skill_file: input.skill.file,
+    ...(input.skill.source.type === "project" ? { project_dir: input.skill.source.dir, run_overrides: input.overrides ?? {} } : {}),
     resume_of: input.resume?.of,
     resume: input.resume?.session,
     question: input.resume?.question,

@@ -122,6 +122,7 @@ export function prepareRun(input: PrepareRunInput): PreparedRun {
     SKILLHOOK_PROMPT_PATH: paths.prompt,
     SKILLHOOK_RESPONSE_PATH: paths.response,
     SKILLHOOK_TRIGGER: input.event.trigger,
+    ...(job.project_commit ? { SKILLHOOK_PROJECT_COMMIT: job.project_commit } : {}),
     SKILLHOOK_RUNNER: settings.runner,
     ...(job.account ? { SKILLHOOK_ACCOUNT: job.account } : {}),
     SKILLHOOK_HOME: home,

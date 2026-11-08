@@ -544,6 +544,7 @@ Query: `since=<24h|7d|2w|ISO-8601>` (default: everything on disk, newest 5000 jo
 | `attempts` | array, optional | Earlier runs of this job that a `retry:` or `fallback:` repeated: `[{runner, started_at, finished_at, status, error?, failure?}]`; the record itself is the last attempt. |
 | `adhoc` | `true`, optional | The SKILL.md came with the request (`POST /skills/test`, `skillhook run --file`) and lives in `jobs/<id>/skill/<name>/`. |
 | `skill_file` | string, optional | The `SKILL.md` (or `skillhook.yaml`) the job ran from. |
+| `project_commit` | string, optional | Git commit the runner started from for a linked project with refresh enabled. |
 | `delivery_id` | string, optional | Provider delivery id when known; `schedule:<wall-clock slot>` for scheduled runs. |
 | `fingerprint` | string, optional | SHA-256 of the payload and query string of a webhook delivery; what the in-flight duplicate check compares. |
 | `source` | object | `ip`, `method` (`POST`, `PUT`, `LOCAL` for CLI/MCP runs, `SCHEDULE` for scheduled runs, `REPLAY` for replays, whose `ip` is the original sender's, `TEST` for ad-hoc runs, `RESUME` for resumed runs, `CLOUD` for runs started from Skillhook Cloud), `path`, `content_type`, `user_agent`. |
