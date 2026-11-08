@@ -28,6 +28,18 @@ skillhook url pull-after-merge   # the URL to configure at the sender
 
 The hooks are live on the running server as soon as the file is linked or edited; no restart. `skillhook projects` lists every linked repository with its hooks, `skillhook skills list` shows them next to the skills in `~/.skillhook/skills` with a `source` column.
 
+## Fetch main before a project job runs
+
+Opt in on the machine that serves the project. Give Skillhook a dedicated checkout of a repository you trust, on branch `main` with a working `origin` remote and noninteractive Git credentials. Include the checkout root in `project_refresh` as well as linking the project.
+
+```bash
+skillhook config set project_refresh '["~/dev/your-repo"]'
+```
+
+Before an accepted action runs, Skillhook fetches `origin/main`, fast-forwards the checkout if needed, and loads the job's hook and any referenced `SKILL.md` from that revision. The hook and skill files must be tracked inside the checkout. Skillhook leaves a dirty or divergent checkout alone and fails the job if Git is unavailable. Git commands have a 20-second timeout each. Hook listing, webhook admission and schedule discovery still read local files, so use a push hook or a periodic sync to discover new hook names. A queued webhook whose auth or filter policy changed fails and requires a fresh delivery.
+
+The starting commit is saved as `project_commit` in the job record, written to the job’s stderr artifact, and passed to the runner as `SKILLHOOK_PROJECT_COMMIT`. The job keeps its configured working directory. Skillhook checks the served checkout again before the runner starts. When a hook opens its own worktree, it can use the environment variable to start from the same revision.
+
 ## The file
 
 ```yaml

@@ -184,6 +184,8 @@ export const ConfigSchema = z
     env_passthrough: z.array(z.string()).default([]),
     /** Linked projects: directories whose `skillhook.yaml` (or the file itself) contributes hooks. Managed by `skillhook link` / `unlink`; re-read without a restart. */
     projects: z.array(z.string().min(1)).default([]),
+    /** Linked Git checkout roots whose actions fetch and fast-forward origin/main before execution. Local opt-in. */
+    project_refresh: z.array(z.string().min(1)).default([]),
     /** The opt-in link to Skillhook Cloud (docs/cloud.md). Written by `skillhook cloud connect`; the token lives in `.env` as SKILLHOOK_CLOUD_TOKEN. Nothing leaves the machine while `enabled` is false. */
     cloud: z
       .object({

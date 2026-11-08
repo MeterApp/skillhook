@@ -4,6 +4,7 @@ import type { RunnerName } from "./config.js";
 import { idToDate, isJobId, newJobId } from "./ids.js";
 import type { Trigger, WebhookEvent } from "./payload.js";
 import { payloadJson } from "./prompt.js";
+import type { RunOverrides } from "./run.js";
 import type { JobAnswer, JobProgress, JobQuestion } from "./progress.js";
 import type { FailureKind, JobFailure } from "./runners/failure.js";
 import { jobOutcome, type JobOutcome, type JobResponse } from "./response.js";
@@ -59,6 +60,15 @@ export interface JobRecord {
   adhoc?: true;
   /** The `SKILL.md` (or `skillhook.yaml`) the job ran from. */
   skill_file?: string;
+  /** Linked project directory identified at admission. */
+  project_dir?: string;
+  /** Starting revision checked immediately before invoking a runner. */
+  project_commit?: string;
+  /** Original webhook admission policy digest. */
+  webhook_policy?: string;
+  /** Explicit runner/model/cwd overrides, so a project refresh can resolve new defaults. */
+  run_overrides?: RunOverrides;
+
   /** What the agent last reported while running (`skillhook job progress`, the `job_progress` tool). */
   progress?: JobProgress;
   /** The question the agent asked a person, pending until `answered_at` is set. */
@@ -126,6 +136,9 @@ export interface CreateJobInput {
   replay_of?: { delivery?: string; job?: string };
   adhoc?: true;
   skill_file?: string;
+  project_dir?: string;
+  webhook_policy?: string;
+  run_overrides?: RunOverrides;
   resume_of?: string;
   resume?: { session_id: string; runner: RunnerName };
   question?: JobQuestion;
@@ -248,6 +261,9 @@ export class JobStore {
       replay_of: input.replay_of,
       adhoc: input.adhoc,
       skill_file: input.skill_file,
+      project_dir: input.project_dir,
+      webhook_policy: input.webhook_policy,
+      run_overrides: input.run_overrides,
       resume_of: input.resume_of,
       resume: input.resume,
       question: input.question,

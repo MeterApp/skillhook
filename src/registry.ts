@@ -150,7 +150,7 @@ export class SkillRegistry {
   }
 
   /** The skill or hook named `name`, or undefined. Throws `SkillError` when its definition exists but is invalid. */
-  get(name: string): Skill | undefined {
+  get(name: string, options: { reloadProject?: string } = {}): Skill | undefined {
     if (!isValidSkillName(name)) return undefined;
     const dir = path.join(this.skillsDir, name);
     const file = skillFile(dir);
@@ -168,6 +168,11 @@ export class SkillRegistry {
       this.cache.set(name, skill);
       this.note(skill);
       return skill;
+    }
+    if (options.reloadProject) {
+      for (const [entry, project] of this.projectCache) {
+        if (project.dir === options.reloadProject) this.projectCache.delete(entry);
+      }
     }
     for (const project of this.projects()) {
       const hook = project.hooks.find((h) => h.name === name);

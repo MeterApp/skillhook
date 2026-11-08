@@ -29,7 +29,7 @@ import type { Command, CommandType } from "./protocol.js";
 import { openSealed, SealError, sealForRecipient } from "./seal.js";
 
 /** Top-level config keys the cloud may never change, whatever the mode: the bind address, what runs as the agent, and the link itself. */
-export const CLOUD_DENIED_CONFIG_KEYS = ["$schema", "host", "port", "trust_proxy", "runners", "env_passthrough", "projects", "cloud"];
+export const CLOUD_DENIED_CONFIG_KEYS = ["$schema", "host", "port", "trust_proxy", "runners", "env_passthrough", "projects", "project_refresh", "cloud"];
 
 export interface ControlDeps {
   paths: Paths;
