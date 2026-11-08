@@ -7,13 +7,14 @@ description: Operate a Skillhook Cloud organisation the way its dashboard does, 
 
 Skillhook Cloud is the dashboard for every skillhook machine of an organisation. Each machine keeps an outbound link to
 it; the cloud never connects to a machine. Everything the dashboard shows and does is also a tool: the
-`skillhook-cloud` MCP server (`skillhook mcp --cloud`, registered by the skillhook plugin) offers the cloud's own
-catalogue, and `skillhook cloud <tool>` runs the same tools in a terminal. The `skillhook` MCP server is different: it is
+`skillhook-cloud` MCP server (registered by the skillhook plugin: `skillhook mcp --cloud`, or the hosted
+`https://skillhook.dev/api/mcp` in the plugin directory's copy) offers the cloud's own catalogue, and `skillhook cloud <tool>` runs the same tools in a terminal. The `skillhook` MCP server is different: it is
 this computer's own skillhook.
 
 ## 1. Connect
 
-If the `skillhook-cloud` tools include `describe_cloud`, you are connected. If the only tool is `skillhook_cloud_setup`,
+If the `skillhook-cloud` tools include `describe_cloud`, you are connected. On the hosted server, the host signs the
+person in with the browser when it answers 401. If the only tool is `skillhook_cloud_setup`,
 call it: it says what is missing and, when there is no working key, signs in with the browser. It opens the sign-in
 page in the person's browser on this computer and returns the link and a code: tell them to check that the page shows
 that code and approve it (they choose the organisation and the access there; it needs an admin or owner of that

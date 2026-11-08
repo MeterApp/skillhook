@@ -113,18 +113,13 @@ plugin-only mirror: the contents of `plugins/skillhook/` at its root, with marke
 that point at `./`. `plugins/skillhook/` remains the source of truth here, and
 `MeterApp/skillhook` itself installs the same plugin through its root marketplace.
 
-The mirror is what the plugin directory installs, so its Claude Code servers run from a locked
-install instead of the `npx` launchers: the script adds a `package.json` that depends on exactly this
-`@meterapp/skillhook` version and on the runtime dependencies at the versions in `pnpm-lock.yaml`
-(listed directly, since Claude Code's install ignores `overrides`), the `package-lock.json` npm writes
-for it (refused unless every entry has a registry source and a sha512 integrity), and
-`server/skillhook.mjs` (from `scripts/plugin-mirror/`), which `.mcp.json` starts with `node`. Claude
-Code installs that lockfile into the plugin's `node_modules` when it installs or updates the plugin.
-Codex and Cursor install no lockfile, so their manifests point at `.mcp.npx.json`, the repository's
-`.mcp.json` unchanged. The lock needs the version on npm, so run the script after Publish.
+The mirror is what the plugin directory installs. The directory refuses local MCP servers, scripts
+and package manager files from organizations that are not Verified, so the mirror carries the skills
+and the hosted Skillhook Cloud server only, with its own README (`scripts/plugin-mirror/README.md`) and
+description. The script fails if anything it stages would be refused. This repository's marketplace
+keeps both local servers. When MeterApp is Verified, the mirror can carry them again.
 
-After merging a plugin change and verifying its pinned npm version is published,
-run from a clean `main` checkout:
+After merging a plugin change, run from a clean `main` checkout:
 
 ```bash
 node scripts/publish-plugins.mjs --dry-run

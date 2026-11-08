@@ -26,18 +26,11 @@ or newer is required.
 
 Both servers are local (stdio) and run exactly this plugin's release of the
 [`@meterapp/skillhook`](https://www.npmjs.com/package/@meterapp/skillhook) npm package, published with
-provenance from [MeterApp/skillhook](https://github.com/MeterApp/skillhook).
-
-- **Claude Code, installed from the plugin directory or
-  [MeterApp/skillhook-plugins](https://github.com/MeterApp/skillhook-plugins):** the plugin ships a
-  `package.json` and a `package-lock.json` that pin that version and its dependencies (registry
-  sources and integrity hashes). Claude Code installs them into the plugin's `node_modules` when it
-  installs or updates the plugin, and starts `node server/skillhook.mjs mcp` and
-  `node server/skillhook.mjs mcp --cloud`, which run the installed command line.
-- **Codex, Cursor, and this source repository's marketplace:** the host starts
-  `npx -y @meterapp/skillhook@<version> mcp` and `npx -y @meterapp/skillhook@<version> mcp --cloud`
-  (`.mcp.json` in the source repository, `.mcp.npx.json` in the published plugin); the first start
-  downloads exactly that version.
+provenance from [MeterApp/skillhook](https://github.com/MeterApp/skillhook): the host starts
+`npx -y @meterapp/skillhook@<version> mcp` and `npx -y @meterapp/skillhook@<version> mcp --cloud`, and
+the first start downloads exactly that version. The copy in the plugin directory and
+[MeterApp/skillhook-plugins](https://github.com/MeterApp/skillhook-plugins) has no local servers: it
+carries the skills and the hosted Skillhook Cloud server.
 
 - **`skillhook`** reads and writes skillhook's own configuration under `~/.skillhook` on this machine
   (settings, skills, the secrets you saved with `skillhook secret set`, jobs) and talks to the local
