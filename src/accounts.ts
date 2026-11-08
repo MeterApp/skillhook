@@ -36,6 +36,7 @@ export interface ResolvedAccount {
   managed: boolean;
   /** The `.env` name of a `token` / `api_key` account's credential. */
   secretEnv?: string;
+  usageLogin?: { dir: string; defaultDir: boolean; email: string; organization: string };
   /** The directory whose settings are linked into `dir` (`share_from`). */
   shareFrom?: string;
 }
@@ -52,6 +53,7 @@ export function accountsDir(skillhookHome: string): string {
 export function resolveAccount(name: string, spec: AccountConfig, skillhookHome: string, home = homedir()): ResolvedAccount {
   const managedDir = path.join(accountsDir(skillhookHome), name);
   const dir = spec.dir ? path.resolve(expandTilde(spec.dir)) : managedDir;
+  const usageDir = spec.usage_login && path.resolve(expandTilde(spec.usage_login.dir));
   return {
     name,
     runner: spec.runner,
@@ -62,6 +64,7 @@ export function resolveAccount(name: string, spec: AccountConfig, skillhookHome:
     defaultDir: dir === defaultLoginDir(spec.runner, home),
     managed: dir.startsWith(`${accountsDir(skillhookHome)}${path.sep}`),
     ...(spec.kind !== "login" ? { secretEnv: spec.secret_env ?? defaultAccountSecretEnv(name, spec.kind) } : {}),
+    ...(spec.usage_login && usageDir ? { usageLogin: { ...spec.usage_login, dir: usageDir, defaultDir: usageDir === defaultLoginDir("claude", home) } } : {}),
     ...(spec.share_from ? { shareFrom: path.resolve(expandTilde(spec.share_from)) } : {}),
   };
 }
@@ -299,21 +302,20 @@ export function isLimited(state: AccountState | undefined, now = Date.now()): bo
 }
 
 /**
- * How much of the window is used now: a window whose reset has passed (or, with no reset time, whose whole length
- * has gone by since it was read) is empty again, whatever the last reading said.
+ * The last reading only describes the window it was taken in. Once it expires, the new window's usage is unknown.
  */
-export function windowUsed(window: UsageWindow, fetchedAt: string | undefined, now = Date.now()): number {
+export function windowUsed(window: UsageWindow, fetchedAt: string | undefined, now = Date.now()): number | undefined {
   const resets = window.resets_at ? Date.parse(window.resets_at) : Number.NaN;
-  if (Number.isFinite(resets)) return resets <= now ? 0 : window.used_percent;
+  if (Number.isFinite(resets)) return resets <= now ? undefined : window.used_percent;
   const fetched = fetchedAt ? Date.parse(fetchedAt) : Number.NaN;
-  if (window.window_minutes && Number.isFinite(fetched) && fetched + window.window_minutes * 60_000 <= now) return 0;
+  if (window.window_minutes && Number.isFinite(fetched) && fetched + window.window_minutes * 60_000 <= now) return undefined;
   return window.used_percent;
 }
 
 /** The fullest usage window as of `now`, 0–100 (undefined when no usage is known). */
 export function peakUsage(state: AccountState | undefined, now = Date.now()): number | undefined {
-  const windows = state?.usage?.windows ?? [];
-  return windows.length ? Math.max(...windows.map((w) => windowUsed(w, state?.usage?.fetched_at, now))) : undefined;
+  const used = state?.usage?.windows.map((w) => windowUsed(w, state.usage?.fetched_at, now)).filter((value) => value !== undefined);
+  return used?.length ? Math.max(...used) : undefined;
 }
 
 /** When the pool last handed the account a job (`last_picked_at`, set when the job is given to it), else when a run of it ended. */
@@ -334,28 +336,27 @@ export interface PoolOrderOptions {
 }
 
 /**
- * The order in which a pool's accounts are tried, in tiers: accounts with usage left first, then those with a window
- * at or above `avoidPercent` (about to hit a limit, so a long run would likely be cut off mid-session; the one with
- * the most left first), then limited ones (used only when nothing else is left, and then only once their limit may be
- * over). Within the first tier, `ordered` keeps the order listed; `balanced` takes the account running the fewest jobs,
- * then the least used (in bands of 25 points), then the one picked least recently: with no usage known that is a
- * round robin, and an account a person also uses by hand gets fewer jobs as its windows fill.
+ * Try accounts with measured headroom first, then unknown usage, then near-full accounts and finally limited ones.
+ * Balanced spreads work by in-flight jobs, known usage bands, and when each account was last picked.
  */
 export function orderPool(names: string[], states: AccountStates, strategy: Config["account_policy"]["strategy"], options: PoolOrderOptions = {}): string[] {
   const now = options.now ?? Date.now();
   const avoid = options.avoidPercent ?? 100;
   const indexed = names.map((name, index) => {
     const state = states[name];
-    const used = peakUsage(state, now) ?? 0;
-    return { name, index, state, used, tier: isLimited(state, now) ? 2 : used >= avoid ? 1 : 0, running: options.inFlight?.[name] ?? 0 };
+    const used = peakUsage(state, now);
+    const tier = isLimited(state, now) ? 3 : used === undefined ? 1 : used >= avoid ? 2 : 0;
+    return { name, index, state, used, tier, running: options.inFlight?.[name] ?? 0 };
   });
   indexed.sort((a, b) => {
     if (a.tier !== b.tier) return a.tier - b.tier;
-    if (a.tier === 1 && a.used !== b.used) return a.used - b.used;
-    if (strategy === "balanced" && a.tier === 0) {
+    if (a.tier === 2 && a.used !== undefined && b.used !== undefined && a.used !== b.used) return a.used - b.used;
+    if (strategy === "balanced" && a.tier < 2) {
       if (a.running !== b.running) return a.running - b.running;
-      const band = Math.floor(a.used / USAGE_BAND_PERCENT) - Math.floor(b.used / USAGE_BAND_PERCENT);
-      if (band) return band;
+      if (a.used !== undefined && b.used !== undefined) {
+        const band = Math.floor(a.used / USAGE_BAND_PERCENT) - Math.floor(b.used / USAGE_BAND_PERCENT);
+        if (band) return band;
+      }
       const picked = lastPicked(a.state) - lastPicked(b.state);
       if (picked) return picked;
     }

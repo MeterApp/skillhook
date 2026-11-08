@@ -6,6 +6,7 @@ import { AccountStateStore, defaultAccountSecretEnv, getAccount, isLimited, orde
 import { createResumeJob } from "./answer.js";
 import { getRunner } from "./runners/index.js";
 import { AccountWatch } from "./account-watch.js";
+import { collectAccounts } from "./account-report.js";
 import { ConfigSchema, loadConfig as load } from "./config.js";
 import { Events } from "./events.js";
 import { JobStore } from "./jobs.js";
@@ -20,6 +21,36 @@ import { loadSkills } from "./skills.js";
 import { FAKE_CLAUDE, FAKE_CODEX, tempHome, writeConfigFile, writeEnv, writeSkill } from "./test-support/helpers.js";
 
 const SKILL = { config: {} } as never;
+
+it("reads a token account's quota from a matching Claude login and keeps its job token separate", async () => {
+  const paths = tempHome("skillhook-usage-login-");
+  const dir = path.join(paths.home, "usage-profile");
+  const record = path.join(paths.home, "usage-probe.json");
+  mkdirSync(dir);
+  writeFileSync(path.join(dir, "record"), record);
+  writeFileSync(path.join(dir, "account"), "quota@example.com\n");
+  writeFileSync(path.join(dir, "organization"), "Work\n");
+  const config = ConfigSchema.parse({
+    runners: { claude: { command: FAKE_CLAUDE } },
+    accounts: { work: { runner: "claude", kind: "token", usage_login: { dir, email: "quota@example.com", organization: "Work" } } },
+  });
+  const states = new AccountStateStore(paths.jobsDir);
+  const secrets = { SKILLHOOK_ACCOUNT_WORK_TOKEN: "job-token" };
+  const baseEnv = { PATH: mergedPath(process.env.PATH), ANTHROPIC_API_KEY: "inherited-api-key", CLAUDE_CODE_OAUTH_TOKEN: "inherited-token" };
+  const input = { config, home: paths.home, secrets, baseEnv, skills: [], states, usage: true };
+  expect((await collectAccounts(input)).accounts[0]).toMatchObject({ status: "ready", identity: { email: "quota@example.com", org: "Work" }, usage: { windows: expect.arrayContaining([expect.objectContaining({ id: "seven_day", used_percent: 17 })]) } });
+  expect(JSON.parse(readFileSync(record, "utf8")).env).toEqual({ CLAUDE_CONFIG_DIR: dir, CLAUDE_CODE_OAUTH_TOKEN: null, ANTHROPIC_API_KEY: null });
+  const account = getAccount(config, paths.home, "work")!;
+  expect(withAccountEnv(baseEnv, account, secrets)).toMatchObject({ CLAUDE_CONFIG_DIR: account.dir, CLAUDE_CODE_OAUTH_TOKEN: "job-token" });
+
+  const savedUsage = states.get("work").usage;
+  writeFileSync(path.join(dir, "organization"), "Wrong workspace\n");
+  expect((await collectAccounts(input)).accounts[0]).toMatchObject({ status: "ready", usage: { error: expect.stringContaining("must match") } });
+  expect(states.get("work").usage).toEqual(savedUsage);
+  writeFileSync(path.join(dir, "expired"), "");
+  expect((await collectAccounts(input)).accounts[0]).toMatchObject({ status: "ready", usage: { error: expect.stringContaining("Sign in") } });
+  expect(states.get("work").usage).toEqual(savedUsage);
+});
 
 describe("accounts: configuration and environment", () => {
   it("resolves names to directories, secrets and the machine's own login", () => {
@@ -86,7 +117,7 @@ describe("accounts: configuration and environment", () => {
       d: { last_used_at: "2026-10-23T09:00:00Z" },
     };
     expect(orderPool(["c", "a", "b", "d"], states, "ordered", { now })).toEqual(["a", "b", "d", "c"]);
-    expect(orderPool(["c", "a", "b", "d"], states, "balanced", { now })).toEqual(["d", "b", "a", "c"]);
+    expect(orderPool(["c", "a", "b", "d"], states, "balanced", { now })).toEqual(["b", "a", "d", "c"]);
     expect(isLimited(states.c, now)).toBe(true);
     expect(isLimited(states.c, Date.parse("2026-10-23T15:00:00Z"))).toBe(false);
   });
@@ -119,17 +150,15 @@ describe("accounts: configuration and environment", () => {
       fresh: { last_picked_at: "2026-10-23T11:50:00Z" },
       limited: { limited_until: "2026-10-23T14:00:00Z" },
     };
-    // Usage left first (less used band first, then least recently picked), then the near-full ones (most left first), then limited.
-    expect(orderPool(Object.keys(states), states, "balanced", { now, avoidPercent: 90 })).toEqual(["reset", "fresh", "half", "fullWeek", "full5h", "limited"]);
-    // `ordered` keeps the listed order among accounts with usage left, but still moves near-full ones back.
-    expect(orderPool(Object.keys(states), states, "ordered", { now, avoidPercent: 90 })).toEqual(["reset", "half", "fresh", "fullWeek", "full5h", "limited"]);
+    // Measured headroom first, then unknown (including expired readings), near-full, and limited.
+    expect(orderPool(Object.keys(states), states, "balanced", { now, avoidPercent: 90 })).toEqual(["half", "reset", "fresh", "fullWeek", "full5h", "limited"]);
+    expect(orderPool(Object.keys(states), states, "ordered", { now, avoidPercent: 90 })).toEqual(["half", "reset", "fresh", "fullWeek", "full5h", "limited"]);
     // Without a threshold only an actual limit moves an account back.
     expect(orderPool(["full5h", "limited", "half"], states, "ordered", { now })).toEqual(["full5h", "half", "limited"]);
-    expect(peakUsage(states.reset, now)).toBe(0);
+    expect(peakUsage(states.reset, now)).toBeUndefined();
     expect(peakUsage(states.full5h, now)).toBe(95);
-    expect(peakUsage(states.full5h, Date.parse("2026-10-23T13:00:00Z"))).toBe(0);
-    // A window with no reset time is empty once its length has gone by since it was read.
-    expect(windowUsed({ id: "primary", label: "5h", used_percent: 70, window_minutes: 300 }, "2026-10-23T06:00:00Z", now)).toBe(0);
+    expect(peakUsage(states.full5h, Date.parse("2026-10-23T13:00:00Z"))).toBeUndefined();
+    expect(windowUsed({ id: "primary", label: "5h", used_percent: 70, window_minutes: 300 }, "2026-10-23T06:00:00Z", now)).toBeUndefined();
     expect(windowUsed({ id: "primary", label: "5h", used_percent: 70, window_minutes: 300 }, "2026-10-23T08:00:00Z", now)).toBe(70);
     expect(peakUsage({}, now)).toBeUndefined();
   });

@@ -81,19 +81,20 @@ skillhook:
 
 Before a job runs, the queue goes through the pool:
 
-1. **Order.** The pool is sorted in three tiers:
-   1. Accounts with usage left.
-   2. Accounts with a usage window (5-hour or weekly) at or above `account_policy.usage_avoid_percent` (90 by
+1. **Order.** The pool is sorted in four tiers:
+   1. Accounts with measured headroom.
+   2. Accounts with unknown usage, including accounts whose usage readings have all expired.
+   3. Accounts with a usage window (5-hour or weekly) at or above `account_policy.usage_avoid_percent` (90 by
       default). They are close to a limit, so a run started there is likely to be cut off partway through its
       session. The one with the most left goes first. Set the threshold to `100` to turn this tier off.
-   3. Accounts that hit a limit whose reset has not come yet.
+   4. Accounts that hit a limit whose reset has not come yet.
 
    Within the first tier, `account_policy.strategy: balanced` (the default) spreads the load. It picks the account
    running the fewest jobs right now, then the least used one, then the one picked longest ago. Usage is compared in
    bands of 25 points (0–24 %, 25–49 %, …), so accounts that are about equally used simply take turns. With no usage
    known, this is a round robin. An account that a person also uses by hand gets fewer jobs as its windows fill.
    `ordered` keeps the order listed instead: the first account takes every job, and the next ones are backups.
-   A window counts as empty once its reset time has passed, whatever the last reading said.
+   A window's old reading stops counting once its reset time has passed.
 
    Picks happen one at a time. The chosen account is reserved for the job at once (`last_picked_at` in
    `jobs/.accounts.json`), so jobs that start together go to different accounts. The rotation survives a restart.
@@ -126,7 +127,7 @@ The queue writes it to `jobs/.accounts.json` (`accounts reset <name>` forgets it
      `try again in 2 days 3 hours`.
   3. Otherwise `account_policy.limited_cooldown_minutes` after the failure.
 - **A failed login**, until the account's next success.
-- **Usage windows.** Every Claude Code run reports how much of its 5-hour and weekly windows is used. Codex runs do
+- **Usage windows.** Claude Code can report how much of its 5-hour and weekly windows is used during a run. Codex runs do
   not. For a Codex pool, or for accounts also used outside skillhook, set `account_policy.usage_poll_minutes` (for
   example `15`). `balanced` and `usage_avoid_percent` then work from current figures.
 
@@ -146,6 +147,13 @@ before a run.
 - **Codex** answers through `codex app-server`: `account/read` returns the email and plan; `account/rateLimits/read`
   returns the primary and secondary windows (5h / weekly), credits and whether a limit was reached.
 - An `api_key` account has no windows (it pays per use).
+
+For a Claude `token` account, the setup token may lack permission to read the subscription's usage. Set
+`accounts.<name>.usage_login` to `{ "dir": "~/.claude-usage-work", "email": "me@example.com", "organization": "Work" }`
+and sign in with `CLAUDE_CONFIG_DIR="$HOME/.claude-usage-work" claude auth login`. Select the same account and
+workspace as the job token. For the machine's existing Claude sign-in use `"dir": "~/.claude"`.
+Skillhook checks the sign-in's email and organization before accepting usage. Job execution and readiness
+continue to use the token, even if the usage sign-in expires.
 
 A window at 100% marks the account as limited until that window resets. A window at or above
 `account_policy.usage_warn_percent` (85 by default) makes the account need attention. While `serve` runs,

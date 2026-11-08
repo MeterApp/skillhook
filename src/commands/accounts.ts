@@ -302,7 +302,7 @@ export async function accountsCommand(ctx: Ctx): Promise<number> {
     case "limits": {
       if (name) accountOrThrow(ctx, name);
       const result = await report(ctx, { usage: true, refresh: true, only: name });
-      const rows = result.accounts.map((v) => [v.name, v.runner, stateCell(v), v.identity?.plan ?? "", usageText(v.usage) || (v.kind === "api_key" ? "(API key: pay per use)" : v.ready ? v.usage?.error ?? "" : STATUS_TEXT[v.status]), nextResetText(v.usage)]);
+      const rows = result.accounts.map((v) => [v.name, v.runner, stateCell(v), v.identity?.plan ?? "", v.usage?.error ?? (usageText(v.usage) || (v.kind === "api_key" ? "(API key: pay per use)" : v.ready ? "" : STATUS_TEXT[v.status])), nextResetText(v.usage)]);
       ctx.print(rows.length ? table(rows, ["account", "runner", "state", "plan", "usage", "next reset"]) : "No accounts (skillhook accounts add …)", result);
       return 0;
     }
