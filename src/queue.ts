@@ -518,10 +518,11 @@ export class JobQueue extends EventEmitter {
           throw new Error("project refresh: webhook policy changed since admission; send a new delivery for verification");
         }
         const settings = resolveRunSettings(skill, config, {
-          ...(job.run_overrides ?? { runner: job.runner, model: job.model, effort: job.effort }),
+          ...(job.run_overrides ?? { runner: job.runner, model: job.model, effort: job.effort, cwd: job.cwd }),
           ...(job.resume ? { runner: job.resume.runner, model: job.model, effort: job.effort } : {}),
         });
-        const freshWorkspace = this.workspaceFor(job, skill);
+        // Recovery can retain the previous preflight cwd. Honor the fresh default or an explicit override.
+        const freshWorkspace = this.workspaceFor({ ...job, cwd: settings.cwd }, skill);
         if (freshWorkspace && [...this.running.values()].some((other) => other !== running && other.workspace?.key === freshWorkspace.key && (freshWorkspace.exclusive || other.workspace.exclusive))) {
           throw new Error("project refresh: working directory changed and is occupied; run the hook again");
         }

@@ -24,9 +24,9 @@ function fixture() {
     execFileSync("git", ["-c", "user.name=Skillhook Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   git(dir, "init", "--bare", "-b", "main", origin);
   git(dir, "clone", origin, writer);
-  const save = (name: string, auth = "none") => {
+  const save = (name: string, auth = "none", cwd = state) => {
     writeFileSync(path.join(writer, "skillhook.yaml"), [
-      "hooks:", "  test:", `    cwd: ${state}`,
+      "hooks:", "  test:", `    cwd: ${cwd}`,
       `    run: printf '%s\\n' "${name}" "$SKILLHOOK_PROJECT_COMMIT" "$PWD"`,
       `    auth: { type: ${auth} }`,
     ].join("\n"));
@@ -42,10 +42,10 @@ function fixture() {
   const registry = new SkillRegistry(paths.skillsDir, { projects: () => [served] });
   const store = new JobStore(paths.jobsDir, { maxJobs: 100, dedupeWindowSeconds: 60 });
   const queue = new JobQueue({ config, registry, store, secrets: () => ({}), logger: silentLogger });
-  const run = async () => {
+  const run = async ({ overrideCwd, recoveredCwd }: { overrideCwd?: string; recoveredCwd?: string } = {}) => {
     const skill = registry.get("test")!;
-    const job = createManualJob({ config, store }, { skill, trigger: "api", payload: {} });
-    queue.enqueue(job);
+    const job = createManualJob({ config, store }, { skill, trigger: "api", payload: {}, overrides: { cwd: overrideCwd } });
+    queue.enqueue(recoveredCwd ? store.update(job.id, { cwd: recoveredCwd }) : job);
     return queue.waitFor(job.id, 5_000);
   };
   return { git, save, run, first, served, state, registry, paths, config, store, queue };
@@ -104,4 +104,20 @@ it("fails closed when origin cannot be fetched", async () => {
   expect(done?.project_commit).toBeUndefined();
   expect(done?.result).toBeUndefined();
   expect(git(served, "rev-parse", "HEAD")).toBe(first);
+});
+
+
+it("uses the refreshed cwd on recovery and honors explicit cwd overrides", async () => {
+  const { save, run, state } = fixture();
+  const newState = `${state}-new`;
+  const override = `${state}-override`;
+  mkdirSync(newState);
+  mkdirSync(override);
+  const target = save("new", "none", newState);
+  expect(await run({ recoveredCwd: state })).toMatchObject({
+    status: "succeeded", cwd: newState, project_commit: target, result: `new\n${target}\n${newState}`,
+  });
+  expect(await run({ recoveredCwd: state, overrideCwd: override })).toMatchObject({
+    status: "succeeded", cwd: override, project_commit: target, result: `new\n${target}\n${override}`,
+  });
 });
