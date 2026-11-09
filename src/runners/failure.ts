@@ -46,7 +46,7 @@ const RETRYABLE: FailureKind[] = ["rate_limit", "crash"];
 
 const PATTERNS: { kind: FailureKind; needles: string[] }[] = [
   { kind: "rate_limit", needles: ["rate limit", "rate_limit", "too many requests", "overloaded", " 429", "429 "] },
-  { kind: "usage_limit", needles: ["usage limit", "usage_limit", "hit your limit", "hit your session limit", "hit your weekly limit", "credit balance is too low", "out of credits", "out of extra usage", "quota", "insufficient_quota", "limit will reset"] },
+  { kind: "usage_limit", needles: ["usage limit", "usage_limit", "hit your limit", "hit your session limit", "hit your weekly limit", "hit your 5-hour limit", "5-hour limit", "credit balance is too low", "out of credits", "out of extra usage", "quota", "insufficient_quota", "limit will reset"] },
   { kind: "auth", needles: ["failed to authenticate", "not logged in", "please run /login", "claude login", "codex login", "oauth", "invalid api key", "invalid x-api-key", "authentication", "unauthorized", "unauthenticated", " 401", "401 ", "credentials", "login required", "please log in"] },
   { kind: "budget", needles: ["max_budget", "max budget", "budget"] },
   { kind: "max_turns", needles: ["max_turns", "max turns", "maximum turns", "maximum number of turns"] },
