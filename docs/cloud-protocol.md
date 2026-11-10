@@ -49,7 +49,7 @@ Errors are `SyncError` `{ok: false, error, message?, retry_after_ms?, min_protoc
 
 ## Command results worth knowing
 
-- `schedule.pause`, `schedule.resume`: `{schedule}`, the schedule's status as `schedules.list` gives it, with `paused: {at, by?, reason?, until?}` or `null`. Machines before 0.16.0 do not know these types, and a machine refuses a whole sync response that carries a command type it does not know, so the cloud must send them only to machines that report 0.16.0 or later.
+- `schedule.pause`, `schedule.resume`: `{schedule}`, the schedule's status as `schedules.list` gives it, with `paused: {at, by?, reason?, until?}` or `null`. Machines before 0.17.0 do not know these types, and a machine refuses a whole sync response that carries a command type it does not know, so the cloud must send them only to machines that report 0.17.0 or later.
 - `skill.run`, `skill.test`, `delivery.replay`, `job.replay`, `schedule.run`: `{accepted: true, job_id, …}` (a replay whose filters do not match: `{accepted: false, skipped: true, reason}`); the job itself is followed through its events.
 - `job.answer`: `{job_id, delivered: live|resumed|recorded, answer, resume_job_id}`.
 - `config.patch`: `{applied, restart_required_keys, pending_restart}`.
