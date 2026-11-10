@@ -107,8 +107,8 @@ export interface LinkStatusView extends LinkStatus {
   events_seq: number;
 }
 
-/** Commands after which the snapshot differs (skills, whether their secrets are set, the configuration): one goes at once. */
-const RESNAPSHOT: ReadonlySet<string> = new Set(["skill.put", "skill.delete", "config.patch", "secret.generate", "secret.set"]);
+/** Commands after which the snapshot differs (skills, whether their secrets are set, the configuration, a paused schedule): one goes at once. */
+const RESNAPSHOT: ReadonlySet<string> = new Set(["skill.put", "skill.delete", "config.patch", "secret.generate", "secret.set", "schedule.pause", "schedule.resume"]);
 
 /** Event types that travel; `server.*` stays local. */
 const UPLOADED: Set<string> = new Set(["delivery.received", "job.queued", "job.started", "job.updated", "job.finished", "job.cancelled", "job.progress", "job.waiting_human", "job.answered", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed", "config.changed", "health.changed", "runners.changed", "account.changed", "account.updated"]);

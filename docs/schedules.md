@@ -100,7 +100,20 @@ skillhook schedules run weekday-digest --wait 60    # fire it now with a schedul
 skillhook run weekday-digest --payload '{"scheduled_for":"2026-09-24T13:05:00Z"}' --dry-run   # the prompt and command a scheduled run would get
 ```
 
-`skillhook skills list` shows `(schedule <cron>)` in the URL column for schedule-only hooks, `skillhook skills show <name>` prints the schedule and its next run, `GET /skills` carries `schedule: {cron, timezone, catch_up, overlap, next_run_at}` and `webhook`, and `GET /health` (admin) lists every schedule with `next_due`, `last_slot`, `last_fired_at`, `last_job`, `last_status` and `skipped`. The MCP tool is `list_schedules`.
+## Pausing a schedule
+
+The schedule is declared in the skill or the repository's `skillhook.yaml`, which stays its source of truth. To stop it firing for a while without a commit (it misbehaves, a migration runs, a service it calls is down), pause it on the machine:
+
+```bash
+skillhook schedules pause availability-sweep --reason "duplicate emails" --until 2h   # or --until 2026-11-12T09:00:00Z; without --until, until resumed
+skillhook schedules resume availability-sweep
+```
+
+A paused schedule fires nothing; its webhook, if it has one, keeps working, and `skillhook run` / `schedules run` still run it by hand. Slots that pass while it is paused are counted in `skipped` but are never caught up, whatever `catch_up` says: on resume (or when `until` passes) it fires from its next slot. The pause is kept in `jobs/.schedules.json`, not in the skill's file, so a repository pull, a change to the hook and a restart all leave it in place; removing the pause is always an explicit resume or the end of `until`. With a server running the command goes through it (`POST /schedules/<name>/pause` and `/resume`, admin); without one it writes the state file, and the server honours it when it starts.
+
+Skillhook Cloud pauses and resumes the same way, with the `schedule.pause` / `schedule.resume` commands ([cloud.md](cloud.md#commands-the-cloud-may-send)); the pause records who asked.
+
+`skillhook skills list` shows `(schedule <cron>)` in the URL column for schedule-only hooks, `skillhook skills show <name>` prints the schedule and its next run, `GET /skills` carries `schedule: {cron, timezone, catch_up, overlap, next_run_at}` and `webhook`, and `GET /health` (admin) lists every schedule with `next_due`, `last_slot`, `last_fired_at`, `last_job`, `last_status`, `skipped` and `paused` (`{at, by?, reason?, until?}` or `null`; `next_due` is `null` while paused until resumed). The MCP tool is `list_schedules`.
 
 `skillhook doctor` adds a `schedules` line (every schedule with its next run) and, on macOS, a `sleep` line that warns when `pmset` reports a sleep timer.
 

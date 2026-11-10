@@ -15,6 +15,7 @@ import type { WebhookEvent } from "../payload.js";
 import { JobQueue } from "../queue.js";
 import type { ReadinessCache } from "../readiness.js";
 import { SkillRegistry } from "../registry.js";
+import { readScheduleStates, Scheduler } from "../scheduler.js";
 import { createServer } from "../server.js";
 import { FakeCloud } from "../test-support/fake-cloud.js";
 import { FAKE_CLAUDE, tempHome, writeConfigFile, writeEnv, writeSkill } from "../test-support/helpers.js";
@@ -83,17 +84,19 @@ async function setup(options: SetupOptions = {}) {
   const restarts: { force: boolean; waitSeconds: number }[] = [];
   let queue: JobQueue | undefined;
   let control: ReturnType<typeof createControlHandlers> | undefined;
+  let scheduler: Scheduler | undefined;
   if (options.control) {
     queue = new JobQueue({ store, config, registry, secrets, fileSecrets: secrets, logger: silentLogger, events });
+    scheduler = new Scheduler({ registry, store, queue, config, logger: silentLogger });
     const configRef = new ConfigRef(paths, config, { events });
-    control = createControlHandlers({ paths, config, configRef, secrets, fileSecrets, registry, store, deliveryLog, queue, events, logger: silentLogger, serverControl: { supervised: async () => true, restart: (o) => void restarts.push(o) }, applyUpdate: async ({ install }) => ({ ok: true, current: "0.4.0", latest: "0.4.1", available: true, checked_at: null, registry: "http://registry.invalid", cached: false, install: { method: "npm", command: "npm install -g @meterapp/skillhook@0.4.1" }, release_notes: null, installed: install, service_restarted: false, service_note: null }) });
+    control = createControlHandlers({ paths, config, configRef, secrets, fileSecrets, registry, store, deliveryLog, queue, events, logger: silentLogger, scheduler, serverControl: { supervised: async () => true, restart: (o) => void restarts.push(o) }, applyUpdate: async ({ install }) => ({ ok: true, current: "0.4.0", latest: "0.4.1", available: true, checked_at: null, registry: "http://registry.invalid", cached: false, install: { method: "npm", command: "npm install -g @meterapp/skillhook@0.4.1" }, release_notes: null, installed: install, service_restarted: false, service_note: null }) });
     const q = queue;
     cleanups.push(() => q.shutdown());
   }
   const readiness = options.readiness?.(events);
-  const link = new CloudLink({ paths, config, secrets, fileSecrets, events, logger: silentLogger, registry, store, deliveryLog, serverState: () => undefined, localBaseUrl: options.localBaseUrl ?? (() => undefined), env: options.env ?? {}, fetchImpl: options.fetchImpl, timing: TIMING, control, queueStats: queue ? () => (queue as JobQueue).stats() : undefined, readiness, health: options.health });
+  const link = new CloudLink({ paths, config, secrets, fileSecrets, events, logger: silentLogger, registry, store, deliveryLog, serverState: () => undefined, localBaseUrl: options.localBaseUrl ?? (() => undefined), env: options.env ?? {}, fetchImpl: options.fetchImpl, timing: TIMING, control, schedules: scheduler ? () => (scheduler as Scheduler).status() : undefined, queueStats: queue ? () => (queue as JobQueue).stats() : undefined, readiness, health: options.health });
   cleanups.push(() => link.stop("test"));
-  return { fake, paths, config, events, store, deliveryLog, registry, link, secrets, queue, restarts };
+  return { fake, paths, config, events, store, deliveryLog, registry, link, secrets, queue, restarts, scheduler };
 }
 
 async function runCommands(fake: FakeCloud, commands: Command[]): Promise<Record<string, CommandResult>> {
@@ -422,6 +425,22 @@ describe("CloudLink", () => {
     expect(uploaded.delivery).toMatchObject({ via: "ingress", outcome: "accepted" });
     expect(JSON.parse(uploaded.body.text)).toEqual({ name: "cloud" }); // the job's payload.json, pretty-printed
     expect(JSON.stringify(fake.requests)).not.toContain(SECRET);
+  });
+
+  it("pauses and resumes a schedule from the cloud, and the next sync's snapshot says so", async () => {
+    const { fake, link, paths, registry } = await setup({ control: true, cloud: { mode: "control" } });
+    writeSkill(paths, "ticker", "description: tick\nskillhook:\n  webhook: false\n  schedule: \"*/10 * * * *\"");
+    expect(registry.get("ticker")?.schedule).toBeDefined();
+    link.start();
+    await waitUntil(() => link.status().state === "connected");
+    const paused = await runCommands(fake, [cmd("pause", "schedule.pause", { name: "ticker", reason: "too noisy" }), cmd("pause-plain", "schedule.pause", { name: "hello" }), cmd("pause-past", "schedule.pause", { name: "ticker", until: "2001-01-01T00:00:00.000Z" })]);
+    expect(paused.pause).toMatchObject({ ok: true, result: { schedule: { skill: "ticker", next_due: null, paused: { by: "ada", reason: "too noisy" } } } });
+    expect(paused["pause-plain"]).toMatchObject({ ok: false, error: { code: "conflict" } });
+    expect(paused["pause-past"]).toMatchObject({ ok: false, error: { code: "invalid_args" } });
+    await fake.waitFor(() => fake.requests.some((r) => r.snapshot?.schedules.some((s) => s.skill === "ticker" && (s as { paused?: { reason?: string } }).paused?.reason === "too noisy")));
+    const resumed = await runCommands(fake, [cmd("resume", "schedule.resume", { name: "ticker" })]);
+    expect(resumed.resume).toMatchObject({ ok: true, result: { schedule: { skill: "ticker", paused: null } } });
+    expect(readScheduleStates(paths.jobsDir).ticker?.paused).toBeUndefined();
   });
 
   it("acts on the machine in control mode: runs, tests, replays, answers, patches config within bounds, restarts after the answer", async () => {

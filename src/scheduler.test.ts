@@ -8,7 +8,7 @@ import { JobStore, type JobRecord } from "./jobs.js";
 import { silentLogger } from "./logger.js";
 import { JobQueue } from "./queue.js";
 import { SkillRegistry } from "./registry.js";
-import { buildSchedulePayload, CATCH_UP_MAX_SLOTS, dueSlots, listSchedules, readScheduleStates, Scheduler, scheduleStateFile } from "./scheduler.js";
+import { buildSchedulePayload, CATCH_UP_MAX_SLOTS, dueSlots, listSchedules, readScheduleStates, ScheduleControlError, Scheduler, scheduleStateFile, setPauseOffline } from "./scheduler.js";
 import { tempHome, writeConfigFile, writeSkill } from "./test-support/helpers.js";
 import { readJsonFileOr, writeJsonFile } from "./util.js";
 
@@ -42,6 +42,71 @@ describe("dueSlots", () => {
     expect(dueSlots(schedule!, at("2026-09-23T10:00:30Z"), at("2026-09-23T12:10:00Z")).map((d) => d.toISOString())).toEqual(["2026-09-23T12:00:00.000Z", "2026-09-23T11:30:00.000Z", "2026-09-23T11:00:00.000Z", "2026-09-23T10:30:00.000Z"]);
     expect(dueSlots(schedule!, at("2026-09-23T10:00:30Z"), at("2026-09-23T10:29:00Z"))).toEqual([]);
     expect(dueSlots(schedule!, at("2026-09-20T00:00:00Z"), at("2026-09-23T00:00:00Z"), 5)).toHaveLength(5);
+    return h.close();
+  });
+});
+
+describe("Scheduler pause", () => {
+  const MINUTELY = { minutely: `description: m\n${SHELL("echo p")}  schedule: "* * * * *"\n`, plain: `description: p\n${SHELL("echo x")}` };
+
+  it("skips every slot while paused, quietly, and does not catch them up on resume", async () => {
+    const h = harness(MINUTELY);
+    const seen: SkillhookEvent[] = [];
+    h.events.onAny((event) => seen.push(event));
+    h.scheduler.start();
+    const paused = h.scheduler.pause("minutely", { by: "test", reason: "noisy" });
+    expect(paused).toMatchObject({ skill: "minutely", next_due: null, paused: { by: "test", reason: "noisy", at: "2026-09-23T10:00:30.000Z" } });
+    expect(readScheduleStates(h.paths.jobsDir).minutely?.paused).toMatchObject({ reason: "noisy" });
+    h.setClock("2026-09-23T10:05:05Z");
+    expect(h.scheduler.tick()).toEqual({ fired: [], skipped: [] });
+    expect(seen.filter((e) => e.type === "schedule.skipped" || e.type === "schedule.fired")).toEqual([]);
+    expect(h.scheduler.status()[0]).toMatchObject({ skipped: 5, paused: { reason: "noisy" } });
+    h.setClock("2026-09-23T10:07:10Z");
+    const resumed = h.scheduler.resume("minutely", { by: "test" });
+    expect(resumed).toMatchObject({ paused: null, next_due: "2026-09-23T10:08:00.000Z" });
+    expect(h.scheduler.tick().fired).toEqual([]); // 10:06 and 10:07 passed while paused
+    h.setClock("2026-09-23T10:08:02Z");
+    const tick = h.scheduler.tick();
+    expect(tick.fired).toHaveLength(1);
+    await h.finished(tick.fired[0] as JobRecord);
+    return h.close();
+  });
+
+  it("a pause survives a restart, and one with until ends by itself", async () => {
+    const h = harness(MINUTELY);
+    h.scheduler.start();
+    expect(h.scheduler.pause("minutely", { until: "2026-09-23T10:03:00Z" }).next_due).toBe("2026-09-23T10:03:00.000Z");
+    h.scheduler.stop();
+    const again = new Scheduler({ registry: h.registry, store: h.store, queue: h.queue, config: h.config, logger: silentLogger, now: () => at("2026-09-23T10:02:10Z") });
+    expect(again.tick().fired).toEqual([]);
+    expect(again.status()[0]?.paused).toMatchObject({ until: "2026-09-23T10:03:00.000Z" });
+    const ended = again.tick(at("2026-09-23T10:03:05Z"));
+    expect(ended.fired).toEqual([]); // the pause is cleared on this tick…
+    expect(again.status(at("2026-09-23T10:03:05Z"))[0]?.paused).toBeNull();
+    const next = again.tick(at("2026-09-23T10:03:20Z")); // …and the 10:03 slot, the pause's end, fires
+    expect(next.fired).toHaveLength(1);
+    await h.finished(next.fired[0] as JobRecord);
+    return h.close();
+  });
+
+  it("refuses unknown skills, skills without a schedule and an until in the past", async () => {
+    const h = harness(MINUTELY);
+    expect(() => h.scheduler.pause("nope")).toThrow(ScheduleControlError);
+    expect(() => h.scheduler.pause("plain")).toThrow(/has no schedule/);
+    expect(() => h.scheduler.pause("minutely", { until: "2026-09-23T09:00:00Z" })).toThrow(/future/);
+    expect(() => h.scheduler.pause("minutely", { until: "soon" })).toThrow(/ISO-8601/);
+    expect(() => h.scheduler.resume("plain")).toThrow(/has no schedule/);
+    return h.close();
+  });
+
+  it("setPauseOffline writes the state a server then honours", async () => {
+    const h = harness(MINUTELY);
+    expect(setPauseOffline({ registry: h.registry, jobsDir: h.paths.jobsDir }, "minutely", { reason: "offline" }, at("2026-09-23T10:00:00Z")).paused).toMatchObject({ reason: "offline" });
+    expect(listSchedules({ registry: h.registry, jobsDir: h.paths.jobsDir }, at("2026-09-23T10:00:00Z"))[0]).toMatchObject({ paused: { reason: "offline" }, next_due: null });
+    const server = new Scheduler({ registry: h.registry, store: h.store, queue: h.queue, config: h.config, logger: silentLogger, now: () => at("2026-09-23T10:00:30Z") });
+    server.tick(); // registers the schedule
+    expect(server.tick(at("2026-09-23T10:04:05Z")).fired).toEqual([]);
+    expect(setPauseOffline({ registry: h.registry, jobsDir: h.paths.jobsDir }, "minutely", null).paused).toBeNull();
     return h.close();
   });
 });

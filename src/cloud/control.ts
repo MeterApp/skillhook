@@ -18,7 +18,7 @@ import type { JobQueue } from "../queue.js";
 import type { SkillRegistry } from "../registry.js";
 import { enqueueReplay, planReplay, ReplayError } from "../replay.js";
 import type { RunOverrides } from "../run.js";
-import { buildSchedulePayload } from "../scheduler.js";
+import { buildSchedulePayload, ScheduleControlError, type Scheduler } from "../scheduler.js";
 import type { ServerControl } from "../server.js";
 import { parseSkillDocument, SkillError } from "../skills.js";
 import { applyUpdate, type ApplyUpdateResult } from "../update.js";
@@ -45,6 +45,8 @@ export interface ControlDeps {
   logger: Logger;
   /** Restart through launchd / systemd (what `POST /control/restart` uses). */
   serverControl?: ServerControl;
+  /** The running scheduler, for `schedule.pause` / `schedule.resume`. */
+  scheduler?: Pick<Scheduler, "pause" | "resume">;
   /** Injectable for tests. */
   applyUpdate?: (options: { install: boolean }) => Promise<ApplyUpdateResult>;
 }
@@ -164,6 +166,26 @@ export function createControlHandlers(deps: ControlDeps): Partial<Record<Command
       const job = createManualJob({ config: deps.config, store: deps.store }, { skill, payload, headers: cloudHeaders(command, { "x-skillhook-schedule": skill.schedule.cron, "x-skillhook-timezone": skill.schedule.timezone }), trigger: "api", sourceMethod: "CLOUD" });
       deps.queue.enqueue(job);
       return { result: { accepted: true, job_id: job.id, skill: skill.name } };
+    },
+
+    "schedule.pause": (args: Args<{ name: string; reason?: string; until?: string }>, command) => {
+      if (!deps.scheduler) throw new CommandError("unavailable", "this server runs no scheduler");
+      try {
+        return { result: { schedule: deps.scheduler.pause(args.name, { by: requester(command), reason: args.reason, until: args.until }) } };
+      } catch (error) {
+        if (error instanceof ScheduleControlError) throw new CommandError(error.code, error.message);
+        throw error;
+      }
+    },
+
+    "schedule.resume": (args: Args<{ name: string }>, command) => {
+      if (!deps.scheduler) throw new CommandError("unavailable", "this server runs no scheduler");
+      try {
+        return { result: { schedule: deps.scheduler.resume(args.name, { by: requester(command) }) } };
+      } catch (error) {
+        if (error instanceof ScheduleControlError) throw new CommandError(error.code, error.message);
+        throw error;
+      }
     },
 
     "update.install": async () => {
