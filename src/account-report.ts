@@ -207,7 +207,7 @@ async function readAccountUsage(input: CollectAccountsInput, account: ResolvedAc
   const report = await probeAccount(account, { ...options, env });
   const unavailable = (error: string): AccountReport => ({ ok: false, loggedIn: false, error });
   if (!report.ok) return unavailable("Claude Code did not answer the usage probe");
-  if (!report.loggedIn || report.method !== "subscription") return unavailable(`Sign in to Claude Code in ${displayPath(login.dir)} as ${login.email} (${login.organization})`);
+  if (!report.loggedIn || report.method !== "subscription") return unavailable(`Sign in to Claude Code in ${displayPath(login.dir)} as ${login.email} (${login.organization}): skillhook accounts login ${account.name} --usage`);
   if (report.identity?.email?.toLowerCase() !== login.email.toLowerCase() || report.identity?.org !== login.organization) {
     return unavailable(`Usage sign-in must match ${login.email} in ${login.organization}`);
   }

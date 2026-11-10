@@ -70,9 +70,9 @@ export const AccountConfigSchema = z
     share_from: z.string().min(1).optional(),
     /** The `.env` name holding the token or key of a `token` / `api_key` account. Default `SKILLHOOK_ACCOUNT_<NAME>_TOKEN` / `_API_KEY`. */
     secret_env: z.string().regex(/^[A-Z_][A-Z0-9_]*$/).optional(),
-    /** A regular Claude Code sign-in used only to read a token account's quota. */
+    /** A regular Claude Code sign-in used only to read a token account's quota (the setup token cannot). `dir` defaults to the account's own `dir`, so one directory holds both. */
     usage_login: z.object({
-      dir: z.string().min(1),
+      dir: z.string().min(1).optional(),
       email: z.email(),
       organization: z.string().min(1),
     }).strict().optional(),

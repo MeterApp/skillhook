@@ -53,7 +53,8 @@ export function accountsDir(skillhookHome: string): string {
 export function resolveAccount(name: string, spec: AccountConfig, skillhookHome: string, home = homedir()): ResolvedAccount {
   const managedDir = path.join(accountsDir(skillhookHome), name);
   const dir = spec.dir ? path.resolve(expandTilde(spec.dir)) : managedDir;
-  const usageDir = spec.usage_login && path.resolve(expandTilde(spec.usage_login.dir));
+  // The usage sign-in lives in the account's own directory unless it names another one.
+  const usageDir = spec.usage_login && (spec.usage_login.dir ? path.resolve(expandTilde(spec.usage_login.dir)) : dir);
   return {
     name,
     runner: spec.runner,
@@ -336,8 +337,14 @@ export interface PoolOrderOptions {
 }
 
 /**
- * Try accounts with measured headroom first, then unknown usage, then near-full accounts and finally limited ones.
- * Balanced spreads work by in-flight jobs, known usage bands, and when each account was last picked.
+ * The order in which a pool's accounts are tried, in tiers: accounts with usage left first (measured or unknown, an
+ * expired reading counting as unknown), then those with a window at or above `avoidPercent` (about to hit a limit, so
+ * a long run would likely be cut off mid-session; the one with the most left first), then limited ones (used only
+ * when nothing else is left, and then only once their limit may be over). Within the first tier, `ordered` keeps the
+ * order listed; `balanced` takes the account running the fewest jobs, then the least used (in bands of 25 points),
+ * then the one picked least recently. An account whose usage is unknown counts as being in the fullest band of the
+ * first tier: it takes turns with the most used measured accounts and never goes ahead of one known to have more
+ * left, nor behind one known to have less. With no usage known at all that is a round robin.
  */
 export function orderPool(names: string[], states: AccountStates, strategy: Config["account_policy"]["strategy"], options: PoolOrderOptions = {}): string[] {
   const now = options.now ?? Date.now();
@@ -345,18 +352,20 @@ export function orderPool(names: string[], states: AccountStates, strategy: Conf
   const indexed = names.map((name, index) => {
     const state = states[name];
     const used = peakUsage(state, now);
-    const tier = isLimited(state, now) ? 3 : used === undefined ? 1 : used >= avoid ? 2 : 0;
+    const tier = isLimited(state, now) ? 2 : used !== undefined && used >= avoid ? 1 : 0;
     return { name, index, state, used, tier, running: options.inFlight?.[name] ?? 0 };
   });
+  const bandOf = (used: number) => Math.floor(used / USAGE_BAND_PERCENT);
+  const knownBands = indexed.filter((entry) => entry.tier === 0 && entry.used !== undefined).map((entry) => bandOf(entry.used as number));
+  const unknownBand = knownBands.length ? Math.max(...knownBands) : 0;
+  const band = (entry: { used: number | undefined }) => (entry.used === undefined ? unknownBand : bandOf(entry.used));
   indexed.sort((a, b) => {
     if (a.tier !== b.tier) return a.tier - b.tier;
-    if (a.tier === 2 && a.used !== undefined && b.used !== undefined && a.used !== b.used) return a.used - b.used;
-    if (strategy === "balanced" && a.tier < 2) {
+    if (a.tier === 1 && a.used !== b.used) return (a.used ?? 0) - (b.used ?? 0);
+    if (strategy === "balanced" && a.tier === 0) {
       if (a.running !== b.running) return a.running - b.running;
-      if (a.used !== undefined && b.used !== undefined) {
-        const band = Math.floor(a.used / USAGE_BAND_PERCENT) - Math.floor(b.used / USAGE_BAND_PERCENT);
-        if (band) return band;
-      }
+      const bands = band(a) - band(b);
+      if (bands) return bands;
       const picked = lastPicked(a.state) - lastPicked(b.state);
       if (picked) return picked;
     }

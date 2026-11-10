@@ -58,6 +58,11 @@ describe("accounts: configuration and environment", () => {
     expect(resolveAccount("work", { runner: "claude", kind: "login", disabled: false }, home)).toMatchObject({ name: "work", runner: "claude", kind: "login", dir: "/tmp/sh-home/accounts/work", defaultDir: false, managed: true });
     expect(resolveAccount("own", { runner: "claude", kind: "login", dir: "~/.claude", disabled: false }, home)).toMatchObject({ dir: path.join(homedir(), ".claude"), defaultDir: true, managed: false });
     expect(resolveAccount("ci", { runner: "claude", kind: "token", disabled: false }, home)).toMatchObject({ kind: "token", secretEnv: "SKILLHOOK_ACCOUNT_CI_TOKEN" });
+    // A token account's usage sign-in lives in its own directory unless it names another.
+    expect(resolveAccount("ci", { runner: "claude", kind: "token", dir: "/tmp/ci", disabled: false, usage_login: { email: "ci@example.com", organization: "Work" } }, home).usageLogin).toEqual({ dir: "/tmp/ci", defaultDir: false, email: "ci@example.com", organization: "Work" });
+    expect(resolveAccount("ci", { runner: "claude", kind: "token", disabled: false, usage_login: { email: "ci@example.com", organization: "Work" } }, home).usageLogin?.dir).toBe("/tmp/sh-home/accounts/ci");
+    expect(resolveAccount("ci", { runner: "claude", kind: "token", disabled: false, usage_login: { dir: "~/.claude", email: "ci@example.com", organization: "Work" } }, home).usageLogin).toMatchObject({ dir: path.join(homedir(), ".claude"), defaultDir: true });
+    expect(ConfigSchema.safeParse({ accounts: { ci: { runner: "claude", kind: "token", usage_login: { email: "ci@example.com", organization: "Work" } } } }).success).toBe(true);
     expect(defaultAccountSecretEnv("open-ai", "api_key")).toBe("SKILLHOOK_ACCOUNT_OPEN_AI_API_KEY");
     expect(ConfigSchema.safeParse({ accounts: { x: { runner: "codex", kind: "token" } } }).success).toBe(false);
     expect(ConfigSchema.safeParse({ accounts: { "Bad Name": { runner: "claude" } } }).success).toBe(false);
@@ -117,7 +122,8 @@ describe("accounts: configuration and environment", () => {
       d: { last_used_at: "2026-10-23T09:00:00Z" },
     };
     expect(orderPool(["c", "a", "b", "d"], states, "ordered", { now })).toEqual(["a", "b", "d", "c"]);
-    expect(orderPool(["c", "a", "b", "d"], states, "balanced", { now })).toEqual(["b", "a", "d", "c"]);
+    // d's usage is unknown: it counts as a's band and was used longer ago.
+    expect(orderPool(["c", "a", "b", "d"], states, "balanced", { now })).toEqual(["b", "d", "a", "c"]);
     expect(isLimited(states.c, now)).toBe(true);
     expect(isLimited(states.c, Date.parse("2026-10-23T15:00:00Z"))).toBe(false);
   });
@@ -139,6 +145,33 @@ describe("accounts: configuration and environment", () => {
     expect(orderPool(["a", "b", "c"], { a: { last_picked_at: "2026-10-23T08:00:00Z" }, b: { last_picked_at: "2026-10-23T11:00:00Z" }, c: { last_picked_at: "2026-10-23T10:00:00Z" } }, "balanced", { now, inFlight: { a: 1 } })).toEqual(["c", "b", "a"]);
   });
 
+  it("lets accounts with unknown usage take turns with the measured ones instead of waiting behind them", () => {
+    const now = Date.parse("2026-11-10T12:30:00Z");
+    const usage = (used_percent: number, resets_at: string) => ({ usage: { fetched_at: "2026-11-10T12:00:00Z", windows: [{ id: "seven_day", label: "weekly", used_percent, resets_at }] } });
+    // One account's usage can be read; the others' readings expired or were never taken.
+    const states: Record<string, object> = {
+      measured: { ...usage(62, "2026-11-14T00:00:00Z"), last_picked_at: "2026-11-10T12:20:00Z" },
+      expired: { ...usage(90, "2026-11-06T13:00:00Z"), last_picked_at: "2026-11-10T12:00:00Z" },
+      never: { last_picked_at: "2026-11-10T12:10:00Z" },
+      nearFull: { ...usage(92, "2026-11-13T18:00:00Z"), last_picked_at: "2026-11-10T01:00:00Z" },
+    };
+    const names = ["nearFull", "expired", "measured", "never"];
+    expect(orderPool(names, states, "balanced", { now, avoidPercent: 90 })).toEqual(["expired", "never", "measured", "nearFull"]);
+    // A round robin over the three with usage left; the near-full one waits.
+    const picks: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      const first = orderPool(names, states, "balanced", { now, avoidPercent: 90 })[0] as string;
+      picks.push(first);
+      states[first] = { ...states[first], last_picked_at: new Date(now + i * 1000).toISOString() };
+    }
+    expect(picks).toEqual(["expired", "never", "measured", "expired", "never", "measured"]);
+    // An unknown account never goes ahead of one measured to have more left, nor behind one measured to have less.
+    const mixed = { low: { ...usage(10, "2026-11-14T00:00:00Z"), last_picked_at: "2026-11-10T12:20:00Z" }, high: { ...usage(60, "2026-11-14T00:00:00Z"), last_picked_at: "2026-11-10T12:21:00Z" }, unknown: { last_picked_at: "2026-11-10T08:00:00Z" } };
+    expect(orderPool(["unknown", "high", "low"], mixed, "balanced", { now })).toEqual(["low", "unknown", "high"]);
+    // Fewer running jobs still come first.
+    expect(orderPool(["unknown", "high", "low"], mixed, "balanced", { now, inFlight: { low: 1 } })).toEqual(["unknown", "high", "low"]);
+  });
+
   it("puts accounts about to hit a limit behind those with usage left, and forgets windows that have reset", () => {
     const now = Date.parse("2026-10-23T12:00:00Z");
     const usage = (used_percent: number, resets_at?: string, id = "five_hour") => ({ usage: { fetched_at: "2026-10-23T11:00:00Z", windows: [{ id, label: id, used_percent, ...(resets_at ? { resets_at } : {}) }] } });
@@ -150,9 +183,10 @@ describe("accounts: configuration and environment", () => {
       fresh: { last_picked_at: "2026-10-23T11:50:00Z" },
       limited: { limited_until: "2026-10-23T14:00:00Z" },
     };
-    // Measured headroom first, then unknown (including expired readings), near-full, and limited.
+    // Usage left (measured or unknown, an expired reading counting as unknown), then near-full, then limited.
+    // Unknown counts as half's band, so the three take turns: half was picked longest ago.
     expect(orderPool(Object.keys(states), states, "balanced", { now, avoidPercent: 90 })).toEqual(["half", "reset", "fresh", "fullWeek", "full5h", "limited"]);
-    expect(orderPool(Object.keys(states), states, "ordered", { now, avoidPercent: 90 })).toEqual(["half", "reset", "fresh", "fullWeek", "full5h", "limited"]);
+    expect(orderPool(Object.keys(states), states, "ordered", { now, avoidPercent: 90 })).toEqual(["reset", "half", "fresh", "fullWeek", "full5h", "limited"]);
     // Without a threshold only an actual limit moves an account back.
     expect(orderPool(["full5h", "limited", "half"], states, "ordered", { now })).toEqual(["full5h", "half", "limited"]);
     expect(peakUsage(states.reset, now)).toBeUndefined();
