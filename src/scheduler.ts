@@ -13,7 +13,7 @@ import type { JobQueue } from "./queue.js";
 import type { SkillRegistry } from "./registry.js";
 import { nextRun, previousRun, slotKey } from "./schedule.js";
 import type { NormalizedSchedule, Skill } from "./skills.js";
-import { errorMessage, isPlainObject, readJsonFileOr, writeJsonFile } from "./util.js";
+import { errorMessage, isPlainObject, isValidSkillName, readJsonFileOr, writeJsonFile } from "./util.js";
 
 /** How often the scheduler compares the wall clock with the next due slot. */
 export const SCHEDULER_TICK_MS = 15_000;
@@ -75,9 +75,10 @@ export function scheduleStateFile(jobsDir: string): string {
 
 export function readScheduleStates(jobsDir: string): ScheduleStates {
   const raw = readJsonFileOr<unknown>(scheduleStateFile(jobsDir), {});
-  if (!isPlainObject(raw)) return {};
-  const states: ScheduleStates = {};
-  for (const [name, value] of Object.entries(raw)) if (isPlainObject(value)) states[name] = value as ScheduleState;
+  // Keyed by skill name: a null prototype, and only valid names, so no key can reach Object.prototype.
+  const states: ScheduleStates = Object.create(null) as ScheduleStates;
+  if (!isPlainObject(raw)) return states;
+  for (const [name, value] of Object.entries(raw)) if (isValidSkillName(name) && isPlainObject(value)) states[name] = value as ScheduleState;
   return states;
 }
 
@@ -155,7 +156,15 @@ export function buildPause(registry: SkillRegistry, name: string, options: Pause
   return { at: now.toISOString(), ...(options.by ? { by: options.by.slice(0, 200) } : {}), ...(options.reason ? { reason: options.reason.slice(0, 500) } : {}), ...(until ? { until } : {}) };
 }
 
+/** The state of one schedule, created when missing; never for a key that is not a skill name (`__proto__`, say). */
+function stateFor(states: ScheduleStates, name: string): ScheduleState {
+  if (!isValidSkillName(name) || name === "__proto__" || name === "constructor" || name === "prototype") throw new ScheduleControlError("not_found", `no skill named "${name}"`);
+  if (!Object.hasOwn(states, name)) Object.defineProperty(states, name, { value: {}, enumerable: true, writable: true, configurable: true });
+  return states[name] as ScheduleState;
+}
+
 function requireScheduled(registry: SkillRegistry, name: string): Skill {
+  if (!isValidSkillName(name)) throw new ScheduleControlError("not_found", `no skill named "${name}"`);
   const skill = registry.get(name);
   if (!skill) throw new ScheduleControlError("not_found", `no skill named "${name}"`);
   if (!skill.schedule) throw new ScheduleControlError("conflict", `skill "${name}" has no schedule`);
@@ -169,7 +178,7 @@ function requireScheduled(registry: SkillRegistry, name: string): Skill {
 export function setPauseOffline(input: { registry: SkillRegistry; jobsDir: string }, name: string, pause: PauseOptions | null, now = new Date()): ScheduleStatus {
   const skill = requireScheduled(input.registry, name);
   const states = readScheduleStates(input.jobsDir);
-  const state = (states[name] ??= {});
+  const state = stateFor(states, name);
   if (pause) state.paused = buildPause(input.registry, name, pause, now);
   else delete state.paused;
   writeJsonFile(scheduleStateFile(input.jobsDir), states);
@@ -289,7 +298,7 @@ export class Scheduler {
   /** Stops the schedule from firing (webhooks still run) until `resume`, or until `options.until`. Slots that pass while paused are not caught up. */
   pause(name: string, options: PauseOptions = {}, now = this.now()): ScheduleStatus {
     const pause = buildPause(this.deps.registry, name, options, now);
-    const state = (this.states[name] ??= {});
+    const state = stateFor(this.states, name);
     state.paused = pause;
     this.save();
     this.deps.logger.warn("schedule paused", { skill: name, by: pause.by, reason: pause.reason, until: pause.until });
@@ -298,7 +307,7 @@ export class Scheduler {
 
   resume(name: string, options: { by?: string } = {}, now = this.now()): ScheduleStatus {
     const skill = requireScheduled(this.deps.registry, name);
-    const state = (this.states[name] ??= {});
+    const state = stateFor(this.states, name);
     const was = state.paused;
     delete state.paused;
     // The slots that passed while paused are gone: the schedule picks up at its next slot.

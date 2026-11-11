@@ -96,6 +96,12 @@ describe("Scheduler pause", () => {
     expect(() => h.scheduler.pause("minutely", { until: "2026-09-23T09:00:00Z" })).toThrow(/future/);
     expect(() => h.scheduler.pause("minutely", { until: "soon" })).toThrow(/ISO-8601/);
     expect(() => h.scheduler.resume("plain")).toThrow(/has no schedule/);
+    // A name is a skill name or nothing: no key reaches Object.prototype.
+    for (const name of ["__proto__", "constructor", "prototype"]) {
+      expect(() => h.scheduler.pause(name)).toThrow(ScheduleControlError);
+      expect(() => setPauseOffline({ registry: h.registry, jobsDir: h.paths.jobsDir }, name, {})).toThrow(ScheduleControlError);
+    }
+    expect(({} as Record<string, unknown>).paused).toBeUndefined();
     return h.close();
   });
 
