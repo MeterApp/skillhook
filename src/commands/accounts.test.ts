@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { AccountStateStore } from "../accounts.js";
 import { loadConfig } from "../config.js";
 import { readEnvFile } from "../env.js";
-import { FAKE_CLAUDE, FAKE_CODEX, tempHome, writeConfigFile, writeSkill } from "../test-support/helpers.js";
+import { FAKE_CLAUDE, FAKE_CODEX, tempHome, writeConfigFile, writeEnv, writeSkill } from "../test-support/helpers.js";
 import { findSetupToken } from "./accounts.js";
 import { main } from "./main.js";
 import type { CliIO } from "./shared.js";
@@ -32,6 +32,33 @@ function setup() {
 }
 
 describe("skillhook accounts", () => {
+  it("signs a token account's usage sign-in in to the account's own directory with login --usage", async () => {
+    const { paths, env, run } = setup();
+    const dir = path.join(paths.home, "claude-ci");
+    writeConfigFile(paths, { runners: { claude: { command: FAKE_CLAUDE }, codex: { command: FAKE_CODEX } }, accounts: { ci: { runner: "claude", kind: "token", dir }, pro: { runner: "codex" } } });
+    // Without usage_login it says how to set one; a login account reads its usage with its own login.
+    const missing = await run("accounts", "login", "ci", "--usage");
+    expect(missing.code).not.toBe(0);
+    expect(missing.err()).toContain("usage_login");
+    expect((await run("accounts", "login", "pro", "--usage")).err()).toContain("--usage is for Claude token accounts");
+
+    writeConfigFile(paths, { runners: { claude: { command: FAKE_CLAUDE }, codex: { command: FAKE_CODEX } }, accounts: { ci: { runner: "claude", kind: "token", dir, usage_login: { email: "ci@example.com", organization: "Work" } } } });
+    writeEnv(paths, { SKILLHOOK_ACCOUNT_CI_TOKEN: "sk-ant-oat01-test" });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "organization"), "Work\n");
+    writeFileSync(path.join(dir, "logged-out"), "");
+    const before = (await run("accounts", "usage", "ci", "--json")).json() as { accounts: { usage?: { error?: string } }[] };
+    expect(before.accounts[0]?.usage?.error).toContain("skillhook accounts login ci --usage");
+    Object.assign(env, { FAKE_CLAUDE_LOGIN_EMAIL: "ci@example.com" });
+    const login = await run("accounts", "login", "ci", "--usage");
+    expect(login.err()).toContain(`CLAUDE_CONFIG_DIR=${dir}`);
+    expect(login.err()).toContain("claude auth login --email ci@example.com");
+    expect(login.out()).toContain("✓ ci: usage read");
+    expect(login.code).toBe(0);
+    expect(readFileSync(path.join(dir, "account"), "utf8").trim()).toBe("ci@example.com");
+    expect(existsSync(path.join(dir, "logged-out"))).toBe(false);
+  });
+
   it("adds, logs in, lists with usage, sets defaults, disables, resets and removes accounts", async () => {
     const { paths, run } = setup();
     const empty = await run("accounts");

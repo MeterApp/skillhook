@@ -85,7 +85,7 @@ if (args.includes("--input-format") && args[args.indexOf("--input-format") + 1] 
     if (message.type !== "control_request") continue;
     const subtype = message.request?.subtype;
     const expired = stateFile("expired") !== undefined || tokenRefused();
-    if (subtype === "initialize") reply(message.request_id, { commands: [], models: [], account: loggedIn() && !tokenRefused() ? { email: accountEmail() ?? "fake@example.com", subscriptionType: "max", tokenSource: process.env.CLAUDE_CODE_OAUTH_TOKEN ? "CLAUDE_CODE_OAUTH_TOKEN" : "claude.ai", apiProvider: "firstParty" } : { tokenSource: "none", apiProvider: "firstParty" }, claude_code_version: "2.1.270" });
+    if (subtype === "initialize") reply(message.request_id, { commands: [], models: [], account: loggedIn() && !tokenRefused() ? { email: accountEmail() ?? "fake@example.com", organization: stateFile("organization")?.trim(), subscriptionType: "max", tokenSource: process.env.CLAUDE_CODE_OAUTH_TOKEN ? "CLAUDE_CODE_OAUTH_TOKEN" : "claude.ai", apiProvider: "firstParty" } : { tokenSource: "none", apiProvider: "firstParty" }, claude_code_version: "2.1.270" });
     else if (subtype === "get_usage") {
       const usage = stateFile("usage.json");
       const reset = (hours) => new Date(Date.now() + hours * 3_600_000).toISOString();

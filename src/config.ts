@@ -70,13 +70,20 @@ export const AccountConfigSchema = z
     share_from: z.string().min(1).optional(),
     /** The `.env` name holding the token or key of a `token` / `api_key` account. Default `SKILLHOOK_ACCOUNT_<NAME>_TOKEN` / `_API_KEY`. */
     secret_env: z.string().regex(/^[A-Z_][A-Z0-9_]*$/).optional(),
+    /** A regular Claude Code sign-in used only to read a token account's quota (the setup token cannot). `dir` defaults to the account's own `dir`, so one directory holds both. */
+    usage_login: z.object({
+      dir: z.string().min(1).optional(),
+      email: z.email(),
+      organization: z.string().min(1),
+    }).strict().optional(),
     /** For people: whose account this is, what pays for it. */
     label: z.string().max(200).optional(),
     /** Never picked for a run while true (a pool skips it, a skill naming only it fails fast). */
     disabled: z.boolean().default(false),
   })
   .strict()
-  .refine((a) => !(a.runner === "codex" && a.kind === "token"), { message: "a token account is for Claude Code (`claude setup-token`); a Codex account is `login` or `api_key`" });
+  .refine((a) => !(a.runner === "codex" && a.kind === "token"), { message: "a token account is for Claude Code (`claude setup-token`); a Codex account is `login` or `api_key`" })
+  .refine((a) => !a.usage_login || (a.runner === "claude" && a.kind === "token"), { path: ["usage_login"], message: "usage_login is only for Claude token accounts" });
 export type AccountConfig = z.infer<typeof AccountConfigSchema>;
 
 /** One account, or a pool of accounts of the same runner tried in turn. */

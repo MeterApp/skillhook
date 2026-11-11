@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { mcpSummary } from "../account-mcp.js";
@@ -26,6 +26,7 @@ Several Claude Code and Codex logins on one machine, each a name skills run as (
   accounts add <name> --runner claude|codex [--config-dir D] [--share [DIR]|--no-share] [--token|--api-key] [--secret-env NAME] [--label L] [--default] [--login]
                                                     a new account: its own directory under ~/.skillhook/accounts/<name> (or --config-dir; ~/.claude or ~/.codex is this machine's own login)
   accounts login <name> [--device-auth] [--console] [--email E] [--sso] [--token]   log the account in, in this terminal (claude auth login / codex login with its directory; --token: claude setup-token, kept in .env)
+  accounts login <name> --usage [--sso]             a Claude token account: sign in its usage_login (claude auth login, in the account's own directory unless usage_login.dir names another), which only reads its usage
   accounts logout <name>                            log it out (claude auth logout / codex logout)
   accounts default <name>... [--runner R] | --clear --runner R   the account (several: a pool) a runner uses when a skill names none
   accounts enable|disable <name>                    take an account out of every pool for a while, or put it back
@@ -183,7 +184,33 @@ function personEnv(ctx: Ctx, account: ResolvedAccount): Record<string, string> {
   return withAccountEnv(env, account, ctx.secrets());
 }
 
+/**
+ * Signs in a Claude token account's `usage_login`: a regular `claude auth login` in its directory (by default the
+ * account's own), with none of the job token or inherited credentials, then reads the usage it gives.
+ */
+async function loginUsage(ctx: Ctx, account: ResolvedAccount): Promise<number> {
+  const login = account.usageLogin;
+  if (account.runner !== "claude" || account.kind !== "token") throw new CommandError(`--usage is for Claude token accounts; "${account.name}" is a ${account.runner} ${account.kind} account, whose own login reads its usage`);
+  if (!login) throw new CommandError(`"${account.name}" has no usage_login: skillhook config set accounts.${account.name}.usage_login '{"email":"<the token's email>","organization":"<its organization>"}'`);
+  const resolved = resolveCommand(ctx.config().runners.claude.command, ctx.io.env.PATH ?? process.env.PATH);
+  if (!resolved.path) throw new CommandError(`${resolved.command} is not installed (or not on PATH)`);
+  mkdirSync(login.dir, { recursive: true, mode: 0o700 });
+  const inherited: Record<string, string> = {};
+  for (const [key, value] of Object.entries(ctx.io.env)) if (typeof value === "string" && !key.startsWith("ANTHROPIC_") && !key.startsWith("CLAUDE_")) inherited[key] = value;
+  const env = withAccountEnv(inherited, { ...account, kind: "login", dir: login.dir, defaultDir: login.defaultDir, secretEnv: undefined }, {});
+  const args = ["auth", "login", "--email", login.email, ...(bool(ctx.flags, "sso") ? ["--sso"] : [])];
+  ctx.warn(`Signing in the usage sign-in of "${account.name}" as ${login.email} (${login.organization})${login.defaultDir ? "" : ` (CLAUDE_CONFIG_DIR=${displayPath(login.dir)})`}: claude ${args.join(" ")}`);
+  const result = await runInteractive(resolved.path, [...resolved.lead, ...args], env, false, (text) => ctx.io.stderr(text));
+  if (result.code !== 0) throw new CommandError(`claude ${args.join(" ")} exited with code ${result.code}`, result.code);
+  const view = (await report(ctx, { usage: true, only: account.name })).accounts[0];
+  const error = view?.usage?.error;
+  const ok = Boolean(view?.usage?.windows.length) && !error;
+  ctx.print(ok ? `✓ ${account.name}: usage read (${usageText(view?.usage)})` : `✗ ${account.name}: ${error ?? "no usage windows"}`, { ok, account: view });
+  return ok ? 0 : 1;
+}
+
 async function loginAccount(ctx: Ctx, account: ResolvedAccount): Promise<number> {
+  if (bool(ctx.flags, "usage")) return loginUsage(ctx, account);
   const config = ctx.config();
   const resolved = resolveCommand(config.runners[account.runner].command, ctx.io.env.PATH ?? process.env.PATH);
   if (!resolved.path) throw new CommandError(`${resolved.command} is not installed (or not on PATH)`);
@@ -302,7 +329,7 @@ export async function accountsCommand(ctx: Ctx): Promise<number> {
     case "limits": {
       if (name) accountOrThrow(ctx, name);
       const result = await report(ctx, { usage: true, refresh: true, only: name });
-      const rows = result.accounts.map((v) => [v.name, v.runner, stateCell(v), v.identity?.plan ?? "", usageText(v.usage) || (v.kind === "api_key" ? "(API key: pay per use)" : v.ready ? v.usage?.error ?? "" : STATUS_TEXT[v.status]), nextResetText(v.usage)]);
+      const rows = result.accounts.map((v) => [v.name, v.runner, stateCell(v), v.identity?.plan ?? "", v.usage?.error ?? (usageText(v.usage) || (v.kind === "api_key" ? "(API key: pay per use)" : v.ready ? "" : STATUS_TEXT[v.status])), nextResetText(v.usage)]);
       ctx.print(rows.length ? table(rows, ["account", "runner", "state", "plan", "usage", "next reset"]) : "No accounts (skillhook accounts add …)", result);
       return 0;
     }

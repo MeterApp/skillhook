@@ -3,7 +3,7 @@
 // MCP servers, connectors and plugins its runs get (src/account-mcp.ts). The same
 // `collectAccounts` answers `skillhook accounts`, `GET /accounts`, the MCP tool `list_accounts` and the health report.
 import { probeAccountMcp, type AccountMcp } from "./account-mcp.js";
-import { probeAccount } from "./account-probe.js";
+import { probeAccount, type AccountReport } from "./account-probe.js";
 import { AccountStateStore, defaultLoginDir, isLimited, listAccounts, peakUsage, poolFor, refNames, windowUsed, type AccountIdentity, type AccountKind, type AccountRunner, type AccountState, type AccountUsage, type ResolvedAccount } from "./accounts.js";
 import type { Config, RunnerName } from "./config.js";
 import type { Secrets } from "./env.js";
@@ -137,7 +137,7 @@ export function accountAttention(account: ResolvedAccount, readiness: RunnerRead
   if (!account.disabled && isLimited(state, now)) out.push({ level: "warn", code: "limited", message: `${state.limited_reason ?? "usage limit reached"}; skipped until ${state.limited_until}`, fix: `wait, or skillhook accounts reset ${account.name} once the plan allows runs again` });
   const peak = peakUsage(state, now);
   if (!account.disabled && !isLimited(state, now) && peak !== undefined && peak >= config.account_policy.usage_warn_percent) {
-    const full = (state.usage?.windows ?? []).filter((w) => windowUsed(w, state.usage?.fetched_at, now) >= config.account_policy.usage_warn_percent).map((w) => `${w.label} ${Math.round(w.used_percent)}%${w.resets_at ? ` (resets ${w.resets_at})` : ""}`);
+    const full = (state.usage?.windows ?? []).filter((w) => (windowUsed(w, state.usage?.fetched_at, now) ?? -1) >= config.account_policy.usage_warn_percent).map((w) => `${w.label} ${Math.round(w.used_percent)}%${w.resets_at ? ` (resets ${w.resets_at})` : ""}`);
     out.push({ level: "warn", code: "usage_high", message: `usage high: ${full.join(", ")}` });
   }
   const failure = state.last_failure;
@@ -196,6 +196,25 @@ function statusOf(account: ResolvedAccount, readiness: RunnerReadiness, state: A
 }
 
 /** Every account (or `only`), probed with its own environment, with what runs taught and what needs a person. */
+async function readAccountUsage(input: CollectAccountsInput, account: ResolvedAccount): Promise<AccountReport> {
+  const options = { command: input.config.runners[account.runner].command, timeoutMs: input.timeoutMs };
+  const login = account.usageLogin;
+  if (!login) return probeAccount(account, { ...options, env: withAccountEnv(input.baseEnv, account, input.secrets) });
+
+  // Use the stored login, without inherited provider overrides or the token used by jobs.
+  const baseEnv = Object.fromEntries(Object.entries(input.baseEnv).filter(([key]) => !key.startsWith("ANTHROPIC_") && !key.startsWith("CLAUDE_")));
+  const env = withAccountEnv(baseEnv, { ...account, dir: login.dir, defaultDir: login.defaultDir, kind: "login", secretEnv: undefined }, {});
+  const report = await probeAccount(account, { ...options, env });
+  const unavailable = (error: string): AccountReport => ({ ok: false, loggedIn: false, error });
+  if (!report.ok) return unavailable("Claude Code did not answer the usage probe");
+  if (!report.loggedIn || report.method !== "subscription") return unavailable(`Sign in to Claude Code in ${displayPath(login.dir)} as ${login.email} (${login.organization}): skillhook accounts login ${account.name} --usage`);
+  if (report.identity?.email?.toLowerCase() !== login.email.toLowerCase() || report.identity?.org !== login.organization) {
+    return unavailable(`Usage sign-in must match ${login.email} in ${login.organization}`);
+  }
+  if (!report.usage?.windows.length) return unavailable("Claude Code returned no usage windows for the usage sign-in");
+  return report;
+}
+
 export async function collectAccounts(input: CollectAccountsInput): Promise<AccountsReport> {
   const { config } = input;
   const accounts = listAccounts(config, input.home).filter((a) => !input.only || a.name === input.only);
@@ -228,7 +247,7 @@ export async function collectAccounts(input: CollectAccountsInput): Promise<Acco
       }
       let state = input.states.get(account.name);
       if (input.usage && readiness.ready && account.kind !== "api_key") {
-        const report = await probeAccount(account, { command: config.runners[account.runner].command, env: withAccountEnv(input.baseEnv, account, input.secrets), timeoutMs: input.timeoutMs });
+        const report = await readAccountUsage(input, account);
         if (report.ok) {
           const patch: Partial<Record<keyof AccountState, unknown>> = { identity: { ...state.identity, ...report.identity } };
           if (report.usage) patch.usage = report.usage;
@@ -243,9 +262,9 @@ export async function collectAccounts(input: CollectAccountsInput): Promise<Acco
           const wasLimited = isLimited(state, now);
           state = input.states.update(account.name, patch);
           input.events?.emit("account.updated", { account: account.name, reason: isLimited(state, now) && !wasLimited ? "limited" : wasLimited && !isLimited(state, now) ? "recovered" : "usage", state });
-          if (report.expired && readiness.ready) readiness = { ...readiness, ready: false, authenticated: false, expired: true, detail: "login expired" };
+          if (!account.usageLogin && report.expired && readiness.ready) readiness = { ...readiness, ready: false, authenticated: false, expired: true, detail: "login expired" };
         } else {
-          state = { ...state, usage: { fetched_at: nowIso(), windows: state.usage?.windows ?? [], error: report.error ?? "no answer" } };
+          state = { ...state, usage: { ...state.usage, fetched_at: state.usage?.fetched_at ?? nowIso(), windows: state.usage?.windows ?? [], error: report.error ?? "no answer" } };
         }
       }
       return { account, readiness, state };
@@ -289,6 +308,7 @@ export async function collectAccounts(input: CollectAccountsInput): Promise<Acco
     const dflt = defaultFor(account.name);
     const servers = mcp.get(account.name);
     const attention = accountAttention(account, readiness, state, config, { skills, defaultFor: dflt, duplicateOf: duplicates.get(account.name), now });
+    if (account.usageLogin && state.usage?.error) attention.push({ level: "warn", code: "probe_failed", message: state.usage.error });
     if (servers && readiness.ready) attention.push(...mcpAttention(account, servers, account.dir === ownDir(account.runner) ? undefined : baselines.get(account.runner)));
     const identity = state.identity ?? (readiness.identity ? { ...readiness.identity, checked_at: readiness.checked_at } : undefined);
     const status = statusOf(account, readiness, state);
