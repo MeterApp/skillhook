@@ -701,6 +701,20 @@ export class JobQueue extends EventEmitter {
     let lineBuffer = "";
     const outFile = createWriteStream(paths.stdout, { mode: 0o600, flags: index ? "a" : "w" });
     const errFile = createWriteStream(paths.stderr, { mode: 0o600, flags: index ? "a" : "w" });
+    // These handlers run outside any try: a disk error (ENOSPC) thrown or emitted here used to reach the daemon's
+    // uncaught-exception handler and restart the server, interrupting every running job. Log it and keep the job going.
+    for (const [name, file] of [["stdout", outFile], ["stderr", errFile]] as const) {
+      file.on("error", (error) => logger.warn("could not write job output", { job: job.id, file: name, error: errorMessage(error) }));
+    }
+    const recordInHandler = (patch: Partial<JobRecord>, fields: (keyof JobRecord)[]) => {
+      try {
+        running.job = store.update(job.id, patch);
+      } catch (error) {
+        running.job = { ...running.job, ...patch };
+        logger.warn("could not record job state", { job: job.id, fields, error: errorMessage(error) });
+      }
+      this.events.emit("job.updated", { job: running.job, fields });
+    };
     if (job.project_commit) errFile.write(`Skillhook project commit: ${job.project_commit}\n`);
     if (index) {
       outFile.write(`\n--- attempt ${index + 1} (${runner.name}) ---\n`);
@@ -715,8 +729,7 @@ export class JobQueue extends EventEmitter {
         /* ignore parser errors */
       }
       if (state.sessionId && running.job.session_id !== state.sessionId) {
-        running.job = store.update(job.id, { session_id: state.sessionId, resume_command: runner.resumeCommand?.(state.sessionId, invocation.cwd, invocation.env) });
-        this.events.emit("job.updated", { job: running.job, fields: ["session_id", "resume_command"] });
+        recordInHandler({ session_id: state.sessionId, resume_command: runner.resumeCommand?.(state.sessionId, invocation.cwd, invocation.env) }, ["session_id", "resume_command"]);
       }
     };
 
@@ -781,8 +794,7 @@ export class JobQueue extends EventEmitter {
     const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }>((resolve) => {
       child.once("error", (error) => resolve({ code: null, signal: null, error }));
       child.once("spawn", () => {
-        running.job = store.update(job.id, { pid: child.pid });
-        this.events.emit("job.updated", { job: running.job, fields: ["pid"] });
+        recordInHandler({ pid: child.pid }, ["pid"]);
         if (child.stdin) {
           child.stdin.on("error", () => {
             /* the process may exit before reading stdin */
@@ -797,7 +809,7 @@ export class JobQueue extends EventEmitter {
     running.clock = undefined;
     running.child = undefined;
     if (lineBuffer) feedLine(lineBuffer);
-    await Promise.all([new Promise((r) => outFile.end(r)), new Promise((r) => errFile.end(r))]);
+    await Promise.all([outFile, errFile].map((file) => new Promise((r) => (file.destroyed ? r(undefined) : file.end(r)))));
     this.readProgress(running); // the last progress lines, before the record is final
 
     if (exit.error) return fail(`failed to start ${invocation.command}: ${exit.error.message}`, { kind: "not_found", retryable: false, message: exit.error.message });

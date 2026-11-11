@@ -111,3 +111,34 @@ describe("JobQueue when the readiness probe hangs", () => {
     await queue.shutdown();
   });
 });
+
+describe("JobQueue when the disk is full", () => {
+  it("keeps the job and the server alive when recording the pid from the spawn handler fails with ENOSPC", async () => {
+    const paths = tempHome("skillhook-queue-enospc-");
+    writeConfigFile(paths, { concurrency: 1 });
+    const config = loadConfig(paths);
+    const store = new JobStore(paths.jobsDir, { maxJobs: 100, dedupeWindowSeconds: 60 });
+    const registry = new SkillRegistry(paths.skillsDir);
+    const secrets = () => loadSecrets(paths, {});
+    const warnings: { msg: string; fields?: Record<string, unknown> }[] = [];
+    const logger = { ...silentLogger, warn: (msg: string, fields?: Record<string, unknown>) => void warnings.push({ msg, fields }) };
+    const update = store.update.bind(store);
+    let failed = 0;
+    store.update = (id, patch) => {
+      if ("pid" in patch && patch.pid !== undefined) {
+        failed += 1;
+        throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+      }
+      return update(id, patch);
+    };
+    const queue = new JobQueue({ store, config, registry, secrets, fileSecrets: secrets, logger });
+    const { job } = createAdhocJob({ config, store }, { skillMd: SHELL_SKILL, payload: { a: 1 } });
+    queue.enqueue(job);
+    const done = await queue.waitFor(job.id, 15_000);
+    expect(failed).toBe(1);
+    expect(done).toMatchObject({ status: "succeeded", outcome: "completed" });
+    expect(done?.result).toContain("adhoc-ran");
+    expect(warnings).toContainEqual(expect.objectContaining({ msg: "could not record job state", fields: expect.objectContaining({ job: job.id, fields: ["pid"] }) }));
+    await queue.shutdown();
+  });
+});
