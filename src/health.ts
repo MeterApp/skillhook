@@ -21,7 +21,8 @@ import { checkAccountReadiness, CLAUDE_TOKEN_REFUSED, claudeLoginWorks, claudeMe
 import { baseRunEnv, CLAUDE_API_KEY_VARS, claudeConfigDir, withClaudeAuth, withClaudeConfigDir } from "./runners/env.js";
 import { commandParts } from "./runners/types.js";
 import { nextRun } from "./schedule.js";
-import { serviceStatus } from "./service.js";
+import { userInfo } from "node:os";
+import { lingerStatus, runModeOf, serviceStatus } from "./service.js";
 import { currentExposures, findTailscale, run, tailscaleStatus, which } from "./tailscale.js";
 import { probeClaude, probeCodex, type ClaudeProbe, type CodexProbe } from "./tools.js";
 import { autoUpdateEnabled, checkForUpdate, detectInstall, lastInstall, registryUrl, releaseNotesUrl, updateChecksDisabled, updateStatusFromCache } from "./update.js";
@@ -76,6 +77,8 @@ export interface HealthOptions {
   exposure?: boolean;
   /** Look at the launchd / systemd service. Default true. */
   service?: boolean;
+  /** Read systemd lingering (tests). Default: `loginctl show-user`. */
+  linger?: () => Promise<"yes" | "no" | "unknown">;
   /** Facts of the server this runs inside, instead of probing it over HTTP. */
   live?: () => { started_at: string; queue: { running: number; queued: number } };
   /** For the slow probes (`claude mcp list` connects to every server, `codex doctor`). Default 20 s. */
@@ -499,6 +502,7 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
   let server: HealthReport["server"];
   let linkStatus: LinkStatusView | null | undefined;
   let serverRunning = false;
+  let serverStatePid: number | undefined;
   if (config && options.live) {
     const live = options.live();
     const baseUrl = localBaseUrl({ host: config.host, port: config.port });
@@ -511,6 +515,7 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
     const baseUrl = running?.baseUrl ?? localBaseUrl({ host: config.host, port: config.port });
     server = { base_url: baseUrl, running: Boolean(running), version: running?.health.version };
     serverRunning = Boolean(running);
+    serverStatePid = running?.state.pid;
     linkStatus = running?.health.cloud;
     check("skillhook", "server", running ? "ok" : "warn", running ? `running at ${baseUrl} (v${running.health.version}${running.health.queue ? `, ${running.health.queue.running} running / ${running.health.queue.queued} queued` : ""})` : `not running at ${baseUrl}`, running ? undefined : "run: skillhook serve   (or: skillhook service install)", { base_url: baseUrl, running: Boolean(running), version: running?.health.version ?? null });
   }
@@ -532,7 +537,16 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
   if (options.service !== false) {
     const service = await serviceStatus(paths);
     if (service.platform === "unsupported") check("skillhook", "service", "skip", "no launchd/systemd on this platform");
-    else check("skillhook", "service", service.running ? "ok" : service.installed ? "warn" : "skip", service.running ? `${service.platform} running (pid ${service.pid})` : service.installed ? `${service.platform} installed but not running` : "not installed", service.running ? undefined : "run: skillhook service install", { platform: service.platform, installed: service.installed, running: service.running, pid: service.pid ?? null });
+    else {
+      // run_mode: is the server that answers (this process under `serve`, else the one in server.json) the service's process?
+      const serverPid = options.live ? process.pid : serverRunning ? serverStatePid : undefined;
+      const runMode = runModeOf(service, serverPid);
+      const linger = service.platform === "systemd" && service.installed ? await (options.linger ?? lingerStatus)() : undefined;
+      const data = { platform: service.platform, installed: service.installed, running: service.running, pid: service.pid ?? null, run_mode: runMode, ...(linger ? { linger } : {}) };
+      const modeNote = runMode === "foreground" ? "; this server runs outside it (started by hand: it stops with its terminal)" : "";
+      if (service.running && linger === "no") check("skillhook", "service", "warn", `${service.platform} running (pid ${service.pid}), but lingering is off: it stops when you log out${modeNote}`, `run: loginctl enable-linger ${userInfo().username}`, data);
+      else check("skillhook", "service", service.running ? "ok" : service.installed ? "warn" : "skip", service.running ? `${service.platform} running (pid ${service.pid})${modeNote}` : service.installed ? `${service.platform} installed but not running` : runMode === "foreground" ? "not installed; this server was started by hand and stops with its terminal" : "not installed", service.running ? undefined : "run: skillhook service install", data);
+    }
   }
 
   const summary = summarize(checks);
