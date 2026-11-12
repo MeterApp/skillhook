@@ -311,7 +311,7 @@ skillhook config set defaults.model sonnet
 | `tailscale` | the configured port is exposed via Funnel or Serve (URL shown) | CLI missing; not running; port not exposed | |
 | `public url` | `<public_url>/health` answers | did not answer (certificate still provisioning, or the server is down) | |
 | `server` | running (version, queue) | not running | |
-| `service` | running (pid) | installed but not running | (`skip` when not installed or unsupported platform) |
+| `service` | running (pid) | installed but not running; systemd running with lingering off (`loginctl enable-linger $USER`) | (`skip` when not installed or unsupported platform). Details carry `run_mode` (`service`: the server is the service's own process; `foreground`: started by hand, stops with its terminal; `unknown`: no running server) and, on systemd, `linger` (`yes`, `no`, `unknown`, read-only from `loginctl show-user`). Both reach Skillhook Cloud in the health report. |
 | `cloud link` | connected (URL, machine, mode, last sync) | no running server keeps it; degraded; events dropped | enabled without `SKILLHOOK_CLOUD_TOKEN`; not https; token revoked or machine disabled (`skip` when not connected or `SKILLHOOK_NO_CLOUD` is set) |
 
 Every check carries a `group` (`system`, `skillhook`, `runners`, `tools`, `skills`, `exposure`) and, where useful, `data` with the facts behind the line (versions, paths, the last job).

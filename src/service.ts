@@ -158,7 +158,9 @@ export async function installService(paths: Paths, label = SERVICE_LABEL): Promi
     const reload = await run("systemctl", ["--user", "daemon-reload"]);
     const enable = await run("systemctl", ["--user", "enable", "--now", label]);
     const output = `${reload.stderr}${enable.stdout}${enable.stderr}`.trim();
-    return { ok: enable.code === 0, file, output: enable.code === 0 ? `${output}\nTip: run \`loginctl enable-linger ${spec.user}\` so the service starts without a login session.`.trim() : output };
+    const linger = enable.code === 0 ? await lingerStatus(spec.user) : "unknown";
+    const tip = linger === "yes" ? "" : `\n${linger === "no" ? "Warning: lingering is off, so this service stops when you log out." : "Tip:"} Run \`loginctl enable-linger ${spec.user}\` so the service keeps running without a login session.`;
+    return { ok: enable.code === 0, file, output: enable.code === 0 ? `${output}${tip}`.trim() : output };
   }
   return { ok: false, file: "", output: `Unsupported platform ${process.platform}; run \`skillhook serve\` under your own supervisor.` };
 }
@@ -210,6 +212,33 @@ export async function serviceStatus(paths: Paths, label = SERVICE_LABEL): Promis
     return { platform: "systemd", installed, running: result.stdout.trim() === "active", pid: Number(pidResult.stdout.trim()) || undefined, file, logFile, detail: result.stdout.trim() };
   }
   return { platform: "unsupported", installed: false, running: false, file: "", logFile };
+}
+
+export type Linger = "yes" | "no" | "unknown";
+
+/** Parse `loginctl show-user <user> --property=Linger --value`: anything but a clean yes/no is "unknown". */
+export function parseLinger(code: number, stdout: string): Linger {
+  if (code !== 0) return "unknown";
+  const value = stdout.trim().toLowerCase();
+  return value === "yes" || value === "no" ? value : "unknown";
+}
+
+/**
+ * Whether systemd keeps this user's services running without a login session (read-only, never sudo).
+ * With Linger=no a `systemctl --user` service stops at logout, which the cloud only sees as link.stopped.
+ */
+export async function lingerStatus(user = userInfo().username): Promise<Linger> {
+  if (process.platform !== "linux") return "unknown";
+  const result = await run("loginctl", ["show-user", user, "--property=Linger", "--value"]).catch(() => ({ code: 1, stdout: "", stderr: "" }));
+  return parseLinger(result.code, result.stdout);
+}
+
+/** How this server process runs: under the launchd/systemd service, or started by hand (a terminal, another supervisor). */
+export type RunMode = "service" | "foreground" | "unknown";
+
+export function runModeOf(service: { running: boolean; pid?: number }, serverPid: number | undefined): RunMode {
+  if (!serverPid) return "unknown";
+  return service.running && service.pid === serverPid ? "service" : "foreground";
 }
 
 export function readServiceLog(paths: Paths, lines = 100): string {
