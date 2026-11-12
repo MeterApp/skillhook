@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderLaunchdPlist, renderSystemdUnit, serviceSpec } from "./service.js";
+import { parseLinger, renderLaunchdPlist, renderSystemdUnit, runModeOf, serviceSpec } from "./service.js";
 import { tempHome } from "./test-support/helpers.js";
 
 describe("service files", () => {
@@ -33,5 +33,24 @@ describe("stableNodePath", () => {
     expect(stableNodePath("/Users/x/.nvm/versions/node/v24.0.0/bin/node")).toBe("/Users/x/.nvm/versions/node/v24.0.0/bin/node");
     const cellar = "/opt/homebrew/Cellar/node/99.0.0/bin/node";
     expect(["/opt/homebrew/bin/node", "/usr/local/bin/node", cellar]).toContain(stableNodePath(cellar));
+  });
+});
+
+describe("parseLinger", () => {
+  it("reads loginctl's yes/no and calls anything else unknown", () => {
+    expect(parseLinger(0, "yes\n")).toBe("yes");
+    expect(parseLinger(0, "no\n")).toBe("no");
+    expect(parseLinger(0, "")).toBe("unknown");
+    expect(parseLinger(1, "no")).toBe("unknown");
+    expect(parseLinger(0, "Failed to get user: No such user")).toBe("unknown");
+  });
+});
+
+describe("runModeOf", () => {
+  it("is service only when the service's own process is the server", () => {
+    expect(runModeOf({ running: true, pid: 42 }, 42)).toBe("service");
+    expect(runModeOf({ running: true, pid: 42 }, 43)).toBe("foreground");
+    expect(runModeOf({ running: false }, 43)).toBe("foreground");
+    expect(runModeOf({ running: true, pid: 42 }, undefined)).toBe("unknown");
   });
 });
