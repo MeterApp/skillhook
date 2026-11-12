@@ -516,6 +516,19 @@ describe("cli", () => {
     const checks = doctor.json().checks as { name: string; status: string; detail: string }[];
     expect(checks.find((c) => c.name === "skill tick")).toMatchObject({ status: "ok", detail: expect.stringContaining("schedule only") });
     expect(checks.find((c) => c.name === "schedules")).toMatchObject({ status: "ok", detail: expect.stringContaining("tick (*/5 * * * *") });
+    const pause = io();
+    expect(await main(["schedules", "pause", "tick", ...dir, "--reason", "too noisy", "--until", "2h", "--json"], pause.cli)).toBe(0);
+    expect(pause.json()).toMatchObject({ via: "local", schedule: { skill: "tick", paused: { reason: "too noisy", by: "cli", until: expect.stringMatching(/Z$/) } } });
+    const pausedList = io();
+    expect(await main(["schedules", ...dir], pausedList.cli)).toBe(0);
+    expect(pausedList.out()).toContain("(paused until");
+    const resume = io();
+    expect(await main(["schedules", "resume", "tick", ...dir, "--json"], resume.cli)).toBe(0);
+    expect(resume.json()).toMatchObject({ via: "local", schedule: { paused: null } });
+    const pauseNone = io();
+    expect(await main(["schedules", "pause", "hello", ...dir, "--json"], pauseNone.cli)).toBe(1);
+    const badUntil = io();
+    expect(await main(["schedules", "pause", "tick", ...dir, "--until", "soonish"], badUntil.cli)).toBe(2);
     const none = io();
     expect(await main(["schedules", "next", "hello", ...dir, "--json"], none.cli)).toBe(1);
     const usage = io();
@@ -1374,7 +1387,7 @@ describe("cli", () => {
       link: [[], [unlinked]],
       unlink: [[linked]],
       projects: [[], ["list"], ["init", path.join(home.home, "fresh")], ["add", unlinked], ["remove", linked]],
-      schedules: [[], ["list"], ["next", "tick"], ["run", "tick"]],
+      schedules: [[], ["list"], ["next", "tick"], ["run", "tick"], ["pause", "tick"], ["resume", "tick"]],
     };
     for (const name of Object.keys(lines)) expect(COMMANDS, name).toHaveProperty(name);
 

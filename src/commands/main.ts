@@ -62,7 +62,7 @@ Running
   run <skill> [--payload JSON|@file|-] [--header "K: v"]... [--runner R] [--model M] [--effort E] [--account A] [--cwd DIR] [--wait S] [--dry-run]
   run --file SKILL.md | --stdin [same options]             Run a SKILL.md that is not installed (kept with the job)
   send <skill> [--payload …] [--wait S] [--url BASE|--public|--local] [--header "K: v"]...   POST a signed test webhook
-  schedules list | next <name> [--count N] | run <name> [--wait S]   Skills with a schedule: next and last runs; fire one now
+  schedules list | next <name> [--count N] | run <name> [--wait S] | pause <name> [--until 2h] | resume <name>   Skills with a schedule: next and last runs; fire, pause or resume one
   jobs list [--skill S] [--account A] [--status ST] [--outcome O] [--failure K] [--trigger T] [--waiting] [--since ISO] [--after ID] [--limit N] | show <id> [--result|--prompt|--stdout|--stderr] | logs <id> [-f]
   jobs answer <id> ["<answer>"] [--option X]... [--by NAME] [--no-resume] [--wait S]   Answer a job that asked (live) or ended needs_human (resumes the session)
   jobs cancel <id> | replay <id> [--skip-filters] [--wait S] | resume <id> [--exec] | path <id> | prune [--keep N]

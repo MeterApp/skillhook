@@ -263,7 +263,7 @@ A skill can have a hosted webhook URL on the cloud (the dashboard creates it) in
 
 Read commands (both modes): `ping`, `health.get`, `snapshot.get`, `runners.get`, `accounts.get` (`{account?, refresh?, usage?}`, [what it answers](#accounts)), `skills.list`, `skill.get`, `delivery.list`, `delivery.get`, `job.list`, `job.get`, `job.artifact`, `job.watch`, `job.unwatch`, `job.progress.get`, `stats.get`, `config.get`, `secret.list` (names only), `service.status`, `logs.tail`, `schedules.list`, `update.check`, `expose.status`.
 
-Control commands (`mode: control` or an allow entry): `skill.put`, `skill.delete`, `skill.run`, `skill.test`, `delivery.replay`, `job.cancel`, `job.replay`, `job.answer`, `config.patch`, `secret.generate`, `service.restart`, `schedule.run`, `update.install`.
+Control commands (`mode: control` or an allow entry): `skill.put`, `skill.delete`, `skill.run`, `skill.test`, `delivery.replay`, `job.cancel`, `job.replay`, `job.answer`, `config.patch`, `secret.generate`, `service.restart`, `schedule.run`, `schedule.pause`, `schedule.resume`, `update.install`.
 
 Results are scrubbed like events. Each command runs once: its id is remembered in `jobs/.cloud/commands.json`, and a command the cloud sends again is answered from the kept result.
 
@@ -283,6 +283,7 @@ What each control command does, and the rules it adds on top of the policy:
 | `config.patch` | Changes `skillhook.json` like `PATCH /config`, except for `host`, `port`, `trust_proxy`, `runners`, `env_passthrough`, `projects`, `project_refresh` and `cloud`, which the cloud may never change. |
 | `service.restart` | Restarts a server run by launchd / systemd once the cloud has the answer (`when: idle` pauses dispatch and lets running jobs finish up to `wait_seconds`, then resumes dispatch if jobs remain; `now` terminates them without waiting. Through version 0.10.4, even `idle` terminates jobs when the wait expires). |
 | `schedule.run` | Fires a scheduled skill now. |
+| `schedule.pause`, `schedule.resume` | Pauses a skill's or hook's `schedule:` (`{name, reason?, until?}`) or resumes it (`{name}`), like `skillhook schedules pause` / `resume`: nothing fires while paused, the webhook keeps working, missed slots are not caught up, and the pause survives repository pulls and restarts ([schedules.md](schedules.md#pausing-a-schedule)). `by` is the requester's name. The next sync carries a snapshot with the schedule's `paused`. |
 | `update.install` | Installs a newer skillhook with the package manager that installed it; the server keeps running the old version until `service.restart`. |
 | `secret.generate` | Generates a skill's secret (or any `ENV_NAME`) and returns it only sealed to the requester's key (`recipient_key`, required); the value never travels or rests in the clear. The machine's own credentials (`SKILLHOOK_CLOUD_*`, `SKILLHOOK_ADMIN_TOKEN`) are refused, by whatever name they are asked for (`admin`, a skill's, the variable's). |
 | `skill.put` | Writes `skills/<name>/SKILL.md` after validating it. Never for a name that comes from a linked repository; `auth: none` needs `allow_unauthenticated`. No secret is created: `secret.generate` does that, sealed. |

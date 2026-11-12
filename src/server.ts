@@ -33,7 +33,7 @@ import { resolveRunSettings } from "./run.js";
 import { RunnerNameSchema } from "./config.js";
 import type { SkillRegistry } from "./registry.js";
 import { nextRun } from "./schedule.js";
-import type { ScheduleStatus } from "./scheduler.js";
+import { ScheduleControlError, type Scheduler, type ScheduleStatus } from "./scheduler.js";
 import { describeAuth, SkillError, type Skill } from "./skills.js";
 import { errorMessage, getPath, isPlainObject, isValidSkillName, nowIso, writeJsonFile } from "./util.js";
 import { VERSION } from "./version.js";
@@ -53,6 +53,8 @@ export interface ServerDeps {
   sentry?: Pick<DaemonSentry, "status" | "verify">;
   /** Live schedule state for `/health` (admin); absent when the server runs without a scheduler. */
   schedules?: () => ScheduleStatus[];
+  /** `POST /schedules/<name>/pause` and `/resume` (the running scheduler; absent means 404). */
+  scheduleControl?: Pick<Scheduler, "pause" | "resume">;
   /** The cached health report behind `GET /health/checks` and `GET /doctor` (built by `serve`; absent means 404). */
   health?: HealthCache;
   /** Runner readiness behind `GET /runners` (the queue's pre-flight shares it). */
@@ -768,6 +770,28 @@ export function createServer(deps: ServerDeps): Server {
         return send(res, 200, { ok: true, applied: reload?.applied ?? [], restart_required: (reload?.restart_required.length ?? 0) > 0, restart_required_keys: reload?.restart_required ?? [], ...describe(reload), ...(deps.configRef ? {} : { note: "written to the file; this server has no live config, restart it" }) });
       }
       throw new HttpError(405, "method_not_allowed", "use GET, PATCH or POST /config/reload");
+    }
+    if (segments[0] === "schedules" && segments.length === 3 && (segments[2] === "pause" || segments[2] === "resume")) {
+      requireAdmin(headers, req, viaProxy, ip);
+      if (method !== "POST") throw new HttpError(405, "method_not_allowed", "use POST");
+      if (!deps.scheduleControl) throw new HttpError(404, "not_found", "this server runs no scheduler");
+      const rawBody = await readBody(req, config.max_body_bytes);
+      const body = rawBody.length ? (parseBody(headers["content-type"], rawBody).payload as Record<string, unknown>) : {};
+      if (!isPlainObject(body)) throw new HttpError(400, "bad_request", "expected a JSON object body");
+      const str = (key: string): string | undefined => {
+        const value = body[key];
+        if (value === undefined || value === null) return undefined;
+        if (typeof value !== "string") throw new HttpError(400, "bad_request", `${key} must be a string`);
+        return value;
+      };
+      const name = segments[1] as string;
+      try {
+        const schedule = segments[2] === "pause" ? deps.scheduleControl.pause(name, { by: str("by") ?? "admin API", reason: str("reason"), until: str("until") }) : deps.scheduleControl.resume(name, { by: str("by") ?? "admin API" });
+        return send(res, 200, { ok: true, schedule });
+      } catch (error) {
+        if (error instanceof ScheduleControlError) throw new HttpError(error.code === "not_found" ? 404 : error.code === "conflict" ? 409 : 400, error.code === "invalid_args" ? "bad_request" : error.code, error.message);
+        throw error;
+      }
     }
     if (segments[0] === "control" && segments.length === 2 && segments[1] === "restart") {
       requireAdmin(headers, req, viaProxy, ip);

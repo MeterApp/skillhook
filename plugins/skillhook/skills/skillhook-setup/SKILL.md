@@ -115,7 +115,7 @@ skillhook secret set GITHUB_WEBHOOK_SECRET   # the file names secrets; values st
 
 Hooks are live without a restart, `git pull` deploys changes, and `skillhook unlink <dir>` stops serving them. Names in `~/.skillhook/skills` win over repositories; a duplicate is reported by `skillhook skills list` and `doctor`. MCP: `link_project` (`init: true` to scaffold), `list_projects`, `unlink_project`. Writing the file itself is covered by skillhook-authoring.
 
-Hooks with a `schedule:` (cron + time zone) fire from the running server without a webhook; `skillhook schedules list` shows the next and last run of each, `skillhook schedules run <name>` fires one now. They need the server running and the machine awake (`doctor` checks both). A server older than the version that added schedules rejects a `skillhook.yaml` that uses them, so `skillhook update --install` every linked machine before merging one.
+Hooks with a `schedule:` (cron + time zone) fire from the running server without a webhook; `skillhook schedules list` shows the next and last run of each, `skillhook schedules run <name>` fires one now, `skillhook schedules pause <name> [--until 2h]` / `resume <name>` stop and restart one without touching the repository (Skillhook Cloud can do the same). They need the server running and the machine awake (`doctor` checks both). A server older than the version that added schedules rejects a `skillhook.yaml` that uses them, so `skillhook update --install` every linked machine before merging one.
 
 ## 10. Pair with Skillhook Cloud (optional)
 

@@ -153,6 +153,7 @@ beforeAll(async () => {
     serviceLog: (lines) => `${["one", "two", "three"].slice(-lines).join("\n")}\n`,
     applyUpdate: async ({ install }) => ({ ok: true, current: "0.3.0", latest: "0.3.0", available: false, checked_at: "2026-09-28T00:00:00.000Z", registry: "http://registry.invalid", cached: false, install: { method: "npm", command: "npm install -g @meterapp/skillhook@latest" }, release_notes: null, installed: install, service_restarted: false, service_note: null }),
     schedules: () => scheduler.status(),
+    scheduleControl: scheduler,
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const address = server.address();
@@ -1013,6 +1014,21 @@ describe("HTTP surface", () => {
     await fetch(`${base}/config/reload`, { method: "POST", headers: auth });
     expect(config.concurrency).toBe(4);
     expect((await fetch(`${base}/config`, { method: "DELETE", headers: auth })).status).toBe(405);
+  });
+
+  it("pauses and resumes a schedule through the admin API", async () => {
+    const auth = { authorization: `Bearer ${ADMIN}`, "content-type": "application/json" };
+    const paused = await json(await fetch(`${base}/schedules/nightly/pause`, { method: "POST", headers: auth, body: JSON.stringify({ reason: "migration", until: "2026-09-24T00:00:00Z" }) }));
+    expect(paused).toMatchObject({ ok: true, schedule: { skill: "nightly", paused: { reason: "migration", by: "admin API", until: "2026-09-24T00:00:00.000Z" }, next_due: "2026-09-24T03:00:00.000Z" } });
+    const health = await json(await fetch(`${base}/health`, { headers: auth }));
+    expect((health.schedules as { skill: string; paused: unknown }[]).find((s) => s.skill === "nightly")?.paused).toMatchObject({ reason: "migration" });
+    expect((await fetch(`${base}/schedules/hello/pause`, { method: "POST", headers: auth })).status).toBe(409);
+    expect((await fetch(`${base}/schedules/nope/pause`, { method: "POST", headers: auth })).status).toBe(404);
+    expect((await fetch(`${base}/schedules/nightly/pause`, { method: "POST", headers: auth, body: JSON.stringify({ until: "yesterday" }) })).status).toBe(400);
+    expect((await fetch(`${base}/schedules/nightly/pause`, { method: "GET", headers: auth })).status).toBe(405);
+    expect((await fetch(`${base}/schedules/nightly/pause`, { method: "POST", headers: { "x-forwarded-for": "203.0.113.1" } })).status).toBe(401);
+    const resumed = await json(await fetch(`${base}/schedules/nightly/resume`, { method: "POST", headers: auth }));
+    expect(resumed).toMatchObject({ ok: true, schedule: { skill: "nightly", paused: null } });
   });
 
   it("restarts only when supervised, and serves the service status, its log and the update check", async () => {

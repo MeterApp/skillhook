@@ -13,7 +13,7 @@ import type { JobQueue } from "./queue.js";
 import type { SkillRegistry } from "./registry.js";
 import { nextRun, previousRun, slotKey } from "./schedule.js";
 import type { NormalizedSchedule, Skill } from "./skills.js";
-import { errorMessage, isPlainObject, readJsonFileOr, writeJsonFile } from "./util.js";
+import { errorMessage, isPlainObject, isValidSkillName, readJsonFileOr, writeJsonFile } from "./util.js";
 
 /** How often the scheduler compares the wall clock with the next due slot. */
 export const SCHEDULER_TICK_MS = 15_000;
@@ -30,8 +30,17 @@ export interface ScheduleState {
   last_fired_at?: string;
   last_job?: string;
   last_status?: JobStatus;
-  /** Slots that were due but not run (still in flight, caught up, too old, or already fired by an earlier process). */
+  /** Slots that were due but not run (still in flight, caught up, too old, paused, or already fired by an earlier process). */
   skipped?: number;
+  /** Set while the schedule is paused (`skillhook schedules pause`, `POST /schedules/<name>/pause`, the cloud's `schedule.pause`). Lives here, not in the skill's file, so a repository pull or a restart keeps it. */
+  paused?: SchedulePause;
+}
+/** Who paused a schedule, why, and until when (absent: until someone resumes it). */
+export interface SchedulePause {
+  at: string;
+  by?: string;
+  reason?: string;
+  until?: string;
 }
 export type ScheduleStates = Record<string, ScheduleState>;
 
@@ -49,6 +58,8 @@ export interface ScheduleStatus {
   last_job: string | null;
   last_status: JobStatus | null;
   skipped: number;
+  /** Set while the schedule is paused; its slots pass without a job and are not caught up on resume. */
+  paused: SchedulePause | null;
 }
 
 export type SkipReason = "in_flight" | "caught_up" | "too_old" | "duplicate";
@@ -64,9 +75,10 @@ export function scheduleStateFile(jobsDir: string): string {
 
 export function readScheduleStates(jobsDir: string): ScheduleStates {
   const raw = readJsonFileOr<unknown>(scheduleStateFile(jobsDir), {});
-  if (!isPlainObject(raw)) return {};
-  const states: ScheduleStates = {};
-  for (const [name, value] of Object.entries(raw)) if (isPlainObject(value)) states[name] = value as ScheduleState;
+  // Keyed by skill name: a null prototype, and only valid names, so no key can reach Object.prototype.
+  const states: ScheduleStates = Object.create(null) as ScheduleStates;
+  if (!isPlainObject(raw)) return states;
+  for (const [name, value] of Object.entries(raw)) if (isValidSkillName(name) && isPlainObject(value)) states[name] = value as ScheduleState;
   return states;
 }
 
@@ -82,10 +94,20 @@ export function buildSchedulePayload(skill: Skill, slot: Date, options: { firedA
   };
 }
 
+/** The pause in force at `now`: none once its `until` has passed. */
+export function activePause(state: ScheduleState | undefined, now = new Date()): SchedulePause | undefined {
+  const paused = state?.paused;
+  if (!paused) return undefined;
+  if (paused.until && Date.parse(paused.until) <= now.getTime()) return undefined;
+  return paused;
+}
+
 export function scheduleStatus(skill: Skill, state: ScheduleState | undefined, now = new Date()): ScheduleStatus | undefined {
   const schedule = skill.schedule;
   if (!schedule) return undefined;
-  const next = skill.enabled ? nextRun(schedule.spec, now, schedule.timezone) : undefined;
+  const paused = activePause(state, now);
+  const from = paused?.until ? new Date(Math.max(now.getTime(), Date.parse(paused.until) - 1)) : now;
+  const next = skill.enabled && !(paused && !paused.until) ? nextRun(schedule.spec, from, schedule.timezone) : undefined;
   return {
     skill: skill.name,
     cron: schedule.cron,
@@ -100,7 +122,67 @@ export function scheduleStatus(skill: Skill, state: ScheduleState | undefined, n
     last_job: state?.last_job ?? null,
     last_status: state?.last_status ?? null,
     skipped: state?.skipped ?? 0,
+    paused: paused ?? null,
   };
+}
+
+/** Thrown by `pause` / `resume` for a skill that does not exist or has no schedule. */
+export class ScheduleControlError extends Error {
+  constructor(
+    readonly code: "not_found" | "conflict" | "invalid_args",
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export interface PauseOptions {
+  by?: string;
+  reason?: string;
+  /** An ISO-8601 instant in the future; absent pauses until someone resumes. */
+  until?: string;
+}
+
+/** Validates a pause request against the registry and builds the record; shared by the server and the offline CLI. */
+export function buildPause(registry: SkillRegistry, name: string, options: PauseOptions, now = new Date()): SchedulePause {
+  requireScheduled(registry, name);
+  let until: string | undefined;
+  if (options.until !== undefined) {
+    const at = Date.parse(options.until);
+    if (Number.isNaN(at)) throw new ScheduleControlError("invalid_args", "until must be an ISO-8601 instant");
+    if (at <= now.getTime()) throw new ScheduleControlError("invalid_args", "until must be in the future");
+    until = new Date(at).toISOString();
+  }
+  return { at: now.toISOString(), ...(options.by ? { by: options.by.slice(0, 200) } : {}), ...(options.reason ? { reason: options.reason.slice(0, 500) } : {}), ...(until ? { until } : {}) };
+}
+
+/** The state of one schedule, created when missing; never for a key that is not a skill name (`__proto__`, say). */
+function stateFor(states: ScheduleStates, name: string): ScheduleState {
+  if (!isValidSkillName(name) || name === "__proto__" || name === "constructor" || name === "prototype") throw new ScheduleControlError("not_found", `no skill named "${name}"`);
+  if (!Object.hasOwn(states, name)) Object.defineProperty(states, name, { value: {}, enumerable: true, writable: true, configurable: true });
+  return states[name] as ScheduleState;
+}
+
+function requireScheduled(registry: SkillRegistry, name: string): Skill {
+  if (!isValidSkillName(name)) throw new ScheduleControlError("not_found", `no skill named "${name}"`);
+  const skill = registry.get(name);
+  if (!skill) throw new ScheduleControlError("not_found", `no skill named "${name}"`);
+  if (!skill.schedule) throw new ScheduleControlError("conflict", `skill "${name}" has no schedule`);
+  return skill;
+}
+
+/**
+ * Pause or resume with no server running: the state file is written directly (a running server owns it in memory, so
+ * the CLI goes through `POST /schedules/<name>/pause` instead). Returns the schedule's new status.
+ */
+export function setPauseOffline(input: { registry: SkillRegistry; jobsDir: string }, name: string, pause: PauseOptions | null, now = new Date()): ScheduleStatus {
+  const skill = requireScheduled(input.registry, name);
+  const states = readScheduleStates(input.jobsDir);
+  const state = stateFor(states, name);
+  if (pause) state.paused = buildPause(input.registry, name, pause, now);
+  else delete state.paused;
+  writeJsonFile(scheduleStateFile(input.jobsDir), states);
+  return scheduleStatus(skill, state, now) as ScheduleStatus;
 }
 
 /** Every scheduled skill with its persisted state: what `skillhook schedules list` and the MCP tool show when no server is running. */
@@ -213,6 +295,28 @@ export class Scheduler {
     return out;
   }
 
+  /** Stops the schedule from firing (webhooks still run) until `resume`, or until `options.until`. Slots that pass while paused are not caught up. */
+  pause(name: string, options: PauseOptions = {}, now = this.now()): ScheduleStatus {
+    const pause = buildPause(this.deps.registry, name, options, now);
+    const state = stateFor(this.states, name);
+    state.paused = pause;
+    this.save();
+    this.deps.logger.warn("schedule paused", { skill: name, by: pause.by, reason: pause.reason, until: pause.until });
+    return scheduleStatus(this.deps.registry.get(name) as Skill, state, now) as ScheduleStatus;
+  }
+
+  resume(name: string, options: { by?: string } = {}, now = this.now()): ScheduleStatus {
+    const skill = requireScheduled(this.deps.registry, name);
+    const state = stateFor(this.states, name);
+    const was = state.paused;
+    delete state.paused;
+    // The slots that passed while paused are gone: the schedule picks up at its next slot.
+    if (was) state.last_slot = now.toISOString();
+    this.save();
+    this.deps.logger.info("schedule resumed", { skill: name, by: options.by, was_paused: Boolean(was) });
+    return scheduleStatus(skill, state, now) as ScheduleStatus;
+  }
+
   /** One pass over every schedule. Exported for tests; the server calls it on its timer. */
   tick(now = this.now()): TickResult {
     const result: TickResult = { fired: [], skipped: [] };
@@ -239,9 +343,24 @@ export class Scheduler {
         dirty = true;
         continue;
       }
+      if (state.paused && !activePause(state, now)) {
+        // The pause ran out: slots up to its end were paused, the schedule fires from the next one.
+        const until = state.paused.until as string;
+        delete state.paused;
+        if (Date.parse(until) > lastSlot.getTime()) state.last_slot = new Date(Date.parse(until) - 1).toISOString();
+        dirty = true;
+        this.deps.logger.info("schedule pause ended", { skill: skill.name, until });
+        continue;
+      }
       const due = dueSlots(schedule, lastSlot, now); // newest first
       if (!due.length) continue;
       dirty = true;
+      if (state.paused) {
+        // Paused slots pass quietly: no job, no event per slot (a week of a 10-minute schedule would be a thousand).
+        state.skipped = (state.skipped ?? 0) + due.length;
+        state.last_slot = (due[0] as Date).toISOString();
+        continue;
+      }
       const latest = due[0] as Date;
       let toFire: Date[];
       if (schedule.catch_up === "all") toFire = due.slice(0, CATCH_UP_MAX_SLOTS).reverse();

@@ -27,6 +27,7 @@ Related: [security.md](security.md) (authentication), [skills.md](skills.md) (fi
 | `GET` | `/stats` | admin | Numbers over jobs and deliveries: by status, outcome, runner, failure kind; durations, cost, tokens; per skill (`?since=24h`, `?until=`, `?skill=`). |
 | `GET`, `PATCH` | `/config` | admin | The live `skillhook.json` (defaults applied) with what applies live and what needs a restart; change keys in one validated write. |
 | `POST` | `/config/reload` | admin | Re-read `skillhook.json` (after editing it by hand). |
+| `POST` | `/schedules/<name>/pause`, `/schedules/<name>/resume` | admin | Pause a schedule (body `{reason?, until?, by?}`) or resume it; answers `{ok, schedule}`. `404` for an unknown skill, `409` for one without a schedule, `400` for an `until` that is not a future instant ([schedules.md](schedules.md#pausing-a-schedule)). |
 | `POST` | `/control/restart` | admin | Pause dispatch, exit only if active jobs finish within the bound; otherwise resume dispatch. `409` when not run as the service. |
 | `GET` | `/service` | admin | The launchd / systemd service status. |
 | `GET` | `/logs` | admin | The last lines of the service log (`?lines=200`). |

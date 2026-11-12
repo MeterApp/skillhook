@@ -95,7 +95,7 @@ async function runDaemon(ctx: Ctx, sentry: DaemonSentry): Promise<number> {
     },
     restart: (options) => void stop("restart", options),
   };
-  const server = createServer({ config, paths: ctx.paths, store, queue, registry, secrets, logger, sentry, events, deliveryLog, health, readiness, configRef, control, cloud: () => link?.status(), schedules: () => scheduler.status() });
+  const server = createServer({ config, paths: ctx.paths, store, queue, registry, secrets, logger, sentry, events, deliveryLog, health, readiness, configRef, control, cloud: () => link?.status(), schedules: () => scheduler.status(), scheduleControl: scheduler });
 
   const loaded = registry.list();
   for (const error of loaded.errors) logger.error("skill failed to load", { skill: error.name, error: error.error });
@@ -126,7 +126,7 @@ async function runDaemon(ctx: Ctx, sentry: DaemonSentry): Promise<number> {
   events.emit("server.started", { state });
   // The cloud link idles until `skillhook cloud connect` enabled it (docs/cloud.md); it re-reads the config every few seconds.
   const fileSecrets = () => readEnvFile(ctx.paths.envFile);
-  const cloudControl = createControlHandlers({ paths: ctx.paths, config, configRef, secrets, fileSecrets, registry, store, deliveryLog, queue, events, logger, serverControl: control });
+  const cloudControl = createControlHandlers({ paths: ctx.paths, config, configRef, secrets, fileSecrets, registry, store, deliveryLog, queue, events, logger, serverControl: control, scheduler });
   link = new CloudLink({ paths: ctx.paths, config, secrets, fileSecrets, events, logger, registry, store, deliveryLog, schedules: () => scheduler.status(), health, readiness, serverState: () => state, localBaseUrl: () => localBaseUrl({ host, port: boundPort }), env: ctx.io.env, queueStats: () => queue.stats(), runningJobs: () => queue.stats().running_ids, control: cloudControl });
   link.start();
   for (const job of recovered.interrupted) events.emit("job.finished", { job });
