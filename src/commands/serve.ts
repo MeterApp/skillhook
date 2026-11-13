@@ -16,7 +16,7 @@ import { Scheduler } from "../scheduler.js";
 import { clearServerState, createServer, writeServerState, type ServerControl } from "../server.js";
 import { serviceStatus } from "../service.js";
 import { errorMessage } from "../util.js";
-import { attemptedRecently, autoUpdateEnabled, checkForUpdate, detectInstall, installedVersion, isNewerVersion, lastInstall, releaseNotesUrl, spawnBackgroundRefresh, UPDATE_CHECK_INTERVAL_MS } from "../update.js";
+import { attemptedRecently, autoUpdateEnabled, checkForUpdate, detectInstall, installedAcceptsConfig, installedVersion, isNewerVersion, lastInstall, releaseNotesUrl, spawnBackgroundRefresh, UPDATE_CHECK_INTERVAL_MS } from "../update.js";
 import { VERSION } from "../version.js";
 import { DaemonSentry } from "../sentry.js";
 import { installDaemonErrorReporting } from "../daemon-errors.js";
@@ -168,6 +168,16 @@ async function runDaemon(ctx: Ctx, sentry: DaemonSentry): Promise<number> {
           waitingFor = `${installed}:${reason}`;
           return;
         }
+        // A version that rejects this home's config would exit at start and launchd/systemd would restart it in a loop:
+        // keep running this version and retry every minute (an edit of skillhook.json or a later release clears it).
+        const check = await installedAcceptsConfig(ctx.paths, { env: ctx.io.env });
+        if (shuttingDown) return;
+        if (check.ok === false) {
+          if (waitingFor !== `${installed}:config:${check.error}`) logger.error("newer version installed but it rejects the current config; keeping this version running", { running: VERSION, installed, error: check.error });
+          waitingFor = `${installed}:config:${check.error}`;
+          return;
+        }
+        if (check.ok === undefined) logger.warn("could not check the installed version against the config; restarting anyway", { running: VERSION, installed, error: check.error });
         logger.info("restarting to run the newly installed version", { running: VERSION, installed });
         control.restart({ force: false, waitSeconds: 600 });
       })();

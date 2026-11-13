@@ -4,6 +4,8 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- An automatic update no longer bricks the server when the new version rejects the current `skillhook.json`. Before restarting onto a newer version on disk, the server runs that version's `config show --json` against its home. If the new version rejects the config, the server logs `newer version installed but it rejects the current config; keeping this version running` with the error, keeps running, and checks again every minute, so fixing `skillhook.json` lets the restart go ahead. If the check cannot run (it times out, or node is missing), the server restarts as before. On 2026-11-12, 0.16.0 rejected `accounts.*.usage_login` keys that 0.15.2 had accepted. launchd then restarted the daemon 128 times, and it ran no jobs for 17 minutes.
+
 ## 0.16.0 (2026-11-10)
 
 - A schedule can be paused without editing the file that declares it: `skillhook schedules pause <name> [--reason …] [--until 2h|<ISO>]` and `schedules resume <name>`, `POST /schedules/<name>/pause` and `/resume` (admin), and the cloud commands `schedule.pause` / `schedule.resume`. While paused nothing fires (the webhook still works); slots that pass are counted as skipped and never caught up. The pause lives in `jobs/.schedules.json`, so a repository pull or a restart keeps it, and `--until` ends it by itself. `schedules list`, `GET /health` and the cloud snapshot show `paused: {at, by, reason, until}`. This lets a repository's `skillhook.yaml` stay the source of truth for schedules while a person can still switch one off from Skillhook Cloud.

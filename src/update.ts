@@ -585,6 +585,56 @@ export function installedVersion(file: string | URL = new URL("../package.json",
   }
 }
 
+export type InstalledConfigCheck =
+  /** The installed version loaded this home's skillhook.json. */
+  | { ok: true }
+  /** The installed version exited non-zero on this home's skillhook.json: restarting onto it would crash-loop. */
+  | { ok: false; error: string }
+  /** The check could not run (spawn error or timeout): nothing is known, so callers keep the previous behaviour. */
+  | { ok: undefined; error: string };
+
+/**
+ * Asks the skillhook installed on disk whether it accepts this home's config before a running server restarts onto it
+ * (a new version can reject keys the running one accepted; 0.16.0 rejected `accounts.*.usage_login` and launchd
+ * restarted the daemon 128 times). Runs `<installed cli> config show --json` with this home in SKILLHOOK_HOME.
+ */
+export function installedAcceptsConfig(
+  paths: Pick<Paths, "home">,
+  options: { cli?: string; execPath?: string; args?: string[]; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
+): Promise<InstalledConfigCheck> {
+  const cli = options.cli ?? fileURLToPath(new URL("./cli.js", import.meta.url));
+  const args = options.args ?? [cli, "config", "show", "--json"];
+  return new Promise((resolve) => {
+    let output = "";
+    let settled = false;
+    const done = (result: InstalledConfigCheck) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(options.execPath ?? process.execPath, args, { env: { ...(options.env ?? process.env), SKILLHOOK_HOME: paths.home }, stdio: ["ignore", "pipe", "pipe"] });
+    } catch (error) {
+      resolve({ ok: undefined, error: (error as Error).message });
+      return;
+    }
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      done({ ok: undefined, error: "config check timed out" });
+    }, options.timeoutMs ?? 30_000);
+    // With --json the CLI reports a config error on stdout; a valid config prints the config itself, which is not kept.
+    const collect = (chunk: Buffer) => {
+      if (output.length < 4000) output += chunk.toString("utf8");
+    };
+    child.stdout?.on("data", collect);
+    child.stderr?.on("data", collect);
+    child.on("error", (error) => done({ ok: undefined, error: error.message }));
+    child.on("close", (code) => done(code === 0 ? { ok: true } : { ok: false, error: output.trim().slice(0, 1000) || `exited with code ${code}` }));
+  });
+}
+
 // ---------------------------------------------------------------------------
 // The plugin, in Claude Code and Codex
 // ---------------------------------------------------------------------------

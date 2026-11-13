@@ -1,8 +1,9 @@
 import { createServer, type Server } from "node:http";
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { acquireUpdateLock, AUTO_INSTALL_RETRY_MS, checkForUpdate, compareVersions, detectInstall, fetchLatestVersion, formatUpdateNotice, installedVersion, isNewerVersion, lastInstall, markInstallAnnounced, parseVersion, planUpdateNotice, readUpdateCache, recordInstall, refreshPlugins, registryUrl as registryUrlOf, releaseUpdateLock, runBackgroundUpdate, spawnBackgroundRefresh, updateCacheFile, updateChecksDisabled, updateStatusFromCache, UPDATE_CHECK_INTERVAL_MS, UPDATE_LOCK_STALE_MS, type InstallInfo } from "./update.js";
+import { acquireUpdateLock, AUTO_INSTALL_RETRY_MS, checkForUpdate, compareVersions, detectInstall, fetchLatestVersion, formatUpdateNotice, installedAcceptsConfig, installedVersion, isNewerVersion, lastInstall, markInstallAnnounced, parseVersion, planUpdateNotice, readUpdateCache, recordInstall, refreshPlugins, registryUrl as registryUrlOf, releaseUpdateLock, runBackgroundUpdate, spawnBackgroundRefresh, updateCacheFile, updateChecksDisabled, updateStatusFromCache, UPDATE_CHECK_INTERVAL_MS, UPDATE_LOCK_STALE_MS, type InstallInfo } from "./update.js";
 import type { ToolExecResult } from "./tools.js";
 import { tempHome } from "./test-support/helpers.js";
 import { VERSION } from "./version.js";
@@ -266,6 +267,30 @@ describe("automatic updates", () => {
     expect(installedVersion(file)).toBeUndefined();
     expect(installedVersion()).toBe(VERSION);
   });
+
+  it("asks the installed CLI whether it accepts this home's config before a restart", async () => {
+    const paths = tempHome();
+    const run = (script: string, extra: Parameters<typeof installedAcceptsConfig>[1] = {}) => installedAcceptsConfig(paths, { args: ["-e", script], ...extra });
+    // The child sees this home, not the parent's.
+    expect(await run(`process.exit(process.env.SKILLHOOK_HOME === ${JSON.stringify(paths.home)} ? 0 : 3)`, { env: { ...process.env, SKILLHOOK_HOME: "/elsewhere" } })).toEqual({ ok: true });
+    expect(await run(`console.error('Invalid ~/.skillhook/skillhook.json: Unrecognized key "usage_login"'); process.exit(1)`)).toEqual({ ok: false, error: 'Invalid ~/.skillhook/skillhook.json: Unrecognized key "usage_login"' });
+    expect(await run("process.exit(2)")).toEqual({ ok: false, error: "exited with code 2" });
+    // Unknown is not a rejection: a missing node binary or a hung check keeps the old behaviour (restart).
+    expect((await installedAcceptsConfig(paths, { execPath: path.join(paths.home, "no-such-node"), args: [] })).ok).toBeUndefined();
+    expect(await run("setTimeout(() => {}, 10_000)", { timeoutMs: 200 })).toEqual({ ok: undefined, error: "config check timed out" });
+  });
+
+  it("the real CLI rejects an unknown config key, so the restart is skipped (RA-019)", async () => {
+    const paths = tempHome();
+    const cli = fileURLToPath(new URL("./cli.ts", import.meta.url));
+    const args = ["--import", "tsx", cli, "config", "show", "--json"];
+    writeFileSync(path.join(paths.home, "skillhook.json"), JSON.stringify({ concurrency: 2 }));
+    expect(await installedAcceptsConfig(paths, { args, timeoutMs: 60_000 })).toEqual({ ok: true });
+    writeFileSync(path.join(paths.home, "skillhook.json"), JSON.stringify({ concurrency: 2, not_a_key: true }));
+    const rejected = await installedAcceptsConfig(paths, { args, timeoutMs: 60_000 });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.ok === false && rejected.error).toMatch(/not_a_key/);
+  }, 90_000);
 });
 
 describe("plugin updates", () => {
