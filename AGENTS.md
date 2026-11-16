@@ -18,7 +18,7 @@ is `skillhook`. User docs: `README.md`, `docs/`, `llms.txt`.
 
 | Path | What lives there |
 | --- | --- |
-| `src/cli.ts` → `src/commands/main.ts` | CLI entry; `HELP` there is the command reference. One file per command in `src/commands/`. |
+| `src/cli.ts` → `src/commands/main.ts` | CLI entry (it first makes the built-in `fetch` use HTTP/1.1: `src/http1.ts`); `HELP` there is the command reference. One file per command in `src/commands/`. |
 | `src/server.ts` | `node:http` server: webhook, health and admin routes. No framework. |
 | `src/auth.ts` | Signature/token verification and the matching `signRequest` (used by `send`, MCP and tests). |
 | `src/skills.ts` | SKILL.md parsing (zod), auth normalization, `loadSkills` for one directory. |
@@ -51,7 +51,7 @@ Runtime state lives outside the repo in `~/.skillhook` (`SKILLHOOK_HOME`):
 
 ## Hard rules
 
-- **Runtime dependencies stay at three**: `@modelcontextprotocol/server`, `yaml`, `zod`. Everything else is `node:` built-ins. Node >= 22, ESM, TypeScript strict, imports end in `.js`.
+- **Runtime dependencies stay at four**: `@modelcontextprotocol/server`, `yaml`, `zod`, and `undici` (no dependencies of its own, used only by `src/http1.ts` so that the built-in `fetch` speaks HTTP/1.1; RA-020). Everything else is `node:` built-ins. Node >= 22, ESM, TypeScript strict, imports end in `.js`.
 - **Security is not optional.** The server binds `127.0.0.1` by default; TLS and public exposure are Tailscale's job. Every webhook goes through `verifyRequest`; every admin route through `requireAdmin`. Compare secrets only with `safeEqual`. A skill without `auth` gets a bearer token (`SKILLHOOK_SECRET_<NAME>`); `auth: none` must be explicit and is warned about. Secret values are never logged, never returned by an API/tool except once at generation, and never written into job files (`redactHeaders`). The agent's environment is an allow-list (`src/runners/env.ts`); `SKILLHOOK_ADMIN_TOKEN` and `SKILLHOOK_SECRET_*` are never forwarded implicitly.
 - **Payloads are data.** Anything that reaches the prompt from a webhook is wrapped in `<webhook_payload>` and the guardrails say so. Never build a prompt by concatenating payload text outside those blocks.
 - **Skills are Agent Skills.** Standard frontmatter (`name`, `description`, `license`, `compatibility`, `metadata`, `allowed-tools`) plus a `skillhook:` block. `name` must equal the directory name. New fields: add to the zod schema in `src/skills.ts`, to `docs/skills.md`, to `plugins/skillhook/skills/skillhook-authoring/SKILL.md`, and cover them in `src/skills.test.ts` — in the same PR. `schedule` and `webhook` are block fields like any other (normalized by `resolveSchedule`, documented in `docs/schedules.md`). A hook in `skillhook.yaml` is the same block plus exactly one of `run` / `skill` / `prompt` (`HookSchema` in `src/projects.ts` extends `SkillhookBlockSchema`, so new block fields reach hooks automatically); hook-only fields go in `src/projects.ts`, `docs/projects.md`, `pnpm run schema` and `src/projects.test.ts`. A compiled hook is an ordinary `Skill` (with `source.type === "project"`); never special-case hooks in the server, queue or runners.
