@@ -17,7 +17,7 @@ so you never touch your real `~/.skillhook`.
 
 ## Pull requests
 
-- Keep runtime dependencies at three (`@modelcontextprotocol/server`, `yaml`, `zod`).
+- Keep runtime dependencies at four (`@modelcontextprotocol/server`, `yaml`, `zod`, `undici`).
 - Add or update tests next to the code (`src/**/*.test.ts`); the HTTP and CLI suites
   use the fake runners in `test/fixtures/`.
 - Update the docs that describe what you changed (`README.md`, `docs/`, the plugin

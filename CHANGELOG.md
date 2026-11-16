@@ -4,6 +4,7 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- Every skillhook command, the server included, now makes the built-in `fetch` use HTTP/1.1 on every Node version, as Node 22 did. Node 26's `fetch` negotiates HTTP/2 with servers that offer it, and on 2026-11-10 and 2026-11-13 the daemon spun inside Node's native HTTP/2 write path until macOS killed it for memory, stopping all jobs for about 30 minutes each time (RA-020). `src/cli.ts` installs a global dispatcher from the `undici` package with `allowH2: false` before any command runs, the way Node documents configuring `fetch`; `undici` (no dependencies of its own) is the fourth runtime dependency. When `NODE_USE_ENV_PROXY` asks Node for its proxy-aware dispatcher, that one is kept.
 - An automatic update no longer bricks the server when the new version rejects the current `skillhook.json`. Before restarting onto a newer version on disk, the server runs that version's `config show --json` against its home. If the new version rejects the config, the server logs `newer version installed but it rejects the current config; keeping this version running` with the error, keeps running, and checks again every minute, so fixing `skillhook.json` lets the restart go ahead. If the check cannot run (it times out, or node is missing), the server restarts as before. On 2026-11-12, 0.16.0 rejected `accounts.*.usage_login` keys that 0.15.2 had accepted. launchd then restarted the daemon 128 times, and it ran no jobs for 17 minutes.
 
 ## 0.16.0 (2026-11-10)
