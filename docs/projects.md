@@ -28,6 +28,25 @@ skillhook url pull-after-merge   # the URL to configure at the sender
 
 The hooks are live on the running server as soon as the file is linked or edited; no restart. `skillhook projects` lists every linked repository with its hooks, `skillhook skills list` shows them next to the skills in `~/.skillhook/skills` with a `source` column.
 
+## A whole operating loop: `--template company`
+
+```bash
+skillhook projects init . --template company
+```
+
+writes, instead of the one-hook starter, the hooks that let agents carry a repository's routine work, and the skills they run, into the repository:
+
+| Hook | Trigger | What it does |
+|---|---|---|
+| `<project>-task` | a GitHub issue gets the label `agent` | carries the issue out to a pull request with green checks, or to one precise question |
+| `<project>-incident` | a Sentry alert (new or regressed error) | finds the root cause; a small tested fix as a pull request, or an issue for a person |
+| `<project>-daily` | every day at 07:05 UTC | finishes unfinished agent work, reports the day, proposes up to three next steps as issues |
+| `<project>-health` | every 15 minutes | a shell probe of `HEALTH_URL`; a failing job is what alerts |
+
+`<project>` is the directory's name, and the files name the GitHub repository of `origin` (`OWNER/REPO` to fill in when there is none). The skills are plain files in `.claude/skills/` (`company-task`, `company-incident`, `company-daily`) and all read `.claude/skills/company-rules.md` first: what an agent decides alone, where it works (its own worktree, never the served checkout), what it writes, and what needs a person (money, customer communication, legal, security, irreversible changes, loosening a check). By default the agents open pull requests and never merge, and the daily loop proposes work instead of assigning it to itself; both are one edit in those files. They are yours once written: edit them, commit them, and remove the hooks you do not use.
+
+Files that already exist are kept (`--force` overwrites them). Each hook's setup (the GitHub webhook, the Sentry integration, `HEALTH_URL`) is in the comments of the written `skillhook.yaml`, and the command prints the secrets still to set. The agents use `git` and `gh` as the machine's user, so `gh auth status` must succeed there.
+
 ## Fetch main before a project job runs
 
 Opt in on the machine that serves the project. Give Skillhook a dedicated checkout of a repository you trust, on branch `main` with a working `origin` remote and noninteractive Git credentials. Include the checkout root in `project_refresh` as well as linking the project.

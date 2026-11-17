@@ -1,0 +1,60 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MeterApp/skillhook/main/schema/skillhook.yaml.schema.json
+#
+# The operating loop of __REPO__, served by skillhook on the machine that links a checkout of this repository
+# (`skillhook link .`, or `skillhook link github:__REPO__` on a server). Written by
+# `skillhook projects init --template company`; it is yours now: edit it, commit it, and merging a change deploys it.
+#
+# Four hooks:
+#   __PROJECT__-task      an issue labelled `agent` becomes a pull request
+#   __PROJECT__-incident  a Sentry alert becomes a root-cause fix or a precise escalation
+#   __PROJECT__-daily     once a day: finish what is unfinished, report, propose what to do next
+#   __PROJECT__-health    every 15 minutes: is production answering?
+#
+# What the agents may decide alone and what needs a person is in .claude/skills/company-rules.md. Read it first.
+# Secrets are named here, never stored here: `skillhook secret set NAME` keeps each value on the machine.
+
+hooks:
+  # GitHub → Settings → Webhooks: content type application/json, event "Issues", the secret from
+  # `skillhook secret generate GITHUB_WEBHOOK_SECRET`, the URL from `skillhook url __PROJECT__-task`.
+  # Label an issue `agent` to hand it over.
+  __PROJECT__-task:
+    skill: .claude/skills/company-task
+    auth: { type: github, secret_env: GITHUB_WEBHOOK_SECRET }
+    when:
+      - { header: x-github-event, equals: issues }
+      - { path: action, equals: labeled }
+      - { path: label.name, equals: agent }
+      - { path: repository.full_name, equals: __REPO__ }
+    timeout_seconds: 3600
+
+  # Sentry → Settings → Custom Integrations → an internal integration with a webhook URL (`skillhook url
+  # __PROJECT__-incident`), added as an action of the alert for new and regressed issues. Its Client Secret:
+  # `skillhook secret set SENTRY_CLIENT_SECRET`. Remove this hook if you do not use Sentry.
+  __PROJECT__-incident:
+    skill: .claude/skills/company-incident
+    auth: { type: sentry, secret_env: SENTRY_CLIENT_SECRET }
+    when:
+      - { header: sentry-hook-resource, equals: event_alert }
+      - { path: action, equals: triggered }
+    timeout_seconds: 3600
+
+  # No webhook: the schedule is the trigger. `skillhook schedules run __PROJECT__-daily` runs it now.
+  __PROJECT__-daily:
+    skill: .claude/skills/company-daily
+    webhook: false
+    schedule:
+      cron: "5 7 * * *"               # UTC; add `timezone: Europe/Berlin` for local time
+      catch_up: latest                # a machine that was asleep at 07:05 runs it once when it wakes
+      overlap: skip
+    timeout_seconds: 7200
+
+  # A shell command, no agent: fails (and so alerts, with Skillhook Cloud) when the URL does not answer 2xx.
+  # `skillhook secret set HEALTH_URL` with the address to probe, e.g. https://example.com/api/health
+  __PROJECT__-health:
+    run: curl -fsS --max-time 20 -o /dev/null "$HEALTH_URL"
+    env: [HEALTH_URL]
+    webhook: false
+    schedule:
+      cron: "*/15 * * * *"
+      overlap: skip
+    timeout_seconds: 60

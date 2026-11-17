@@ -57,6 +57,7 @@ Skills (SKILL.md files in ~/.skillhook/skills/<name>/)
 Projects (a repository's skillhook.yaml: webhook name → shell command, SKILL.md or prompt, version-controlled with the code)
   link [dir] [--no-secret] | unlink <dir>                 Serve the hooks a repository declares (default dir: .); stop serving them
   projects [list] | init [dir] [--force]                  List linked projects and their hooks; write a starter skillhook.yaml and link it
+  projects init [dir] --template company                  Write a whole operating loop: issue, Sentry, daily and health hooks with their skills
 
 Running
   run <skill> [--payload JSON|@file|-] [--header "K: v"]... [--runner R] [--model M] [--effort E] [--account A] [--cwd DIR] [--wait S] [--dry-run]

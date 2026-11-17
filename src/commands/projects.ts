@@ -1,14 +1,18 @@
+import path from "node:path";
 import { PROJECT_FILE_NAMES, type LoadedProject } from "../projects.js";
 import { createOps, describeProject, initProject, linkProject, listProjects, resolveBaseUrl, webhookUrl, type LinkResult, type Ops } from "../ops.js";
 import { skillSummary } from "../server.js";
 import { displayPath } from "../util.js";
-import { bool, CommandError, UsageError, type Ctx } from "./shared.js";
+import { bool, CommandError, str, UsageError, type Ctx } from "./shared.js";
 
 export const PROJECTS_USAGE = `Usage:
   skillhook link [dir] [--no-secret]        register a repository's ${PROJECT_FILE_NAMES[0]} (or the file itself) with this server; default: .
   skillhook unlink <dir>                    stop serving its hooks (the repository is not touched)
   skillhook projects [list]                 linked projects and their hooks
   skillhook projects init [dir] [--force]   write a starter ${PROJECT_FILE_NAMES[0]} into dir (default: .) and link it
+  skillhook projects init [dir] --template company
+                                            write a whole operating loop instead: hooks for issues labelled \`agent\`, Sentry
+                                            alerts, a daily review and a health probe, with their skills in .claude/skills
   skillhook projects add|remove <dir>       the same as link / unlink
 
 A project's ${PROJECT_FILE_NAMES[0]} maps webhook names to what runs: a shell command (run:), a SKILL.md in the
@@ -135,9 +139,23 @@ async function init(ctx: Ctx, target: string | undefined): Promise<number> {
   const ops = createOps(ctx.paths, { env: ctx.io.env });
   let result: ReturnType<typeof initProject>;
   try {
-    result = initProject(ops, target ?? ".", { force: bool(ctx.flags, "force"), noSecret: bool(ctx.flags, "no-secret") });
+    result = initProject(ops, target ?? ".", { force: bool(ctx.flags, "force"), noSecret: bool(ctx.flags, "no-secret"), template: str(ctx.flags, "template") });
   } catch (error) {
     throw new CommandError((error as Error).message);
+  }
+  if (result.template) {
+    const t = result.template;
+    const intro = [
+      `Wrote the "${str(ctx.flags, "template")}" template into ${displayPath(path.dirname(result.file))} for ${t.repo} (hooks named ${t.project}-…):`,
+      ...t.written.map((f) => `  + ${f}`),
+      ...t.kept.map((f) => `  = ${f} (already there, kept; --force overwrites)`),
+      ...(t.repo === "OWNER/REPO" ? ["", "No GitHub origin found: replace OWNER/REPO in those files with the repository's owner/name."] : []),
+      "",
+      "Read .claude/skills/company-rules.md first: it says what the agents decide alone and what they bring to you.",
+      `Each hook's setup (the GitHub webhook, Sentry, HEALTH_URL) is in the comments of ${path.basename(result.file)}.`,
+      "",
+    ];
+    return printLinked(ctx, ops, result.link, intro, { file: result.file, written: result.written, template: { name: str(ctx.flags, "template"), ...t } });
   }
   const intro = result.written ? [`Wrote ${displayPath(result.file)} with a starter hook; edit it, then commit it with the repository.`] : [`${displayPath(result.file)} already exists (pass --force to overwrite it).`];
   return printLinked(ctx, ops, result.link, intro, { file: result.file, written: result.written });
