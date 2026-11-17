@@ -578,11 +578,27 @@ export function createServer(deps: ServerDeps): Server {
       event,
       rawBody: args.rawBody,
     });
-    if (args.deliveryId) store.rememberDelivery(args.skill.name, args.deliveryId, job.id);
-    if (args.ingressKey) store.rememberDelivery(args.skill.name, args.ingressKey, job.id, Date.now(), 72 * 60 * 60);
     logger.info("webhook accepted", { skill: args.skill.name, job: job.id, ip: args.ip, trigger: args.trigger, delivery_id: args.deliveryId, bytes: event.content_length });
+    // Queue the job before remembering its delivery. When saving the de-dupe index fails (a full disk),
+    // the sender's retry must find a job that runs, not one written to disk but never queued (RA-021).
     queue.enqueue(job);
+    rememberJobDelivery(args.skill.name, args.deliveryId, job.id);
+    rememberJobDelivery(args.skill.name, args.ingressKey, job.id, 72 * 60 * 60);
     return job;
+  }
+
+  /**
+   * Remembers which job handled a delivery. The job is already queued, so a failure to save the index
+   * (ENOSPC) must not fail the request: the in-memory index is updated before the write, so a retry
+   * reaching this process is still answered as a duplicate of the queued job.
+   */
+  function rememberJobDelivery(skillName: string, key: string | undefined, jobId: string, retentionSeconds?: number): void {
+    if (!key) return;
+    try {
+      store.rememberDelivery(skillName, key, jobId, Date.now(), retentionSeconds);
+    } catch (error) {
+      logger.warn("could not save the delivery de-dupe index; the job is queued", { skill: skillName, job: jobId, error: errorMessage(error) });
+    }
   }
 
   /** `POST /deliveries/<id>/replay` and `POST /jobs/<id>/replay`: the original request again, through the skill as it is now, as a new job. */
