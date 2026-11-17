@@ -1,0 +1,11 @@
+.git
+.github
+node_modules
+dist
+coverage
+*.log
+*.tgz
+.env
+.env.*
+.skillhook
+.claude

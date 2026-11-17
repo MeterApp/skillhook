@@ -66,6 +66,8 @@ skillhook sentry test --json
 
 A successful response is `{enabled: true, event_id: "…", delivered: true}`. That means Sentry accepted the envelope. Search that exact event ID in your Sentry project and confirm the resulting issue to verify ingestion independently. A request sent, or a locally generated event ID alone, does not establish delivery.
 
+In a container, the image's entrypoint runs `skillhook serve --host 0.0.0.0` and Docker's restart policy is the supervisor: see [docker.md](docker.md).
+
 ### As a background service
 
 ```bash

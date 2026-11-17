@@ -145,3 +145,39 @@ jobs:
           skillhook deliveries list --dir "$home" --json > /dev/null
           skillhook run --file examples/skills/hello/SKILL.md --dir "$home" --payload '{"name":"ci"}' --dry-run --json > /dev/null
           SKILLHOOK_NO_UPDATE_CHECK=1 skillhook health --quick --local --dir "$home" --json > /dev/null || true
+
+  image:
+    name: Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build the image
+        run: docker build -t skillhook:ci .
+
+      - name: Start it and run a job through a webhook
+        run: |
+          docker run -d --name skillhook -p 127.0.0.1:8787:8787 -v skillhook-data:/data -e SKILLHOOK_RUNNER=shell skillhook:ci
+          for attempt in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8787/health; then break; fi
+            if [ "$attempt" = 30 ]; then docker logs skillhook; echo "::error::the server did not answer /health"; exit 1; fi
+            sleep 1
+          done
+          version="$(node -p "require('./package.json').version")"
+          test "$(docker exec skillhook skillhook --version)" = "$version"
+          test "$(docker exec skillhook id -u)" != 0
+          docker exec skillhook sh -c 'claude --version && codex --version && gh --version && git --version' > /dev/null
+          # Admin routes need the token from outside the container.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/jobs)" = 401
+          docker exec skillhook sh -c 'mkdir -p "$SKILLHOOK_HOME/skills/ci" && printf -- "---\nname: ci\ndescription: CI smoke test\nskillhook:\n  runner: shell\n  shell:\n    command: [\"sh\", \"-c\", \"id -un\"]\n---\nRuns a shell command.\n" > "$SKILLHOOK_HOME/skills/ci/SKILL.md"'
+          docker exec skillhook skillhook secret generate ci --json > /dev/null
+          docker exec skillhook skillhook send ci --wait 30 --json > "$RUNNER_TEMP/send.json"
+          node -e 'const r = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if (!JSON.stringify(r).includes("\"status\":\"succeeded\"")) { console.error(JSON.stringify(r, null, 2)); process.exit(1); }' "$RUNNER_TEMP/send.json"
+          docker exec skillhook skillhook doctor --json > "$RUNNER_TEMP/doctor.json" || true
+          node -e 'const r = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); const s = r.checks.find((c) => c.name === "service"); if (!s || s.status !== "skip") { console.error(s); process.exit(1); }' "$RUNNER_TEMP/doctor.json"
+          # A restart keeps the home: nothing is initialized twice.
+          docker restart skillhook > /dev/null
+          sleep 3
+          test "$(docker logs skillhook 2>&1 | grep -c 'initialized /data/skillhook')" = 1
