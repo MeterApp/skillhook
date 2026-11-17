@@ -238,6 +238,28 @@ describe("HTTP surface", () => {
     expect(store.seenDelivery("hello", "ingress:hosted-response-lost-1", Date.now() + 25 * 60 * 60 * 1000)).toBe(first.job_id);
   });
 
+  it("queues a webhook's job when the de-dupe index cannot be saved, so the retry is a duplicate of a job that runs (RA-021)", async () => {
+    const enospc = Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+    const save = vi.spyOn(store as unknown as { saveDeliveries(): void }, "saveDeliveries").mockImplementationOnce(() => { throw enospc; });
+    const post = () => fetch(`${base}/hooks/hello`, {
+      method: "POST", body: JSON.stringify({ name: "Disk full" }),
+      headers: { authorization: "Bearer hello-secret", "content-type": "application/json", "x-skillhook-ingress-id": "disk-full-1" },
+    });
+    try {
+      const first = await post();
+      expect(first.status).toBe(202);
+      const body = await json(first);
+      expect(save).toHaveBeenCalledTimes(1);
+      const job = await waitForJob(String(body.job_id));
+      expect(job.status).toBe("succeeded");
+      const retry = await post();
+      expect(retry.status).toBe(200);
+      expect(await json(retry)).toMatchObject({ duplicate: true, job_id: body.job_id });
+    } finally {
+      save.mockRestore();
+    }
+  });
+
   it("honours Prefer: wait=N like ?wait=", async () => {
     const res = await fetch(`${base}/hooks/hello`, { method: "POST", body: JSON.stringify({ name: "Pref" }), headers: { authorization: "Bearer hello-secret", prefer: "wait=20" } });
     expect(res.status).toBe(200);
