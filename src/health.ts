@@ -176,6 +176,11 @@ export function claudeFallbackCheck(jobs: JobRecord[]): { status: CheckStatus; d
   };
 }
 
+/** The official image sets `SKILLHOOK_CONTAINER=1` (docs/docker.md): no service manager and no Tailscale are expected there. */
+function inContainer(env: NodeJS.ProcessEnv): boolean {
+  return env.SKILLHOOK_CONTAINER === "1";
+}
+
 export async function runHealth(paths: Paths, options: HealthOptions = {}): Promise<HealthReport> {
   const started = Date.now();
   const env = options.env ?? process.env;
@@ -478,7 +483,8 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
   let publicUrl = config?.public_url;
   if (options.exposure !== false) {
     const tailscale = findTailscale();
-    if (!tailscale) check("exposure", "tailscale", "warn", "tailscale CLI not found", "install from https://tailscale.com/download to get a free permanent HTTPS URL");
+    if (!tailscale && inContainer(env)) check("exposure", "tailscale", "skip", "not in this container: publish its port behind your own proxy or tunnel, or receive webhooks through Skillhook Cloud's hosted URLs");
+    else if (!tailscale) check("exposure", "tailscale", "warn", "tailscale CLI not found", "install from https://tailscale.com/download to get a free permanent HTTPS URL");
     else {
       const status = await tailscaleStatus(tailscale);
       if (!status || status.backendState !== "Running") check("exposure", "tailscale", "warn", `backend ${status?.backendState ?? "unavailable"}`, "open Tailscale and sign in");
@@ -534,7 +540,8 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
       check("skillhook", "cloud link", status, detail, status === "ok" ? undefined : (linkStatus.last_error ?? "see the server log; skillhook cloud status"), { ...linkStatus });
     }
   }
-  if (options.service !== false) {
+  if (options.service !== false && inContainer(env)) check("skillhook", "service", "skip", "runs in a container: its restart policy keeps the server up (docs/docker.md)");
+  else if (options.service !== false) {
     const service = await serviceStatus(paths);
     if (service.platform === "unsupported") check("skillhook", "service", "skip", "no launchd/systemd on this platform");
     else {

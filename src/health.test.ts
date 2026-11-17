@@ -30,6 +30,13 @@ function byName(report: HealthReport, name: string) {
 }
 
 describe("runHealth", () => {
+  it("skips the service check in the container image, where no service manager is expected", async () => {
+    const paths = home();
+    const report = await runHealth(paths, { ...OFFLINE, env: { ...NO_NET, SKILLHOOK_CONTAINER: "1" }, service: true, deep: false });
+    expect(byName(report, "service")).toMatchObject({ status: "skip", detail: expect.stringContaining("runs in a container") });
+    expect(byName(report, "service")?.hint).toBeUndefined();
+  });
+
   it("reports the IP restriction on credential-free hooks without hiding other failures", async () => {
     const paths = home();
     writeSkill(paths, "internal", "description: local dispatch\nskillhook:\n  auth:\n    type: none\n    allow_ips: [localhost]");
