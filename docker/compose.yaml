@@ -1,0 +1,29 @@
+# skillhook as one container. Copy this file next to a `.env` with the variables you use, then:
+#
+#   docker compose up -d
+#   docker compose exec skillhook skillhook doctor
+#
+# docs/docker.md explains each variable, how to log in, and how to give the agents a repository.
+
+services:
+  skillhook:
+    image: ghcr.io/meterapp/skillhook:latest
+    restart: unless-stopped
+    environment:
+      # One way for Claude Code to authenticate (or log in inside the container instead; see docs/docker.md):
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-} # your subscription: the token `claude setup-token` prints
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-} # or pay per use
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-} # Codex, when a skill uses it
+      # Optional: pair with Skillhook Cloud on the first start (the dashboard shows the code). With hosted URLs
+      # the container needs no published port at all: it only ever connects outwards.
+      SKILLHOOK_CLOUD_CODE: ${SKILLHOOK_CLOUD_CODE:-}
+      TZ: ${TZ:-UTC}
+    ports:
+      # Reachable from this host only. Put your reverse proxy or tunnel in front, or remove the mapping when
+      # webhooks arrive through Skillhook Cloud.
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - skillhook-data:/data # config, secrets, skills, jobs, the agents' logins and the checked-out repositories
+
+volumes:
+  skillhook-data:
