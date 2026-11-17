@@ -60,6 +60,8 @@ npm install -g @meterapp/skillhook
 skillhook init
 ```
 
+Prefer a container? `docker run -d -p 127.0.0.1:8787:8787 -v skillhook-data:/data -e CLAUDE_CODE_OAUTH_TOKEN=… ghcr.io/meterapp/skillhook` is the server with Claude Code, Codex, `git` and `gh` inside, initialized on its first start; `docker exec` runs every command below. See [docs/docker.md](docs/docker.md).
+
 Creates `~/.skillhook` with `skillhook.json`, a `.env` (mode 600) holding a generated admin token and a bearer secret for the bundled `hello` skill, and `skills/hello/SKILL.md`.
 
 ```bash

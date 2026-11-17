@@ -1,7 +1,8 @@
 name: Publish
 
-# Publishes one tagged version to npm (with provenance), creates the matching GitHub release and then installs
-# the package from the registry to prove it works. Runs when:
+# Publishes one tagged version to npm (with provenance), creates the matching GitHub release, installs the package
+# from the registry to prove it works, and pushes the container image (ghcr.io/<owner>/skillhook, docs/docker.md)
+# built from the same tag. Runs when:
 #   - the Release workflow has tagged a version bump that landed on main (it dispatches this workflow),
 #   - someone pushes a v* tag by hand,
 #   - someone publishes a GitHub release by hand,
@@ -203,3 +204,38 @@ jobs:
           skillhook skills validate --dir "$home" --json
           skillhook run hello --dir "$home" --payload '{"name":"npm"}' --dry-run --json > /dev/null
           skillhook update --dir "$home" --json
+
+  image:
+    name: Publish the container image
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io
+    env:
+      TAG: ${{ needs.publish.outputs.tag }}
+      VERSION: ${{ needs.publish.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ needs.publish.outputs.tag }}
+
+      - name: Log in to ghcr.io
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      # linux/amd64 and linux/arm64 (a Mac mini, a Raspberry Pi, Graviton). arm64 builds under QEMU on this runner.
+      - name: Build and push
+        run: |
+          image="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          docker run --privileged --rm tonistiigi/binfmt --install arm64
+          docker buildx create --use
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            -t "$image:$VERSION" -t "$image:latest" --push .
