@@ -18,6 +18,7 @@ import { probeAccountMcp } from "./account-mcp.js";
 import { accountAttention } from "./account-report.js";
 import { AccountStateStore, listAccounts, poolFor, refNames, withAccountEnv } from "./accounts.js";
 import { checkAccountReadiness, CLAUDE_TOKEN_REFUSED, claudeLoginWorks, claudeMethod } from "./readiness.js";
+import { skillEnvNames } from "./skills.js";
 import { baseRunEnv, CLAUDE_API_KEY_VARS, claudeConfigDir, withClaudeAuth, withClaudeConfigDir } from "./runners/env.js";
 import { commandParts } from "./runners/types.js";
 import { nextRun } from "./schedule.js";
@@ -268,7 +269,7 @@ export async function runHealth(paths: Paths, options: HealthOptions = {}): Prom
       const scheduleNote = skill.schedule ? `, schedule ${skill.schedule.cron} (${skill.schedule.timezone})` : "";
       const found: { status: CheckStatus; problem: string; hint: string }[] = [];
       if (!isDirectory(settings.cwd)) found.push({ status: "fail", problem: "cwd does not exist", hint: "cwd does not exist" });
-      const missingEnv = (skill.config.env ?? []).filter((name) => secrets[name] === undefined);
+      const missingEnv = skillEnvNames(skill.config).filter((name) => secrets[name] === undefined);
       if (missingEnv.length) found.push({ status: "warn", problem: `missing env: ${missingEnv.join(", ")}`, hint: `run: skillhook secret set ${missingEnv[0]}` });
       if (settings.runner === "shell") {
         const spec = skill.config.shell?.command;
