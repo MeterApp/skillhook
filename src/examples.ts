@@ -54,8 +54,15 @@ export function listProjectTemplates(dir = projectTemplatesDir()): string[] {
 
 /** Hook names are `<project>-task` and so on: the repository's directory name as letters, digits and dashes. */
 export function projectSlug(dir: string): string {
-  const slug = path.basename(path.resolve(dir)).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
-  return slug || "project";
+  // Plain string steps, no trimming regex: a run of separators must not be matched by an ambiguous repetition.
+  const words = path.basename(path.resolve(dir)).toLowerCase().split(/[^a-z0-9]/).filter(Boolean);
+  let slug = "";
+  for (const word of words) {
+    const next = slug ? `${slug}-${word}` : word;
+    if (next.length > 40) break;
+    slug = next;
+  }
+  return slug || words[0]?.slice(0, 40) || "project";
 }
 
 /** `owner/repo` of a GitHub `origin`, read from the checkout's Git configuration (no request is made). */
