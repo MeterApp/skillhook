@@ -16,6 +16,8 @@ Related: [exposure.md](exposure.md) (public URL), [security.md](security.md) (se
 ├── update-check.json       what npm said at the last update check (checked_at, latest, current) and the last install skillhook ran (last_install)
 ├── skills/
 │   └── <name>/SKILL.md     one directory per skill, plus any files the skill needs
+├── repos/
+│   └── <owner>/<repo>/     repositories `skillhook link <remote>` cloned (see projects.md)
 ├── jobs/
 │   ├── .deliveries.json    delivery-id index for replay protection (also the slots the scheduler fired)
 │   ├── .delivery-log/      every webhook received (deliveries.jsonl) and the bodies of refused ones (bodies/), see Delivery log
