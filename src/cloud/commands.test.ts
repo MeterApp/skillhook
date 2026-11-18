@@ -5,7 +5,7 @@ import { loadSecrets, readEnvFile } from "../env.js";
 import { JobStore } from "../jobs.js";
 import { silentLogger } from "../logger.js";
 import { SkillRegistry } from "../registry.js";
-import { tempHome, writeEnv } from "../test-support/helpers.js";
+import { tempHome, writeEnv, writeSkill } from "../test-support/helpers.js";
 import { createCommandDispatcher, CommandError, type CommandDeps } from "./commands.js";
 import type { CloudPolicy } from "./config.js";
 import { CommandLedger } from "./outbox.js";
@@ -13,7 +13,7 @@ import type { Command } from "./protocol.js";
 
 const VALUE = "placeholder-env-value-1234";
 
-function deps(policy: CloudPolicy, control: CommandDeps["control"] = {}, uploads: { payloads?: boolean; artifacts?: boolean } = {}) {
+function deps(policy: CloudPolicy, control: CommandDeps["control"] = {}, uploads: { payloads?: boolean; artifacts?: boolean; definitions?: boolean } = {}) {
   const paths = tempHome("skillhook-commands-");
   writeEnv(paths, { SOME_VALUE: VALUE });
   const config = loadConfig(paths);
@@ -31,9 +31,10 @@ function deps(policy: CloudPolicy, control: CommandDeps["control"] = {}, uploads
     snapshot: () => ({ skills: [], skill_errors: [], projects: [], schedules: [], config: {} }),
     uploadPayloads: () => uploads.payloads ?? true,
     uploadArtifacts: () => uploads.artifacts ?? false,
+    uploadDefinitions: () => uploads.definitions ?? true,
     control,
   };
-  return { d, ledger, dispatcher: createCommandDispatcher(d), store: d.store };
+  return { d, ledger, dispatcher: createCommandDispatcher(d), store: d.store, paths };
 }
 
 function command(partial: Partial<Command> & Pick<Command, "id" | "type">): Command {
@@ -98,5 +99,24 @@ describe("command dispatcher", () => {
     const got = await dispatcher.run(command({ id: "g", type: "job.get", args: { id: job.id, include: ["stdout", "prompt", "payload"] } }));
     expect(got).toMatchObject({ ok: true, result: { artifacts: { stdout: "done\n" }, artifacts_withheld: "prompt, payload: webhook bodies stay on this machine (cloud.upload_payloads is false here, or the organisation keeps none)" } });
     expect(JSON.stringify(got)).not.toContain("4242-private");
+  });
+
+  it("hands out skill definitions by hash, scrubbed, and keeps them home when cloud.upload_definitions is off", async () => {
+    const observe: CloudPolicy = { mode: "observe", allow_commands: [], deny_commands: [] };
+    const { dispatcher, paths } = deps(observe);
+    writeSkill(paths, "hello", `description: says ${VALUE}`);
+    const listed = await dispatcher.run(command({ id: "l", type: "skills.list" }));
+    const summary = (listed.result as { skills: { name: string; definition: { sha256: string; kind: string; files: number } }[] }).skills[0]!;
+    expect(summary.definition).toMatchObject({ kind: "skill", files: 1, sha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const got = await dispatcher.run(command({ id: "d", type: "definitions.get", args: { sha256: [summary.definition.sha256, "0".repeat(64)] } }));
+    expect(got).toMatchObject({ ok: true, result: { missing: ["0".repeat(64)], definitions: [{ name: "hello", source: { type: "home" }, definition: { sha256: summary.definition.sha256, kind: "skill", files: [{ path: "SKILL.md", text: expect.stringContaining("says [redacted]") }] } }] } });
+    const one = await dispatcher.run(command({ id: "s", type: "skill.get", args: { name: "hello" } }));
+    expect(one).toMatchObject({ ok: true, result: { content: expect.stringContaining("[redacted]"), definition: { sha256: summary.definition.sha256 } } });
+    const kept = deps(observe, {}, { definitions: false });
+    writeSkill(kept.paths, "hello", "description: private");
+    expect(await kept.dispatcher.run(command({ id: "d2", type: "definitions.get", args: { sha256: ["0".repeat(64)] } }))).toMatchObject({ ok: false, error: { code: "denied_by_policy", message: expect.stringContaining("cloud.upload_definitions") } });
+    const withheld = await kept.dispatcher.run(command({ id: "s2", type: "skill.get", args: { name: "hello" } }));
+    expect(withheld).toMatchObject({ ok: true, result: { name: "hello", content_withheld: expect.stringContaining("cloud.upload_definitions") } });
+    expect((withheld.result as Record<string, unknown>).content).toBeUndefined();
   });
 });

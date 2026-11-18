@@ -123,6 +123,7 @@ export function prepareRun(input: PrepareRunInput): PreparedRun {
     SKILLHOOK_RESPONSE_PATH: paths.response,
     SKILLHOOK_TRIGGER: input.event.trigger,
     ...(job.project_commit ? { SKILLHOOK_PROJECT_COMMIT: job.project_commit } : {}),
+    ...(job.definition_sha256 ? { SKILLHOOK_DEFINITION: job.definition_sha256 } : {}),
     SKILLHOOK_RUNNER: settings.runner,
     ...(job.account ? { SKILLHOOK_ACCOUNT: job.account } : {}),
     SKILLHOOK_HOME: home,

@@ -9,6 +9,7 @@ import type { Secrets } from "./env.js";
 import { Events } from "./events.js";
 import { isTerminal, type JobAttempt, type JobRecord, type JobStatus, type JobStore } from "./jobs.js";
 import type { Logger } from "./logger.js";
+import type { ManagedSkills } from "./cloud/managed.js";
 import { assertProjectCommit, assertProjectDefinition, refreshProject, refreshProjectDir, webhookPolicy } from "./project-refresh.js";
 import { answerQuestion, readTimeline, type JobAnswer, type JobQuestion, type ProgressEntry } from "./progress.js";
 import { deriveOutcome, resolveJobResponse } from "./response.js";
@@ -41,6 +42,8 @@ export interface QueueDeps {
   readiness?: ReadinessCache;
   /** What runs taught about each account (`jobs/.accounts.json`); default: next to the job store's directories. */
   accountStates?: AccountStateStore;
+  /** Cloud-managed skills: asked right before a job of one runs whether the cloud still holds the installed definition (`freshen`). */
+  managed?: Pick<ManagedSkills, "freshen">;
 }
 
 /** A runner (and maybe an account of it) a job can run on. */
@@ -533,6 +536,38 @@ export class JobQueue extends EventEmitter {
           cwd: freshWorkspace?.cwd ?? settings.cwd, skill_file: skill.file,
         });
         this.events.emit("job.updated", { job: running.job, fields: ["runner", "model", "effort", "cwd", "skill_file"] });
+      }
+      // A cloud-managed skill runs what Skillhook Cloud holds now: one conditional request, the new definition installed
+      // when it changed, the copy on disk when the cloud cannot be asked (or a failure, with cloud.require_fresh_definitions).
+      if (!job.adhoc && skill.source.type === "cloud" && this.deps.managed) {
+        const fresh = await this.deps.managed.freshen(skill.name);
+        if (running.cancelled || this.stopping) {
+          this.finish(job, { status: this.stopping ? "interrupted" : "cancelled", error: "stopped before the runner started" });
+          return;
+        }
+        if (fresh.unassigned) throw new Error(`skill "${job.skill}" is no longer assigned to this machine by Skillhook Cloud`);
+        if (!fresh.fresh && config.cloud.require_fresh_definitions) throw new Error(`cloud definition: Skillhook Cloud could not confirm the definition of "${job.skill}" before the run (${fresh.error ?? "no answer"}); cloud.require_fresh_definitions is on`);
+        if (fresh.changed) {
+          const reloaded = registry.get(job.skill);
+          if (!reloaded || reloaded.source.type !== "cloud" || !reloaded.enabled) throw new Error(`skill "${job.skill}" no longer exists or is disabled`);
+          if (job.trigger === "webhook" && job.webhook_policy !== webhookPolicy(reloaded)) {
+            throw new Error("cloud definition: the webhook policy changed since admission; send a new delivery for verification");
+          }
+          skill = reloaded;
+          const settings = resolveRunSettings(skill, config, {
+            ...(job.run_overrides ?? { runner: job.runner, model: job.model, effort: job.effort, cwd: job.cwd }),
+            ...(job.resume ? { runner: job.resume.runner, model: job.model, effort: job.effort } : {}),
+          });
+          const freshWorkspace = this.workspaceFor({ ...job, cwd: settings.cwd }, skill);
+          if (freshWorkspace && [...this.running.values()].some((other) => other !== running && other.workspace?.key === freshWorkspace.key && (freshWorkspace.exclusive || other.workspace.exclusive))) {
+            throw new Error("cloud definition: working directory changed and is occupied; run the skill again");
+          }
+          running.workspace = freshWorkspace;
+          running.job = store.update(job.id, { runner: settings.runner, model: settings.model, effort: settings.effort, cwd: freshWorkspace?.cwd ?? settings.cwd, skill_file: skill.file });
+          this.events.emit("job.updated", { job: running.job, fields: ["runner", "model", "effort", "cwd", "skill_file"] });
+        }
+        running.job = store.update(job.id, { ...(fresh.sha256 ?? skill.definition?.sha256 ? { definition_sha256: fresh.sha256 ?? skill.definition?.sha256 } : {}), definition_fresh: fresh.fresh });
+        this.events.emit("job.updated", { job: running.job, fields: ["definition_sha256", "definition_fresh"] });
       }
     } catch (error) {
       this.finish(job, { status: "failed", started_at: nowIso(), error: errorMessage(error) });

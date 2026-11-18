@@ -29,6 +29,11 @@ export const LIMITS = {
   long_poll_seconds: 25,
   /** One `POST /api/agent/issues` body (a problem report from `skillhook cloud report`). */
   max_issue_report_bytes: 64 * 1024,
+  /** A skill definition (src/definitions.ts): files listed, one file's text, all its text; definitions per `definitions.get`. */
+  max_definition_files: 200,
+  max_definition_file_bytes: 256 * 1024,
+  max_definition_bytes: 1024 * 1024,
+  max_definitions_per_command: 20,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -74,6 +79,7 @@ export const CLOUD_EVENT_TYPES = [
   "schedule.fired",
   "schedule.skipped",
   "skill.changed",
+  "skills.synced",
   "config.changed",
   "health.changed",
   "health.report",
@@ -95,8 +101,11 @@ export const COMMAND_TYPES = [
   "accounts.get",
   "skills.list",
   "skill.get",
+  "definitions.get",
   "skill.put",
   "skill.delete",
+  "skills.sync",
+  "skill.adopt",
   "skill.run",
   "skill.test",
   "delivery.list",
@@ -140,8 +149,11 @@ export const COMMAND_CLASS: Record<CommandType, CommandClass> = {
   "accounts.get": "read",
   "skills.list": "read",
   "skill.get": "read",
+  "definitions.get": "read",
   "skill.put": "control",
   "skill.delete": "control",
+  "skills.sync": "control",
+  "skill.adopt": "control",
   "skill.run": "control",
   "skill.test": "control",
   "delivery.list": "read",
@@ -175,6 +187,8 @@ export const COMMAND_CLASS: Record<CommandType, CommandClass> = {
 };
 
 const name = z.string().min(1).max(64);
+/** A hex SHA-256 (a definition's or a file's content hash). */
+const sha256 = z.string().regex(/^[0-9a-f]{64}$/);
 const id = z.string().min(1).max(200);
 const iso = z.string().min(20).max(40);
 const runner = z.enum(RUNNER_NAMES);
@@ -190,8 +204,11 @@ export const COMMAND_ARGS = {
   "accounts.get": z.object({ account: name.optional(), refresh: z.boolean().optional(), usage: z.boolean().optional() }).strict(),
   "skills.list": z.object({}).strict(),
   "skill.get": z.object({ name }).strict(),
+  "definitions.get": z.object({ sha256: z.array(sha256).min(1).max(LIMITS.max_definitions_per_command) }).strict(),
   "skill.put": z.object({ name, content: z.string().min(1).max(512 * 1024), allow_unauthenticated: z.boolean().optional() }).strict(),
   "skill.delete": z.object({ name }).strict(),
+  "skills.sync": z.object({}).strict(),
+  "skill.adopt": z.object({ name, sha256 }).strict(),
   "skill.run": z.object({ name, payload: z.unknown().optional(), headers: z.record(z.string(), z.string()).optional(), ...runOverrides }).strict(),
   "skill.test": z.object({ skill_md: z.string().min(1).max(512 * 1024), payload: z.unknown().optional(), headers: z.record(z.string(), z.string()).optional(), cwd: z.string().max(4096).optional(), ...runOverrides }).strict(),
   "delivery.list": z.object({ skill: name.optional(), outcome: z.enum(DELIVERY_OUTCOMES).optional(), ...listWindow }).strict(),
@@ -306,6 +323,77 @@ const summary = z.object({ ok: z.number().int().min(0), warn: z.number().int().m
 /** Records the cloud stores as JSON keep unknown fields (a newer machine may say more): `.loose()`. */
 export const SkillSummarySchema = z.object({ name, description: z.string().optional(), enabled: z.boolean(), runner, source: z.object({ type: z.string() }).loose() }).loose();
 
+// ---------------------------------------------------------------------------
+// Skill definitions (src/definitions.ts): the text of a skill, by content hash
+// ---------------------------------------------------------------------------
+
+export const DEFINITION_KINDS = ["skill", "hook"] as const;
+export type DefinitionKind = (typeof DEFINITION_KINDS)[number];
+
+const DEFINITION_SEGMENT_RE = /^[A-Za-z0-9._-]+$/;
+
+/** A path inside a definition: relative, `/`-separated segments of letters, digits, `.`, `_` and `-`, none of them `.` or `..` (the same rule as `isDefinitionPath` in src/definitions.ts). */
+export function isDefinitionPath(value: string): boolean {
+  if (!value || value.length > 512) return false;
+  return value.split("/").every((segment) => DEFINITION_SEGMENT_RE.test(segment) && segment !== "." && segment !== "..");
+}
+
+export const DefinitionFileSchema = z
+  .object({
+    path: z.string().min(1).max(512).refine(isDefinitionPath, "a relative path of letters, digits, dots, hyphens and underscores, never . or .."),
+    sha256,
+    bytes: z.number().int().min(0),
+    text: z.string().max(LIMITS.max_definition_file_bytes * 4).optional(),
+    /** Why `text` is absent: not UTF-8, or beyond the limits. */
+    text_omitted: z.enum(["binary", "too_large"]).optional(),
+  })
+  .strict();
+export type DefinitionFile = z.infer<typeof DefinitionFileSchema>;
+
+/**
+ * A skill's definition: `sha256` over the kind, the name and the sorted `(path, sha256)` pairs of its files. `skill`: a
+ * SKILL.md directory (`SKILL.md` at the root); `hook`: a `skillhook.yaml` hook (`hook.yaml` carries its block) and, for a
+ * `skill:` hook, the SKILL.md directory it names at its path in the repository.
+ */
+export const DefinitionSchema = z
+  .object({
+    sha256,
+    kind: z.enum(DEFINITION_KINDS),
+    name,
+    files: z.array(DefinitionFileSchema).min(1).max(LIMITS.max_definition_files),
+    bytes: z.number().int().min(0),
+    files_omitted: z.number().int().min(0).optional(),
+  })
+  .strict();
+export type Definition = z.infer<typeof DefinitionSchema>;
+
+/** One skill the cloud assigns to a machine (`GET /api/agent/skills`): the definition it should serve, by hash. */
+export const AssignedSkillSchema = z
+  .object({
+    name,
+    sha256,
+    /** A person accepted that the definition has `auth: none` (anyone with the URL could run it). */
+    allow_unauthenticated: z.boolean().optional(),
+  })
+  .loose();
+export type AssignedSkill = z.infer<typeof AssignedSkillSchema>;
+
+export const AssignedSkillsResponseSchema = z.object({ ok: z.literal(true), skills: z.array(AssignedSkillSchema).max(1000) }).loose();
+/** `GET /api/agent/skills/<name>`: the assignment and its definition (`304` when `If-None-Match` named the current hash, `404 not_assigned` otherwise). */
+export const AssignedSkillResponseSchema = z.object({ ok: z.literal(true), skill: AssignedSkillSchema, definition: DefinitionSchema }).loose();
+
+/** What a machine says about its cloud-managed skills in the snapshot. */
+export const ManagedSkillsStateSchema = z
+  .object({
+    /** `cloud.managed_skills` on this machine. */
+    enabled: z.boolean(),
+    /** Whether the machine's policy lets it pull (`skills.sync` allowed). */
+    allowed: z.boolean(),
+    last_sync_at: z.string().nullable().optional(),
+    skills: z.array(z.object({ name, sha256, installed_at: z.string().max(40) }).loose()).max(1000),
+  })
+  .loose();
+
 export const SnapshotSchema = z
   .object({
     server: z.object({ started_at: iso, version: z.string(), host: z.string(), port: z.number().int(), public_url: z.string().optional() }).loose().optional(),
@@ -318,6 +406,8 @@ export const SnapshotSchema = z
     health: z.object({ ok: z.boolean(), summary, generated_at: iso, deep: z.boolean() }).loose().optional(),
     runners: z.array(z.object({ runner, ready: z.boolean() }).loose()).max(3).optional(),
     stats: z.record(z.string(), z.unknown()).optional(),
+    /** The cloud-managed skills this machine serves and whether it may pull more (absent from machines before 0.17.0). */
+    managed: ManagedSkillsStateSchema.optional(),
   })
   .strict();
 export type Snapshot = z.infer<typeof SnapshotSchema>;

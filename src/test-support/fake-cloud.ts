@@ -5,7 +5,7 @@
 // what `apiScopes` allows) and its calls, and a secret sealed to the requester's key, with RFC 9457 problems like the
 // real one. Browser sign-ins (`/api/auth/device/*`, RFC 8628): each poll answered from a script, then `apiKey` once.
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { CommandResultSchema, IssueReportRequestSchema, PairRequestSchema, SyncRequestSchema, type Command, type CommandResult, type Hints, type IngressAck, type IngressItem, type IssueReportRequest, type PairRequest, type SyncRequest } from "../cloud/protocol.js";
+import { CommandResultSchema, IssueReportRequestSchema, PairRequestSchema, SyncRequestSchema, type Command, type CommandResult, type Definition, type Hints, type IngressAck, type IngressItem, type IssueReportRequest, type PairRequest, type SyncRequest } from "../cloud/protocol.js";
 import { sealForRecipient } from "../cloud/seal.js";
 
 type Scope = "fleet:read" | "fleet:run" | "fleet:admin";
@@ -110,6 +110,12 @@ export class FakeCloud {
   readonly toolAnswers = new Map<string, (input: Record<string, unknown>) => Record<string, unknown> | { problem: [number, string, string] }>();
   machines: Record<string, unknown>[] = [];
   jobs: Record<string, unknown>[] = [];
+  /** The skills the cloud assigns to the machine (`GET /api/agent/skills[/<name>]`), by name. */
+  readonly assigned = new Map<string, { definition: Definition; allow_unauthenticated?: boolean }>();
+  /** Every request for assigned skills: the path and the `If-None-Match` it carried. */
+  readonly skillRequests: { path: string; ifNoneMatch: string | undefined }[] = [];
+  /** How those requests are answered: as assigned, a 500, or `404` for every skill (a cloud that assigns nothing and knows no route). */
+  assignedMode: "ok" | "500" | "hang" = "ok";
   private readonly commands: Command[] = [];
   private readonly ingress: IngressItem[] = [];
   private readonly waiters: { predicate: () => boolean; resolve: () => void }[] = [];
@@ -196,6 +202,28 @@ export class FakeCloud {
       this.artifacts.set(key, entry);
       this.notify();
       return this.reply(res, 200, { ok: true });
+    }
+    if (req.method === "GET" && (url.pathname === "/api/agent/skills" || url.pathname.startsWith("/api/agent/skills/"))) {
+      const ifNoneMatch = typeof req.headers["if-none-match"] === "string" ? req.headers["if-none-match"] : undefined;
+      this.skillRequests.push({ path: url.pathname, ifNoneMatch });
+      this.notify();
+      if (req.headers.authorization !== `Bearer ${this.token}`) return this.reply(res, 401, { ok: false, error: "invalid_token", message: "bad token" });
+      if (this.assignedMode === "500") return this.reply(res, 500, { ok: false, error: "server_error", message: "boom" });
+      if (this.assignedMode === "hang") {
+        await new Promise((r) => setTimeout(r, this.hangMs));
+        return void req.socket.destroy();
+      }
+      if (url.pathname === "/api/agent/skills") {
+        return this.reply(res, 200, { ok: true, skills: [...this.assigned.entries()].map(([name, entry]) => ({ name, sha256: entry.definition.sha256, ...(entry.allow_unauthenticated ? { allow_unauthenticated: true } : {}) })) });
+      }
+      const name = decodeURIComponent(url.pathname.slice("/api/agent/skills/".length));
+      const entry = this.assigned.get(name);
+      if (!entry) return this.reply(res, 404, { ok: false, error: "not_assigned", message: `"${name}" is not assigned to this machine` });
+      if (ifNoneMatch === `"${entry.definition.sha256}"`) {
+        res.writeHead(304, { etag: `"${entry.definition.sha256}"` });
+        return void res.end();
+      }
+      return this.reply(res, 200, { ok: true, skill: { name, sha256: entry.definition.sha256, ...(entry.allow_unauthenticated ? { allow_unauthenticated: true } : {}) }, definition: entry.definition }, { etag: `"${entry.definition.sha256}"` });
     }
     if (req.method === "POST" && url.pathname === "/api/agent/disconnect") {
       this.disconnects++;

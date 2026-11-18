@@ -570,6 +570,18 @@
           "default": true,
           "type": "boolean"
         },
+        "upload_definitions": {
+          "default": true,
+          "type": "boolean"
+        },
+        "managed_skills": {
+          "default": false,
+          "type": "boolean"
+        },
+        "require_fresh_definitions": {
+          "default": false,
+          "type": "boolean"
+        },
         "snapshot_interval_seconds": {
           "default": 60,
           "type": "integer",

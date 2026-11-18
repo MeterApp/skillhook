@@ -43,7 +43,7 @@ export function createOps(paths: Paths, options: { env?: NodeJS.ProcessEnv; logg
     config,
     secrets: () => loadSecrets(paths, options.env ?? process.env),
     fileSecrets: () => readEnvFile(paths.envFile),
-    registry: new SkillRegistry(paths.skillsDir, { projects: configProjects(paths) }),
+    registry: new SkillRegistry(paths.skillsDir, { projects: configProjects(paths), cloudSkillsDir: paths.cloudSkillsDir, managedEnabled: () => config.cloud.managed_skills }),
     store: new JobStore(paths.jobsDir, { maxJobs: config.jobs.max_jobs, dedupeWindowSeconds: config.jobs.dedupe_window_seconds }),
     deliveryLog: new DeliveryLog(paths.jobsDir, () => config.deliveries),
     logger: options.logger ?? silentLogger,

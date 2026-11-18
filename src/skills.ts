@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import type { DefinitionSummary } from "./definitions.js";
 import { parseFrontmatter } from "./frontmatter.js";
 import { AccountRefSchema, ClaudePermissionModeSchema, CodexSandboxSchema, CommandSpecSchema, RunnerNameSchema, type RunnerName } from "./config.js";
 import { FallbackSchema, RetrySchema } from "./runners/failure.js";
@@ -384,9 +385,15 @@ export function describeAuth(auth: NormalizedAuth): string {
 // Skill loading
 // ---------------------------------------------------------------------------
 
-/** Where a skill came from: its own directory under `<home>/skills`, or a hook in a linked project's `skillhook.yaml`. */
+/** Where a skill came from: its own directory under `<home>/skills`, a hook in a linked project's `skillhook.yaml`, or a definition Skillhook Cloud assigned to this machine. */
 export type SkillSource =
   | { type: "home" }
+  | {
+      /** A cloud-managed skill: the definition with this hash, pulled from Skillhook Cloud into `<home>/cloud-skills` (docs/cloud.md#cloud-managed-skills). */
+      type: "cloud";
+      sha256: string;
+      installed_at: string;
+    }
   | {
       type: "project";
       /** The project (repository) directory. */
@@ -425,6 +432,8 @@ export interface Skill {
   error?: string;
   mtimeMs: number;
   source: SkillSource;
+  /** The content hash of the files that define the skill (src/definitions.ts), set by the registry; absent for an ad-hoc skill. */
+  definition?: DefinitionSummary;
 }
 
 export class SkillError extends Error {

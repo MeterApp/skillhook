@@ -10,6 +10,7 @@ import type { SkillRegistry } from "../registry.js";
 import type { ScheduleStatus } from "../scheduler.js";
 import { skillSummary, type ServerState } from "../server.js";
 import { collectStats, parseSince } from "../stats.js";
+import type { ManagedSkills } from "./managed.js";
 import { scrubSecrets, secretValues } from "./redact.js";
 import { RUNNER_NAMES, type Snapshot } from "./protocol.js";
 
@@ -25,6 +26,8 @@ export interface SnapshotDeps {
   health?: HealthCache;
   readiness?: ReadinessCache;
   serverState?: () => ServerState | undefined;
+  /** The cloud-managed skills this machine serves (`managed` in the snapshot). */
+  managed?: Pick<ManagedSkills, "status">;
 }
 
 export function buildSnapshot(deps: SnapshotDeps): Snapshot {
@@ -49,6 +52,7 @@ export function buildSnapshot(deps: SnapshotDeps): Snapshot {
     ...(health ? { health: { ok: health.ok, summary: health.summary, generated_at: health.generated_at, deep: health.deep, groups: health.groups } } : {}),
     ...(readiness.length ? { runners: readiness as unknown as Snapshot["runners"] } : {}),
     ...(stats ? { stats } : {}),
+    ...(deps.managed ? { managed: deps.managed.status() } : {}),
   };
   return scrubSecrets(snapshot, secretValues(deps.fileSecrets(), deps.config.cloud.public_env));
 }
