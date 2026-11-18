@@ -63,6 +63,7 @@ function projectJson(ops: Ops, project: LoadedProject, baseUrl: string): Record<
     file: project.file,
     error: project.error ?? null,
     hooks: project.hooks.map((hook) => ({ ...skillSummary(hook, ops.config, secrets), url: webhookUrl(baseUrl, hook.name) })),
+    skills: project.skills.map((skill) => ({ name: skill.name, dir: skill.dir, file: skill.file, hooks: skill.hooks, error: skill.error ?? null })),
     errors: project.errors,
   };
 }
@@ -76,6 +77,7 @@ function hookLines(ops: Ops, project: LoadedProject, baseUrl: string): string[] 
     return `  ${hook.name.padEnd(24)} ${String(summary.runner).padEnd(6)} ${kind.padEnd(6)} ${`${auth.type}${auth.configured ? "" : " (secret missing)"}`.padEnd(22)} ${webhookUrl(baseUrl, hook.name)}`;
   });
   for (const error of project.errors) lines.push(`  ✗ ${error.name}: ${error.error.split("\n")[0]}`);
+  if (project.skills.length) lines.push(`  skills: ${project.skills.map((s) => `@${s.name} ${displayPath(s.dir)}${s.error ? " ✗" : s.hooks.length ? ` (${s.hooks.join(", ")})` : " (no hook)"}`).join("; ")}`);
   return lines;
 }
 

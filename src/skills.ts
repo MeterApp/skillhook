@@ -402,6 +402,8 @@ export type SkillSource =
       file: string;
       /** How the hook is implemented: a `SKILL.md` in the project, an inline `prompt`, or a shell command (`run`). */
       kind: "skill" | "prompt" | "run";
+      /** For a `skill` hook that refers to a skill declared under `skills:` (`skill: "@name"`): that name. */
+      skill?: string;
     }
   | {
       /** A SKILL.md supplied with the request and kept in the job directory (`jobs/<job>/skill/<name>/`); never in the registry. */

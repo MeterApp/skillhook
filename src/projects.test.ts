@@ -48,6 +48,46 @@ describe("skillhook.yaml", () => {
     expect(Object.keys(loaded.stamps)).toEqual([path.join(dir, "skillhook.yaml"), path.join(dir, ".claude", "skills", "release-notes", "SKILL.md")]);
   });
 
+  it("declares the repository's skills under skills: and lets hooks refer to them as @name", () => {
+    const skillMd = (name: string) => `---\nname: ${name}\ndescription: ${name}.\nskillhook:\n  model: opus\n---\nDo ${name}.\n`;
+    const dir = project(
+      `skills:\n  triage: .claude/skills/triage\n  notes: { path: skills/notes }\n  renamed: skills/renamed\n  missing: skills/missing\nhooks:\n  opened:\n    skill: "@triage"\n  labelled:\n    skill: "@triage"\n    model: haiku\n  released:\n    skill: "@notes"\n  typo:\n    skill: "@notez"\n  bad:\n    skill: "@renamed"\n  by-path:\n    skill: skills/notes\n`,
+      (d) => {
+        for (const [folder, name] of [[".claude/skills/triage", "triage"], ["skills/notes", "notes"], ["skills/renamed", "other"]] as const) {
+          mkdirSync(path.join(d, folder), { recursive: true });
+          writeFileSync(path.join(d, folder, "SKILL.md"), skillMd(name));
+        }
+      },
+    );
+    const loaded = loadProject(dir);
+    expect(loaded.error).toBeUndefined();
+    expect(loaded.skills.map((s) => ({ name: s.name, dir: path.relative(dir, s.dir), hooks: s.hooks, error: s.error ? s.error.split("\n")[0] : undefined }))).toEqual([
+      { name: "triage", dir: path.join(".claude", "skills", "triage"), hooks: ["opened", "labelled"], error: undefined },
+      { name: "notes", dir: path.join("skills", "notes"), hooks: ["released"], error: undefined },
+      { name: "renamed", dir: path.join("skills", "renamed"), hooks: [], error: expect.stringContaining('must match its directory name "renamed"') },
+      { name: "missing", dir: path.join("skills", "missing"), hooks: [], error: expect.stringContaining("No SKILL.md") },
+    ]);
+    expect(loaded.hooks.map((h) => h.name)).toEqual(["opened", "labelled", "released", "by-path"]);
+    const opened = loaded.hooks.find((h) => h.name === "opened");
+    expect(opened).toMatchObject({ description: "triage.", dir: path.join(dir, ".claude", "skills", "triage"), source: { type: "project", kind: "skill", skill: "triage" } });
+    expect(opened?.config).toMatchObject({ model: "opus", cwd: dir });
+    expect(loaded.hooks.find((h) => h.name === "labelled")?.config.model).toBe("haiku");
+    // A path still works and carries no declared name.
+    expect(loaded.hooks.find((h) => h.name === "by-path")?.source).toEqual({ type: "project", dir, file: path.join(dir, "skillhook.yaml"), kind: "skill" });
+    // Errors: a declared skill that does not load is reported as @name, a reference to an undeclared one names what is declared.
+    const errors = Object.fromEntries(loaded.errors.map((e) => [e.name, e.error]));
+    expect(Object.keys(errors).sort()).toEqual(["@missing", "@renamed", "bad", "typo"]);
+    expect(errors.typo).toContain('Hook "typo": @notez is not declared under skills: in skillhook.yaml (declared: @triage, @notes, @renamed, @missing)');
+    expect(errors.bad).toContain("must match its directory name");
+    // Every declared SKILL.md is watched, used or not.
+    expect(Object.keys(loaded.stamps).sort()).toEqual([path.join(dir, "skillhook.yaml"), ...["skills/notes", "skills/renamed", "skills/missing", ".claude/skills/triage"].map((f) => path.join(dir, f, "SKILL.md"))].sort());
+    // The schema: names like skill names, a path or { path } and nothing else.
+    expect(() => parseProjectFile("skills:\n  Bad Name: x\nhooks: {}\n", "f.yaml")).toThrow(/Invalid skill name "Bad Name" under skills:/);
+    expect(() => parseProjectFile("skills:\n  ok: { path: x, extra: 1 }\nhooks: {}\n", "f.yaml")).toThrow(/Invalid f.yaml/);
+    expect(parseProjectFile("hooks:\n  a:\n    skill: \"@nothing\"\n", "f.yaml").skills).toBeUndefined();
+    expect(loadProject(project('hooks:\n  a:\n    skill: "@nothing"\n')).errors[0]?.error).toContain("the file declares no skills");
+  });
+
   it("accepts inline prompts and the SKILL.md file path itself", () => {
     const dir = project(`hooks:\n  summarize:\n    prompt: Summarize {{payload}} into {{job_dir}}/summary.md\n    model: haiku\n  by-file:\n    skill: skills/thing/SKILL.md\n`, (d) => {
       mkdirSync(path.join(d, "skills", "thing"), { recursive: true });
