@@ -5,7 +5,7 @@ import { adminRequest, findRunningServer, localBaseUrl } from "./client.js";
 import { loadConfig, readRawConfig, setConfigValue, type Config, type RunnerName } from "./config.js";
 import { DeliveryLog } from "./delivery-log.js";
 import { ADMIN_TOKEN_ENV, defaultSecretEnvFor, loadSecrets, readEnvFile, upsertEnvVar, type Secrets } from "./env.js";
-import { findExample } from "./examples.js";
+import { findExample, writeProjectTemplate, type TemplateWrite } from "./examples.js";
 import { parseFrontmatter, stringifyFrontmatter } from "./frontmatter.js";
 import { generateSecret } from "./ids.js";
 import { JobStore, type JobRecord } from "./jobs.js";
@@ -258,12 +258,19 @@ export interface InitProjectResult {
   file: string;
   /** False when the file already existed and `force` was not set (nothing written). */
   written: boolean;
+  /** With `--template`: every file the template wrote or kept, and the names it filled in. */
+  template?: TemplateWrite;
   link: LinkResult;
 }
 
 /** Writes a starter skillhook.yaml into a directory (creating it if needed) and links the project. */
-export function initProject(ops: Ops, dir: string, options: { force?: boolean; noSecret?: boolean } = {}): InitProjectResult {
+export function initProject(ops: Ops, dir: string, options: { force?: boolean; noSecret?: boolean; template?: string } = {}): InitProjectResult {
   const ref = resolveProject(dir);
+  if (options.template) {
+    const template = writeProjectTemplate(options.template, ref.dir, { force: options.force });
+    const file = path.join(ref.dir, PROJECT_FILE_NAMES[0]);
+    return { file, written: template.written.includes(PROJECT_FILE_NAMES[0]), template, link: linkProject(ops, ref.dir, { noSecret: options.noSecret }) };
+  }
   const existing = PROJECT_FILE_NAMES.map((name) => path.join(ref.dir, name)).find((candidate) => existsSync(candidate));
   const file = existing ?? path.join(ref.dir, PROJECT_FILE_NAMES[0]);
   const written = !existing || options.force === true;
