@@ -104,6 +104,52 @@ export const ScheduleObjectSchema = z
 export const ScheduleSchema = z.union([z.string().min(1), z.literal(false), ScheduleObjectSchema]);
 export type ScheduleConfig = z.infer<typeof ScheduleSchema>;
 
+/** `${NAME}` in an MCP server's strings: Claude Code replaces it with the run's environment variable, so the value never sits in the skill file or on the command line. */
+const ENV_REFERENCE = /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}/g;
+const CREDENTIAL_HEADER = /^(authorization|proxy-authorization|x-api-key|api-key|x-auth-token)$/i;
+
+/** One MCP server a skill's runs get, in Claude Code's own `mcpServers` shape: a local command (stdio) or a remote URL. */
+export const McpServerSchema = z
+  .object({
+    type: z.enum(["stdio", "http", "sse"]).optional(),
+    command: z.string().min(1).optional(),
+    args: z.array(z.string()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+    url: z.url().optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+  })
+  .strict()
+  .refine((s) => (s.command === undefined) !== (s.url === undefined), "an MCP server needs exactly one of command (a local server) or url (a remote one)")
+  .refine((s) => (s.command !== undefined ? s.type === undefined || s.type === "stdio" : s.type !== "stdio"), "type does not match: stdio goes with command, http or sse with url")
+  .refine((s) => s.command !== undefined || (s.args === undefined && s.env === undefined), "args and env belong to a command server")
+  .refine((s) => s.url !== undefined || s.headers === undefined, "headers belong to a url server")
+  .refine((s) => Object.entries(s.headers ?? {}).every(([name, value]) => !CREDENTIAL_HEADER.test(name) || value.includes("${")), "a credential header must take its value from the machine's .env: write it as ${NAME} (e.g. \"Bearer ${LINEAR_API_KEY}\") and store the value with `skillhook secret set NAME`");
+export type McpServer = z.infer<typeof McpServerSchema>;
+
+/** Server names are checked here, not as the record's key type, so the message says which name and why. */
+const McpServersSchema = z.record(z.string(), McpServerSchema).superRefine((servers, ctx) => {
+  for (const name of Object.keys(servers)) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)) ctx.addIssue({ code: "custom", path: [name], message: "an MCP server name is letters, digits, - and _ (at most 64)" });
+    else if (/^skillhook/i.test(name)) ctx.addIssue({ code: "custom", path: [name], message: "names starting with skillhook are reserved for the job API" });
+  }
+});
+
+/** The environment variable names a skill's MCP servers refer to as `${NAME}`: they reach the run like the names in `env:`. */
+export function mcpEnvNames(servers: Record<string, McpServer> | undefined): string[] {
+  const names = new Set<string>();
+  for (const server of Object.values(servers ?? {})) {
+    for (const text of [server.command, server.url, ...(server.args ?? []), ...Object.values(server.env ?? {}), ...Object.values(server.headers ?? {})]) {
+      for (const match of (text ?? "").matchAll(ENV_REFERENCE)) names.add(match[1]!);
+    }
+  }
+  return [...names];
+}
+
+/** Every environment variable name a skill asks for: `env:` plus what its MCP servers refer to. */
+export function skillEnvNames(config: { env?: string[]; claude?: { mcp_servers?: Record<string, McpServer> } }): string[] {
+  return [...new Set([...(config.env ?? []), ...mcpEnvNames(config.claude?.mcp_servers)])];
+}
+
 /** Claude Code options of a skill (the `claude:` key of the `skillhook:` block), and of a whole `skillhook.yaml`. */
 export const ClaudeOptionsSchema = z
   .object({
@@ -116,6 +162,10 @@ export const ClaudeOptionsSchema = z
     args: z.array(z.string()).optional(),
     /** The Claude Code configuration directory the run uses (`CLAUDE_CONFIG_DIR`), and so the account it is logged in to: one machine can run each repository's hooks as a different `claude login`. `~` is expanded; a relative path is resolved against the skill's directory (a hook's: its repository). */
     config_dir: z.string().min(1).optional(),
+    /** MCP servers this skill's runs get besides the ones Claude Code already has, by name: `{ command, args, env }` or `{ url, headers }`. `${NAME}` in any string is filled from the machine's `.env` at run time. Their tools are allowed without a prompt. */
+    mcp_servers: McpServersSchema.optional(),
+    /** Only the servers in `mcp_servers` (and the job API): Claude Code's own MCP servers, plugins' and the repository's `.mcp.json` are left out of this skill's runs. */
+    strict_mcp: z.boolean().optional(),
   })
   .strict();
 export type ClaudeOptions = z.infer<typeof ClaudeOptionsSchema>;

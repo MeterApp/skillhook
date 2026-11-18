@@ -56,6 +56,61 @@
         "config_dir": {
           "type": "string",
           "minLength": 1
+        },
+        "mcp_servers": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "stdio",
+                  "http",
+                  "sse"
+                ]
+              },
+              "command": {
+                "type": "string",
+                "minLength": 1
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "env": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "headers": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "strict_mcp": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -559,6 +614,61 @@
               "config_dir": {
                 "type": "string",
                 "minLength": 1
+              },
+              "mcp_servers": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "stdio",
+                        "http",
+                        "sse"
+                      ]
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "args": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "env": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "url": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "headers": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "strict_mcp": {
+                "type": "boolean"
               }
             },
             "additionalProperties": false

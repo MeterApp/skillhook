@@ -41,7 +41,7 @@ Start from an example when one is close — `skillhook skills examples`, then `s
 | `dedupe` | `{ path: … }` or `{ header: … }`: the value that identifies a delivery; `in_flight: false` lets identical payloads run at the same time | the provider's delivery id; in-flight de-duplication on |
 | `env` | names of secrets saved with `skillhook secret set` that the agent may see, e.g. `[GRANOLA_API_KEY]` | none |
 | `concurrency` | jobs of this skill allowed at once | 1 |
-| `claude` | `permission_mode`, `allowed_tools`, `disallowed_tools`, `add_dirs`, `max_budget_usd`, `append_system_prompt`, `args`, `config_dir` (the Claude login to run as: `CLAUDE_CONFIG_DIR`) | server `runners.claude` |
+| `claude` | `permission_mode`, `allowed_tools`, `disallowed_tools`, `add_dirs`, `max_budget_usd`, `append_system_prompt`, `args`, `config_dir` (the Claude login to run as: `CLAUDE_CONFIG_DIR`), `mcp_servers` (name → `{command, args, env}` or `{url, headers}`: MCP servers the skill's runs get, their tools allowed; write a secret as `${NAME}` and never its value), `strict_mcp` (only those servers) | server `runners.claude` |
 | `codex` | `sandbox` (`read-only` \| `workspace-write` \| `danger-full-access`), `network_access`, `profile`, `add_dirs`, `args` | `workspace-write`, network on |
 | `shell` | `{ command: "…" }` — a script instead of an agent; payload on stdin, `SKILLHOOK_*` variables set | — |
 | `response` | `{ mode: text \| file \| structured, schema? }`: how the task outcome (`completed`, `partial`, `needs_human`, `nothing_to_do`, `failed`) is reported: `response.json` in the job directory, or a JSON answer forced through `claude --json-schema` / `codex --output-schema` | `text`: the agent may write `response.json`; otherwise the outcome is `unknown` |
