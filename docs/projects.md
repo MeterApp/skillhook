@@ -28,6 +28,21 @@ skillhook url pull-after-merge   # the URL to configure at the sender
 
 The hooks are live on the running server as soon as the file is linked or edited; no restart. `skillhook projects` lists every linked repository with its hooks, `skillhook skills list` shows them next to the skills in `~/.skillhook/skills` with a `source` column.
 
+## Let skillhook check the repository out
+
+On a machine nobody set up by hand (a server, [a container](docker.md)), give `link` the remote instead of a directory:
+
+```bash
+skillhook link github:you/your-repo     # or an https://, ssh:// or file:// URL, or git@host:you/your-repo.git
+```
+
+It clones the repository into `<home>/repos/<owner>/<repo>` (`--into DIR` chooses another place), links it, and adds the checkout to `project_refresh`, so every job starts from the newest `origin/main` (next section). Running it again changes nothing. A repository without a `skillhook.yaml` is cloned and left unlinked, with the `skillhook projects init` command that starts one.
+
+- Git authenticates with what the machine already has: `gh auth setup-git`, a credential helper or an SSH key. skillhook holds no repository credential, never prompts, and refuses a URL with a credential in it (Git would store it in the checkout). Plain `http://` and `git://` remotes are refused too.
+- Only `main` is kept current. A repository whose default branch has another name is linked as cloned and says so; `--no-refresh` leaves a `main` checkout alone as well.
+- Only this command clones, when a person runs it. The server never does, and a path that does not exist is an error, never a request to a server.
+- `skillhook unlink <dir>` stops serving the hooks; the checkout stays until you delete it.
+
 ## A whole operating loop: `--template company`
 
 ```bash
@@ -186,6 +201,7 @@ A `skill:` hook inherits its SKILL.md's schedule; `schedule: false` on the hook 
 
 ```bash
 skillhook link [dir]            # default: the current directory; also accepts the path of the YAML file
+skillhook link <remote> [--into DIR] [--no-refresh]   # clone into <home>/repos, link, keep current (github:owner/repo or a Git URL)
 ```
 
 `link` validates the file, appends the absolute path to `projects` in `~/.skillhook/skillhook.json`, generates the secrets it manages (bearer, basic, generic hmac; skip with `--no-secret`), names the provider secrets you still have to paste, and prints every hook with its URL. Linking the same repository again is a no-op that re-prints the hooks. `skillhook unlink <dir>` removes the entry; the hooks answer `404` at once and the repository is not touched. `skillhook projects` lists what is linked; `skillhook projects init [dir]` writes a starter file and links it. The MCP tools are `link_project` (with `init: true` to scaffold), `unlink_project` and `list_projects`.

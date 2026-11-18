@@ -1,4 +1,8 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
+import { setConfigValue } from "../config.js";
+import { cloneDestination, cloneRemote, parseRemote, type RemoteSpec } from "../project-clone.js";
+import { refreshProjectDir } from "../project-refresh.js";
 import { PROJECT_FILE_NAMES, type LoadedProject } from "../projects.js";
 import { createOps, describeProject, initProject, linkProject, listProjects, resolveBaseUrl, webhookUrl, type LinkResult, type Ops } from "../ops.js";
 import { skillSummary } from "../server.js";
@@ -7,6 +11,9 @@ import { bool, CommandError, str, UsageError, type Ctx } from "./shared.js";
 
 export const PROJECTS_USAGE = `Usage:
   skillhook link [dir] [--no-secret]        register a repository's ${PROJECT_FILE_NAMES[0]} (or the file itself) with this server; default: .
+  skillhook link <remote> [--into DIR] [--no-refresh] [--no-secret]
+                                            clone a repository into <home>/repos and link it; remote: github:owner/repo,
+                                            an https://, ssh:// or file:// URL, or git@host:owner/repo.git
   skillhook unlink <dir>                    stop serving its hooks (the repository is not touched)
   skillhook projects [list]                 linked projects and their hooks
   skillhook projects init [dir] [--force]   write a starter ${PROJECT_FILE_NAMES[0]} into dir (default: .) and link it
@@ -117,6 +124,13 @@ async function printLinked(ctx: Ctx, ops: Ops, result: LinkResult, intro: string
 
 async function link(ctx: Ctx, target: string | undefined): Promise<number> {
   const ops = createOps(ctx.paths, { env: ctx.io.env });
+  let remote: RemoteSpec | undefined;
+  try {
+    remote = target ? parseRemote(target) : undefined;
+  } catch (error) {
+    throw new CommandError((error as Error).message);
+  }
+  if (remote) return linkRemote(ctx, ops, remote);
   let result: LinkResult;
   try {
     result = linkProject(ops, target ?? ".", { noSecret: bool(ctx.flags, "no-secret") });
@@ -124,6 +138,42 @@ async function link(ctx: Ctx, target: string | undefined): Promise<number> {
     throw new CommandError((error as Error).message);
   }
   return printLinked(ctx, ops, result, []);
+}
+
+/** `skillhook link <remote>`: clone under <home>/repos (or --into), link, and keep the checkout current before each job. */
+async function linkRemote(ctx: Ctx, ops: Ops, remote: RemoteSpec): Promise<number> {
+  const dest = cloneDestination(ctx.paths.home, remote, str(ctx.flags, "into"));
+  let clone: Awaited<ReturnType<typeof cloneRemote>>;
+  try {
+    clone = await cloneRemote(remote, dest, ctx.io.env);
+  } catch (error) {
+    throw new CommandError((error as Error).message);
+  }
+  const intro = [`${clone.cloned ? "Cloned" : "Already cloned:"} ${remote.url} → ${displayPath(clone.dir)}`];
+  const base = { remote: remote.url, dir: clone.dir, cloned: clone.cloned, branch: clone.branch };
+  if (!PROJECT_FILE_NAMES.some((name) => existsSync(path.join(clone.dir, name)))) {
+    ctx.print([...intro, "", `It has no ${PROJECT_FILE_NAMES[0]} yet, so nothing is linked. Write a starter file and link it with:`, `  skillhook projects init ${displayPath(clone.dir)}`].join("\n"), { ok: false, ...base, linked: false, refresh: false });
+    return 1;
+  }
+  let result: LinkResult;
+  try {
+    result = linkProject(ops, clone.dir, { noSecret: bool(ctx.flags, "no-secret") });
+  } catch (error) {
+    throw new CommandError((error as Error).message);
+  }
+  // `project_refresh` follows origin/main only (docs/projects.md); another default branch stays as cloned.
+  const noRefresh = ctx.flags.refresh === false;
+  let refresh = false;
+  if (!noRefresh) {
+    const current = ops.config.project_refresh;
+    if (refreshProjectDir(current, clone.dir, ctx.paths.home)) refresh = true;
+    else if (clone.branch === "main") {
+      setConfigValue(ctx.paths, "project_refresh", [...current, clone.dir]);
+      refresh = true;
+    }
+  }
+  intro.push(refresh ? "Before each of its jobs skillhook fetches origin/main and fast-forwards this checkout (project_refresh)." : noRefresh ? "The checkout is not refreshed before jobs (--no-refresh); pull it yourself." : `The checkout is on "${clone.branch || "a detached commit"}", not main, so it is not refreshed before jobs; pull it yourself.`);
+  return printLinked(ctx, ops, result, intro, { ...base, linked: true, refresh });
 }
 
 async function unlink(ctx: Ctx, target: string | undefined): Promise<number> {

@@ -71,23 +71,22 @@ Use your own subscription or key. One of:
 | --- | --- |
 | `/data/skillhook` | The skillhook home: `skillhook.json`, `.env`, `skills/`, `jobs/`, `logs/` ([operations.md](operations.md#home-directory)) |
 | `/data/home` | The user's home: Claude Code's and Codex's configuration and logins, their MCP servers, `gh` and `git` configuration, SSH keys |
-| `/data/workspace` | The working directory; check repositories out here |
+| `/data/workspace` | The working directory, for anything you check out by hand (`skillhook link <remote>` clones into `/data/skillhook/repos`) |
 
 The container runs as uid 1000. A named volume gets that owner by itself; a bind-mounted directory keeps its own, so
 `chown -R 1000:1000` it first. Back up the volume: it holds the secrets and every job's record.
 
 ## Giving the agents a repository
 
-skillhook serves the hooks a checked-out repository declares ([projects.md](projects.md)); check it out on the volume
-and link it:
+skillhook serves the hooks a checked-out repository declares ([projects.md](projects.md)); let it check the
+repository out and link it:
 
 ```bash
 docker compose exec -it skillhook gh auth login          # once; then: gh auth setup-git
-docker compose exec skillhook git clone https://github.com/you/repo.git /data/workspace/repo
-docker compose exec skillhook skillhook link /data/workspace/repo
+docker compose exec skillhook skillhook link github:you/repo
 ```
 
-`project_refresh` then fast-forwards the checkout before each job. Agents that open pull requests need a git identity:
+`link` clones the repository into `/data/skillhook/repos/you/repo`, links it and fast-forwards the checkout to `origin/main` before each job ([projects.md](projects.md#let-skillhook-check-the-repository-out)). Agents that open pull requests need a git identity:
 `git config --global user.name …` and `user.email …` inside the container (kept in `/data/home`).
 
 MCP servers the agents should have are Claude Code's and Codex's own configuration: add them inside the container
