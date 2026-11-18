@@ -320,6 +320,8 @@ export function skillSummary(skill: Skill, config: Config, secrets: Secrets): Re
     dir: skill.dir,
     file: skill.file,
     source: skill.source,
+    /** The content hash of the files that define the skill (`{sha256, kind, bytes, files}`), what Skillhook Cloud keys its copy by; null for an ad-hoc skill. */
+    definition: skill.definition ?? null,
   };
 }
 
@@ -569,8 +571,10 @@ export function createServer(deps: ServerDeps): Server {
       delivery_id: args.deliveryId,
       fingerprint: args.fingerprint,
       skill_file: args.skill.file,
-      ...(args.skill.source.type === "project" ? {
-        project_dir: args.skill.source.dir,
+      ...(args.skill.source.type === "project" ? { project_dir: args.skill.source.dir } : {}),
+      // A hook of a refreshed checkout and a cloud-managed skill are resolved again right before the run: the
+      // overrides let that resolve new defaults, the policy digest catches an admission rule that changed meanwhile.
+      ...(args.skill.source.type === "project" || args.skill.source.type === "cloud" ? {
         run_overrides: args.overrides ?? {},
         ...(args.trigger === "webhook" ? { webhook_policy: webhookPolicy(args.skill) } : {}),
       } : {}),

@@ -19,8 +19,10 @@ import { readScheduleStates, Scheduler } from "../scheduler.js";
 import { createServer } from "../server.js";
 import { FakeCloud } from "../test-support/fake-cloud.js";
 import { FAKE_CLAUDE, tempHome, writeConfigFile, writeEnv, writeSkill } from "../test-support/helpers.js";
+import { buildDefinition, collectDefinition } from "../definitions.js";
 import { createControlHandlers } from "./control.js";
 import { CloudLink, type LinkTiming } from "./link.js";
+import { ManagedSkills } from "./managed.js";
 import type { Command, CommandResult, EventEnvelope, IngressItem } from "./protocol.js";
 import { machineKeyPair, openSealed, sealForRecipient } from "./seal.js";
 
@@ -78,25 +80,28 @@ async function setup(options: SetupOptions = {}) {
   const events = new Events(silentLogger);
   const store = new JobStore(paths.jobsDir, { maxJobs: 100, dedupeWindowSeconds: 60 });
   const deliveryLog = new DeliveryLog(paths.jobsDir, () => config.deliveries);
-  const registry = new SkillRegistry(paths.skillsDir);
+  const registry = new SkillRegistry(paths.skillsDir, { cloudSkillsDir: paths.cloudSkillsDir, managedEnabled: () => config.cloud.managed_skills });
+  registry.onChange((change) => events.emit("skill.changed", change));
   const secrets = () => loadSecrets(paths, {});
   const fileSecrets = () => readEnvFile(paths.envFile);
   const restarts: { force: boolean; waitSeconds: number }[] = [];
   let queue: JobQueue | undefined;
   let control: ReturnType<typeof createControlHandlers> | undefined;
   let scheduler: Scheduler | undefined;
+  let managed: ManagedSkills | undefined;
   if (options.control) {
-    queue = new JobQueue({ store, config, registry, secrets, fileSecrets: secrets, logger: silentLogger, events });
+    managed = new ManagedSkills({ paths, config, secrets, logger: silentLogger, events, registry, env: options.env ?? {}, timing: { freshenMs: 1_000, syncMs: 2_000 } });
+    queue = new JobQueue({ store, config, registry, secrets, fileSecrets: secrets, logger: silentLogger, events, managed });
     scheduler = new Scheduler({ registry, store, queue, config, logger: silentLogger });
     const configRef = new ConfigRef(paths, config, { events });
-    control = createControlHandlers({ paths, config, configRef, secrets, fileSecrets, registry, store, deliveryLog, queue, events, logger: silentLogger, scheduler, serverControl: { supervised: async () => true, restart: (o) => void restarts.push(o) }, applyUpdate: async ({ install }) => ({ ok: true, current: "0.4.0", latest: "0.4.1", available: true, checked_at: null, registry: "http://registry.invalid", cached: false, install: { method: "npm", command: "npm install -g @meterapp/skillhook@0.4.1" }, release_notes: null, installed: install, service_restarted: false, service_note: null }) });
+    control = createControlHandlers({ paths, config, configRef, secrets, fileSecrets, registry, store, deliveryLog, queue, events, logger: silentLogger, scheduler, managed, serverControl: { supervised: async () => true, restart: (o) => void restarts.push(o) }, applyUpdate: async ({ install }) => ({ ok: true, current: "0.4.0", latest: "0.4.1", available: true, checked_at: null, registry: "http://registry.invalid", cached: false, install: { method: "npm", command: "npm install -g @meterapp/skillhook@0.4.1" }, release_notes: null, installed: install, service_restarted: false, service_note: null }) });
     const q = queue;
     cleanups.push(() => q.shutdown());
   }
   const readiness = options.readiness?.(events);
-  const link = new CloudLink({ paths, config, secrets, fileSecrets, events, logger: silentLogger, registry, store, deliveryLog, serverState: () => undefined, localBaseUrl: options.localBaseUrl ?? (() => undefined), env: options.env ?? {}, fetchImpl: options.fetchImpl, timing: TIMING, control, schedules: scheduler ? () => (scheduler as Scheduler).status() : undefined, queueStats: queue ? () => (queue as JobQueue).stats() : undefined, readiness, health: options.health });
+  const link = new CloudLink({ paths, config, secrets, fileSecrets, events, logger: silentLogger, registry, store, deliveryLog, serverState: () => undefined, localBaseUrl: options.localBaseUrl ?? (() => undefined), env: options.env ?? {}, fetchImpl: options.fetchImpl, timing: TIMING, control, managed, schedules: scheduler ? () => (scheduler as Scheduler).status() : undefined, queueStats: queue ? () => (queue as JobQueue).stats() : undefined, readiness, health: options.health });
   cleanups.push(() => link.stop("test"));
-  return { fake, paths, config, events, store, deliveryLog, registry, link, secrets, queue, restarts, scheduler };
+  return { fake, paths, config, events, store, deliveryLog, registry, link, secrets, queue, restarts, scheduler, managed };
 }
 
 async function runCommands(fake: FakeCloud, commands: Command[]): Promise<Record<string, CommandResult>> {
@@ -122,6 +127,49 @@ function ingress(partial: Partial<IngressItem> & { id: string }): IngressItem {
 }
 
 describe("CloudLink", () => {
+  it("pulls the cloud's assigned skills on connect, on skills.sync, and adopts a home skill the cloud already mirrors", async () => {
+    const { fake, link, registry, events } = await setup({ control: true, cloud: { mode: "control", managed_skills: true, snapshot_interval_seconds: 10 } });
+    const cloudy = buildDefinition("skill", "cloudy", { "SKILL.md": "---\nname: cloudy\ndescription: From the cloud.\nskillhook:\n  runner: shell\n  shell:\n    command: [\"true\"]\n---\nBody\n" });
+    fake.assigned.set("cloudy", { definition: cloudy });
+    const synced: unknown[] = [];
+    events.on("skills.synced", (event) => synced.push(event.data));
+    link.start();
+    // Connect: the assigned skill arrives, the change and the sync report travel, the snapshot lists the managed skill.
+    const uploaded = () => fake.requests.flatMap((r) => r.events);
+    await fake.waitFor(() => uploaded().some((e) => e.type === "skills.synced") && uploaded().some((e) => e.type === "skill.changed"));
+    expect(synced[0]).toMatchObject({ reason: "connect", installed: ["cloudy"] });
+    expect(registry.get("cloudy")?.source).toMatchObject({ type: "cloud", sha256: cloudy.sha256 });
+    expect(uploaded().find((e) => e.type === "skill.changed")?.data).toMatchObject({ name: "cloudy", action: "added", source: { type: "cloud", sha256: cloudy.sha256 }, definition_sha256: cloudy.sha256 });
+    await fake.waitFor(() => fake.requests.some((r) => r.snapshot?.managed?.skills.some((s) => s.name === "cloudy")));
+    const snapshot = fake.requests.map((r) => r.snapshot).filter(Boolean).at(-1)!;
+    expect(snapshot.managed).toMatchObject({ enabled: true, allowed: true, skills: [{ name: "cloudy", sha256: cloudy.sha256 }] });
+    expect(snapshot.skills.find((s) => s.name === "cloudy")).toMatchObject({ source: { type: "cloud", sha256: cloudy.sha256 }, definition: { sha256: cloudy.sha256 } });
+    // skills.sync: a changed assignment is pulled now and the result is the report.
+    const v2 = buildDefinition("skill", "cloudy", { "SKILL.md": "---\nname: cloudy\ndescription: From the cloud, v2.\nskillhook:\n  runner: shell\n  shell:\n    command: [\"true\"]\n---\nBody\n" });
+    fake.assigned.set("cloudy", { definition: v2 });
+    const results = await runCommands(fake, [cmd("sync-1", "skills.sync", {})]);
+    expect(results["sync-1"]).toMatchObject({ ok: true, result: { reason: "command", updated: ["cloudy"], installed: [], removed: [] } });
+    expect(registry.get("cloudy")?.description).toBe("From the cloud, v2.");
+    // skill.adopt: the home skill `hello` becomes cloud-managed once the cloud names the hash it mirrored.
+    const sha = collectDefinition(registry.get("hello")!)!.sha256;
+    const adopted = await runCommands(fake, [cmd("adopt-1", "skill.adopt", { name: "hello", sha256: "0".repeat(64) }), cmd("adopt-2", "skill.adopt", { name: "hello", sha256: sha })]);
+    expect(adopted["adopt-1"]).toMatchObject({ ok: false, error: { code: "conflict" } });
+    expect(adopted["adopt-2"]).toMatchObject({ ok: true, result: { name: "hello", sha256: sha, created: true } });
+    expect(registry.get("hello")?.source).toMatchObject({ type: "cloud", sha256: sha });
+    // The cloud can no longer write it as a home skill; it is its own now.
+    const put = await runCommands(fake, [cmd("put-1", "skill.put", { name: "hello", content: "---\nname: hello\ndescription: x\n---\n" })]);
+    expect(put["put-1"]).toMatchObject({ ok: false, error: { code: "conflict", message: expect.stringContaining("cloud-managed") } });
+  });
+
+  it("refuses skills.sync and skill.adopt on a machine that does not pull, with the switch to flip", async () => {
+    const { fake, link } = await setup({ control: true, cloud: { mode: "control" } });
+    link.start();
+    const results = await runCommands(fake, [cmd("sync-1", "skills.sync", {}), cmd("adopt-1", "skill.adopt", { name: "hello", sha256: "0".repeat(64) })]);
+    expect(results["sync-1"]).toMatchObject({ ok: false, error: { code: "denied_by_policy", message: expect.stringContaining("cloud.managed_skills is false"), hint: expect.stringContaining("cloud.managed_skills: true") } });
+    expect(results["adopt-1"]).toMatchObject({ ok: false, error: { code: "denied_by_policy" } });
+    expect(fake.skillRequests).toEqual([]);
+  });
+
   it("sends a fresh health report as soon as a job falls back from a failed Claude Code login, not at the next interval", async () => {
     const asked: { refresh?: boolean }[] = [];
     const health = { get: async (input: { refresh?: boolean }) => (asked.push(input), { report: { checks: [], ok: true, generated_at: new Date().toISOString() }, cached: false }), last: () => undefined } as unknown as HealthCache;

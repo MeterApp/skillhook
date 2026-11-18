@@ -105,6 +105,7 @@ Then create your own skill with `skillhook skills new <name>` or copy an example
 - **An inbox** of the questions agents ask people, with one-click choices; the pick resumes the agent's session.
 - **Alerts** to Slack, a webhook or email when an agent needs a person, a job fails, a machine goes offline or a health check fails. [Alerts](https://skillhook.dev/docs/alerts?ref=readme)
 - **Teams and roles** (viewer, member, admin, owner) and an organisation API key for the whole fleet: `skillhook cloud login`, then `skillhook cloud <tool>` in a terminal and the plugin's `skillhook-cloud` MCP server for your agent. [CLI](https://skillhook.dev/docs/cli?ref=readme), [MCP](https://skillhook.dev/docs/mcp?ref=readme)
+- **Every skill's definition, in one place**: the cloud keeps a copy of each skill every machine serves, keyed by the hash of its files, so you browse and diff them without asking a machine; and with `cloud.managed_skills` a machine serves the skills the cloud assigns to it, pulled from the cloud and checked against it right before each run, so what runs is what the dashboard shows. [docs/cloud.md](docs/cloud.md#cloud-managed-skills)
 - **Playbooks**: worked setups for Sentry, Granola, GitHub issues, Intercom, Stripe disputes, leads, and webhook replay and testing, each with the prompt to paste into an agent and the full `SKILL.md`. [Playbooks](https://skillhook.dev/customers?ref=readme)
 
 Pair a machine with the code its dashboard shows (the pairing page prints the command, with `--control` when you choose control):

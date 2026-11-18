@@ -1,6 +1,8 @@
 import { AccountWatch } from "../account-watch.js";
 import { createControlHandlers } from "../cloud/control.js";
 import { CloudLink } from "../cloud/link.js";
+import { ManagedSkills } from "../cloud/managed.js";
+import { configProjects, SkillRegistry } from "../registry.js";
 import { localBaseUrl } from "../client.js";
 import { ConfigRef } from "../config.js";
 import { DeliveryLog } from "../delivery-log.js";
@@ -52,13 +54,16 @@ async function runDaemon(ctx: Ctx, sentry: DaemonSentry): Promise<number> {
   const host = str(ctx.flags, "host") ?? config.host;
   const logger = createLogger({ onError: (operation, cause) => { sentry.capture(operation, cause); }, level: (str(ctx.flags, "log-level") as "info" | undefined) ?? config.log_level, format: bool(ctx.flags, "pretty") || (ctx.io.isTTY && !ctx.json) ? "pretty" : "json" });
   events.setLogger(logger);
-  const registry = ctx.registry();
+  // The registry reads the live config's switch for cloud-managed skills (ctx.registry() would read a copy loaded once).
+  const registry = new SkillRegistry(ctx.paths.skillsDir, { projects: configProjects(ctx.paths), cloudSkillsDir: ctx.paths.cloudSkillsDir, managedEnabled: () => config.cloud.managed_skills });
   registry.onChange((change) => events.emit("skill.changed", change));
   const store = ctx.store();
   const deliveryLog = new DeliveryLog(ctx.paths.jobsDir, () => config.deliveries);
   const secrets = () => ctx.secrets();
   const readiness = new ReadinessCache({ config: () => config, env: () => baseRunEnv({ secrets: secrets(), fileSecrets: readEnvFile(ctx.paths.envFile), processEnv: ctx.io.env }), secrets, ttlMs: () => config.health.readiness_cache_seconds * 1000, events });
-  const queue = new JobQueue({ store, config, registry, secrets, fileSecrets: () => readEnvFile(ctx.paths.envFile), logger, events, readiness });
+  // Skills Skillhook Cloud assigns to this machine (docs/cloud.md#cloud-managed-skills): idle until cloud.managed_skills is on.
+  const managed = new ManagedSkills({ paths: ctx.paths, config, secrets, logger, events, registry, env: ctx.io.env });
+  const queue = new JobQueue({ store, config, registry, secrets, fileSecrets: () => readEnvFile(ctx.paths.envFile), logger, events, readiness, managed });
   const scheduler = new Scheduler({ registry, store, queue, config, logger, events });
   const accounts = new AccountWatch({ config, paths: ctx.paths, events, logger, readiness, registry, store, secrets, baseEnv: () => baseRunEnv({ secrets: secrets(), fileSecrets: readEnvFile(ctx.paths.envFile), processEnv: ctx.io.env }) });
   const startedAt = new Date().toISOString();
@@ -126,8 +131,8 @@ async function runDaemon(ctx: Ctx, sentry: DaemonSentry): Promise<number> {
   events.emit("server.started", { state });
   // The cloud link idles until `skillhook cloud connect` enabled it (docs/cloud.md); it re-reads the config every few seconds.
   const fileSecrets = () => readEnvFile(ctx.paths.envFile);
-  const cloudControl = createControlHandlers({ paths: ctx.paths, config, configRef, secrets, fileSecrets, registry, store, deliveryLog, queue, events, logger, serverControl: control, scheduler });
-  link = new CloudLink({ paths: ctx.paths, config, secrets, fileSecrets, events, logger, registry, store, deliveryLog, schedules: () => scheduler.status(), health, readiness, serverState: () => state, localBaseUrl: () => localBaseUrl({ host, port: boundPort }), env: ctx.io.env, queueStats: () => queue.stats(), runningJobs: () => queue.stats().running_ids, control: cloudControl });
+  const cloudControl = createControlHandlers({ paths: ctx.paths, config, configRef, secrets, fileSecrets, registry, store, deliveryLog, queue, events, logger, serverControl: control, scheduler, managed });
+  link = new CloudLink({ paths: ctx.paths, config, secrets, fileSecrets, events, logger, registry, store, deliveryLog, schedules: () => scheduler.status(), health, readiness, serverState: () => state, localBaseUrl: () => localBaseUrl({ host, port: boundPort }), env: ctx.io.env, queueStats: () => queue.stats(), runningJobs: () => queue.stats().running_ids, control: cloudControl, managed });
   link.start();
   for (const job of recovered.interrupted) events.emit("job.finished", { job });
   logger.info("skillhook listening", { url: `http://${host}:${boundPort}`, public_url: config.public_url, skills: loaded.skills.map((s) => s.name), concurrency: config.concurrency, home: ctx.paths.home, version: VERSION });

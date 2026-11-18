@@ -177,7 +177,7 @@ export function createCtx(flags: Flags, args: string[], io: CliIO, rawArgs: stri
       return loadSecrets(paths, io.env);
     },
     registry() {
-      registry ??= new SkillRegistry(paths.skillsDir, { projects: configProjects(paths) });
+      registry ??= new SkillRegistry(paths.skillsDir, { projects: configProjects(paths), cloudSkillsDir: paths.cloudSkillsDir, managedEnabled: () => this.config().cloud.managed_skills });
       return registry;
     },
     store() {

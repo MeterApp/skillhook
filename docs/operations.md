@@ -18,6 +18,7 @@ Related: [exposure.md](exposure.md) (public URL), [security.md](security.md) (se
 │   └── <name>/SKILL.md     one directory per skill, plus any files the skill needs
 ├── repos/
 │   └── <owner>/<repo>/     repositories `skillhook link <remote>` cloned (see projects.md)
+├── cloud-skills/           skills Skillhook Cloud assigns to this machine (cloud.managed_skills, docs/cloud.md): <name>/<sha256>/<name>/SKILL.md per version kept, .state.json says which is current
 ├── jobs/
 │   ├── .deliveries.json    delivery-id index for replay protection (also the slots the scheduler fired)
 │   ├── .delivery-log/      every webhook received (deliveries.jsonl) and the bodies of refused ones (bodies/), see Delivery log

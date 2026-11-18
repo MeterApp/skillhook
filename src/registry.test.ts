@@ -101,7 +101,7 @@ describe("SkillRegistry", () => {
     writeFileSync(path.join(dir, "SKILL.md"), "---\nname: alpha\ndescription: a2\n---\nbody");
     touchLater(path.join(dir, "SKILL.md"), 5);
     expect(registry.get("alpha")?.description).toBe("a2");
-    expect(changes.at(-1)).toEqual({ name: "alpha", action: "changed", source: { type: "home" } });
+    expect(changes.at(-1)).toEqual({ name: "alpha", action: "changed", source: { type: "home" }, definition_sha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
     writeSkill(paths, "beta", "description: b");
     writeFileSync(path.join(repo, "skillhook.yaml"), "hooks:\n  h:\n    run: echo two\n");
     touchLater(path.join(repo, "skillhook.yaml"), 10);
@@ -109,11 +109,12 @@ describe("SkillRegistry", () => {
     expect(registry.list().skills.map((s) => s.name)).toEqual(["beta", "h"]);
     expect(seen).toEqual(["changed:alpha", "added:beta", "changed:h", "removed:alpha"]);
     expect(changes.filter((change) => change.name === "h").at(-1)?.source).toMatchObject({ type: "project", dir: repo });
+    expect(changes.find((change) => change.action === "removed")).toEqual({ name: "alpha", action: "removed", source: { type: "home" }, definition_sha256: null });
     off();
     writeSkill(paths, "gamma", "description: g");
     registry.list();
     expect(seen).toHaveLength(4);
-    expect(changes.at(-1)).toEqual({ name: "gamma", action: "added", source: { type: "home" } });
+    expect(changes.at(-1)).toEqual({ name: "gamma", action: "added", source: { type: "home" }, definition_sha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
   });
 
   it("reads the project list from skillhook.json and notices edits", () => {

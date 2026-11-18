@@ -8,6 +8,8 @@ export interface Paths {
   configFile: string;
   envFile: string;
   skillsDir: string;
+  /** Skills Skillhook Cloud assigns to this machine (`cloud.managed_skills`): `<name>/<sha256>/<name>/SKILL.md` and `.state.json`, written only by the cloud link. */
+  cloudSkillsDir: string;
   jobsDir: string;
   logsDir: string;
   /** Written by `serve` so other commands (CLI, MCP) can find the running server. */
@@ -27,6 +29,7 @@ export function pathsFor(home: string): Paths {
     configFile: path.join(home, "skillhook.json"),
     envFile: path.join(home, ".env"),
     skillsDir: path.join(home, "skills"),
+    cloudSkillsDir: path.join(home, "cloud-skills"),
     jobsDir: path.join(home, "jobs"),
     logsDir: path.join(home, "logs"),
     serverStateFile: path.join(home, "server.json"),

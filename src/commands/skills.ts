@@ -50,8 +50,9 @@ function requireName(name: string | undefined): string {
   return name;
 }
 
-/** Where a skill is defined, for tables: the skills directory or the linked project directory. */
+/** Where a skill is defined, for tables: the skills directory, the linked project directory, or the cloud (with the definition's hash). */
 export function sourceLabel(skill: Skill, skillsDir: string): string {
+  if (skill.source.type === "cloud") return `cloud ${skill.source.sha256.slice(0, 12)}`;
   return displayPath(skill.source.type === "project" ? skill.source.dir : skillsDir);
 }
 
@@ -92,6 +93,8 @@ async function showSkill(ctx: Ctx, name: string): Promise<number> {
     ...(skill.schedule ? [`  schedule: ${skill.schedule.cron} (${skill.schedule.timezone}); catch_up ${skill.schedule.catch_up}, overlap ${skill.schedule.overlap}; next ${(summary.schedule as { next_run_at: string | null }).next_run_at ?? "never"}`] : []),
     ...(skill.config.when?.length ? [`  when:    ${(summary.when as string[]).join("; ")}`] : []),
     ...(skill.source.type === "project" ? [`  source:  ${displayPath(skill.source.file)} (hook ${skill.name}, ${skill.source.kind === "run" ? "shell command" : skill.source.kind === "prompt" ? "inline prompt" : `SKILL.md at ${displayPath(skill.dir)}`})`] : []),
+    ...(skill.source.type === "cloud" ? [`  source:  Skillhook Cloud, definition ${skill.source.sha256} (installed ${skill.source.installed_at}); edit it on the dashboard, this machine pulls it`] : []),
+    ...(skill.definition ? [`  definition: ${skill.definition.sha256} (${skill.definition.files} file${skill.definition.files === 1 ? "" : "s"}, ${skill.definition.bytes} bytes)`] : []),
     "",
     content,
   ].join("\n");

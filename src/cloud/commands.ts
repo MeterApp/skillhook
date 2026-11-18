@@ -6,6 +6,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { collectAccounts } from "../account-report.js";
 import { AccountStateStore } from "../accounts.js";
 import { HOT_CONFIG_KEYS, RESTART_CONFIG_KEYS, type Config } from "../config.js";
+import { collectDefinition } from "../definitions.js";
 import { readDeliveryBody, type DeliveryLog } from "../delivery-log.js";
 import type { Secrets } from "../env.js";
 import type { Events } from "../events.js";
@@ -61,6 +62,8 @@ export interface CommandDeps {
   /** Whether payload bodies may leave the machine (`cloud.upload_payloads` and the cloud's hint). */
   uploadPayloads: () => boolean;
   uploadArtifacts: () => boolean;
+  /** Whether the text of skills may leave the machine (`cloud.upload_definitions`; default true). */
+  uploadDefinitions?: () => boolean;
   /** Control handlers (skill.run, job.answer, config.patch, …): `createControlHandlers` in control.ts. */
   control?: Partial<Record<CommandType, CommandHandler>>;
   /** Runs `fn` once the cloud acknowledged the command's result (a restart must not swallow its own answer). */
@@ -85,6 +88,7 @@ export interface CommandOutcome {
 /** A job's artifacts that hold the webhook body (prompt.md quotes it): they leave the machine only when bodies may. */
 const BODY_ARTIFACTS: ReadonlySet<string> = new Set(["payload", "event", "prompt"]);
 const BODY_WITHHELD = "webhook bodies stay on this machine (cloud.upload_payloads is false here, or the organisation keeps none)";
+const DEFINITIONS_WITHHELD = "skill definitions stay on this machine (cloud.upload_definitions is false here)";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const LONG_TIMEOUT_MS = 90_000;
@@ -119,13 +123,30 @@ const readHandlers: Partial<Record<CommandType, CommandHandler>> = {
   "skill.get": (args: Args<{ name: string }>, _c, deps) => {
     const skill = deps.registry.get(args.name);
     if (!skill) throw new CommandError("not_found", `no skill named "${args.name}"`);
+    const summary = { ...skillSummary(skill, deps.config, deps.secrets()), file: skill.file };
+    if (deps.uploadDefinitions?.() === false) return { result: { ...summary, content_withheld: DEFINITIONS_WITHHELD } };
     let content: string | undefined;
     try {
       content = readFileSync(skill.file, "utf8");
     } catch {
       content = undefined;
     }
-    return { result: { ...skillSummary(skill, deps.config, deps.secrets()), file: skill.file, content } };
+    return { result: { ...summary, content, definition: collectDefinition(skill) ?? null } };
+  },
+  "definitions.get": (args: Args<{ sha256: string[] }>, _c, deps) => {
+    if (deps.uploadDefinitions?.() === false) throw new CommandError("denied_by_policy", DEFINITIONS_WITHHELD);
+    const wanted = new Set(args.sha256);
+    const definitions: Record<string, unknown>[] = [];
+    for (const skill of deps.registry.list().skills) {
+      const sha = skill.definition?.sha256;
+      if (!sha || !wanted.has(sha)) continue;
+      const definition = collectDefinition(skill);
+      // Changed between the listing and the read: the `skill.changed` event brings the new hash and the cloud asks again.
+      if (!definition || definition.sha256 !== sha) continue;
+      wanted.delete(sha);
+      definitions.push({ definition, name: skill.name, source: skill.source });
+    }
+    return { result: { definitions, missing: [...wanted] } };
   },
   "delivery.list": (args: Args<{ skill?: string; outcome?: never; since?: string; after?: string; limit?: number }>, _c, deps) => {
     if (!deps.deliveryLog) throw new CommandError("unavailable", "this server has no delivery log");
