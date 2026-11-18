@@ -1,6 +1,6 @@
 import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "./config.js";
 import { loadSecrets } from "./env.js";
 import { Events, type SkillhookEvent } from "./events.js";
@@ -242,6 +242,28 @@ describe("Scheduler", () => {
     expect(h.scheduler.tick().fired.map((j) => j.skill).sort()).toEqual(["queued", "slow"]);
     for (const job of h.store.list({ status: ["queued", "running"] })) await h.finished(job, 20_000);
     await h.close();
+  });
+
+  it("queues a slot's job when the de-dupe index cannot be saved, and does not fire the slot again (RA-021)", async () => {
+    const h = harness({ minutely: `description: every minute\n${SHELL("echo scheduled")}  schedule: "* * * * *"\n` });
+    h.scheduler.start();
+    const enospc = Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+    const save = vi.spyOn(h.store as unknown as { saveDeliveries(): void }, "saveDeliveries").mockImplementationOnce(() => { throw enospc; });
+    try {
+      h.setClock("2026-09-23T10:01:05Z");
+      const first = h.scheduler.tick();
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(first.fired).toHaveLength(1);
+      const job = first.fired[0] as JobRecord;
+      expect((await h.finished(job)).status).toBe("succeeded");
+      h.setClock("2026-09-23T10:01:40Z");
+      const again = h.scheduler.tick();
+      expect(again.fired).toEqual([]);
+      expect(h.store.seenDelivery("minutely", "schedule:2026-09-23T10:01", at("2026-09-23T10:01:40Z").getTime())).toBe(job.id);
+    } finally {
+      save.mockRestore();
+      await h.close();
+    }
   });
 
   it("never fires a slot twice, even when the state file is lost or an hour repeats", async () => {

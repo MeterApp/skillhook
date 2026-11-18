@@ -404,12 +404,18 @@ export class Scheduler {
     }
     const payload = buildSchedulePayload(skill, slot, { firedAt: now, caughtUp });
     const job = createManualJob({ config: this.deps.config, store: this.deps.store }, { skill, payload, trigger: "schedule", deliveryId: key, sourceMethod: "SCHEDULE", headers: { "x-skillhook-schedule": schedule.cron, "x-skillhook-timezone": schedule.timezone } });
-    this.deps.store.rememberDelivery(skill.name, key, job.id, now.getTime());
     state.last_fired_at = now.toISOString();
     state.last_job = job.id;
     state.last_status = "queued";
     this.deps.logger.info("schedule fired", { skill: skill.name, job: job.id, slot: key, cron: schedule.cron, timezone: schedule.timezone, caught_up: caughtUp });
+    // Queue before remembering the slot (RA-021): rememberDelivery updates the in-memory index and then writes it, so a
+    // failed write (ENOSPC) after a remembered-but-unqueued job would make every later tick skip the slot as a duplicate.
     this.deps.queue.enqueue(job);
+    try {
+      this.deps.store.rememberDelivery(skill.name, key, job.id, now.getTime());
+    } catch (error) {
+      this.deps.logger.warn("could not save the delivery de-dupe index; the job is queued", { skill: skill.name, job: job.id, slot: key, error: errorMessage(error) });
+    }
     this.deps.events?.emit("schedule.fired", { skill: skill.name, slot: slot.toISOString(), job, caught_up: caughtUp });
     return { job };
   }
