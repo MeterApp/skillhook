@@ -57,6 +57,52 @@ describe("claude runner", () => {
     expect(resumed.args).not.toContain("--allowedTools");
   });
 
+  it("passes the skill's own MCP servers with ${NAME} left for Claude Code to fill, and forwards those names to the run", () => {
+    const frontmatter = [
+      "skillhook:",
+      "  env: [OTHER]",
+      "  claude:",
+      "    strict_mcp: true",
+      "    mcp_servers:",
+      "      linear:",
+      "        url: https://mcp.linear.app/mcp",
+      "        headers:",
+      '          Authorization: "Bearer ${LINEAR_API_KEY}"',
+      "      db:",
+      "        command: npx",
+      '        args: ["-y", "some-server", "--schema", "${DB_SCHEMA:-public}"]',
+      "        env:",
+      '          DATABASE_URL: "${DATABASE_URL}"',
+    ].join("\n");
+    const agentApi = { name: "skillhook-job", command: "/usr/bin/node", args: ["cli.js", "mcp", "--job"], env: { SKILLHOOK_JOB_ID: "j1" } };
+    const c = ctx(frontmatter, { agentApi });
+    const inv = claudeRunner.build(c);
+    const config = JSON.parse(inv.args[inv.args.indexOf("--mcp-config") + 1] as string) as { mcpServers: Record<string, unknown> };
+    expect(Object.keys(config.mcpServers)).toEqual(["linear", "db", "skillhook-job"]);
+    expect(config.mcpServers.linear).toEqual({ url: "https://mcp.linear.app/mcp", headers: { Authorization: "Bearer ${LINEAR_API_KEY}" } });
+    expect(config.mcpServers.db).toEqual({ command: "npx", args: ["-y", "some-server", "--schema", "${DB_SCHEMA:-public}"], env: { DATABASE_URL: "${DATABASE_URL}" } });
+    expect(inv.args).toContain("--strict-mcp-config");
+    expect(inv.args[inv.args.indexOf("--allowedTools") + 1]).toBe("mcp__linear,mcp__db,mcp__skillhook-job");
+    // The values stay out of argv; they reach the process through its environment, like `env:` names.
+    const secrets = { LINEAR_API_KEY: "fake-linear-value", DATABASE_URL: "fake-db-value", OTHER: "o", UNRELATED: "never" };
+    const env = buildRunEnv({ secrets, fileSecrets: secrets, skill: c.skill, config: defaultConfig(), jobVars: {}, processEnv: {} });
+    expect(env).toMatchObject({ LINEAR_API_KEY: "fake-linear-value", DATABASE_URL: "fake-db-value", OTHER: "o" });
+    expect(env.UNRELATED).toBeUndefined();
+    expect(inv.args.join(" ")).not.toContain("fake-");
+    expect(claudeRunner.build(ctx()).args).not.toContain("--strict-mcp-config");
+  });
+
+  it("refuses an MCP server it cannot run or that would put a credential in the skill file", () => {
+    const bad = (server: string[]) => () => ctx(["skillhook:", "  claude:", "    mcp_servers:", ...server].join("\n"));
+    expect(bad(["      x:", "        command: npx", "        url: https://example.com/mcp"])).toThrow(/exactly one of command/);
+    expect(bad(["      x: {}"])).toThrow(/exactly one of command/);
+    expect(bad(["      x:", "        url: https://example.com/mcp", "        headers:", "          Authorization: Bearer fake-pasted-token"])).toThrow(/\$\{NAME\}/);
+    expect(bad(["      x:", "        url: https://example.com/mcp", "        env:", "          A: b"])).toThrow(/command server/);
+    expect(bad(["      x:", "        command: npx", "        type: http"])).toThrow(/type does not match/);
+    expect(bad(["      skillhook-job:", "        command: npx"])).toThrow(/reserved/);
+    expect(bad(["      'bad name':", "        command: npx"])).toThrow(/letters, digits/);
+  });
+
   it("supports array commands and skips --add-dir for the cwd", () => {
     const c = ctx();
     c.config.runners.claude.command = ["/usr/bin/env", "claude"];

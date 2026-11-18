@@ -74,7 +74,8 @@ claude -p --output-format stream-json --verbose \
   [--disallowedTools <claude.disallowed_tools>] \
   [--max-budget-usd <claude.max_budget_usd>] \
   [--json-schema <response schema>]                # response.mode: structured
-  [--mcp-config '{"mcpServers":{"skillhook-job":{"command":"<node>","args":["<cli.js>","mcp","--job","--dir","<home>"],"env":{…}}}}']   # agent_api: mcp
+  [--mcp-config '{"mcpServers":{<claude.mcp_servers…>,"skillhook-job":{"command":"<node>","args":["<cli.js>","mcp","--job","--dir","<home>"],"env":{…}}}}']   # claude.mcp_servers, agent_api: mcp
+  [--strict-mcp-config]                            # claude.strict_mcp
   [--resume <session id>]                          # trigger: resume
   --append-system-prompt "<guardrails>\n\n<claude.append_system_prompt>" \
   <runners.claude.args…> <claude.args…>
@@ -84,6 +85,7 @@ claude -p --output-format stream-json --verbose \
 - `response: { mode: structured }` adds `--json-schema` with the skill's schema (default `{outcome, summary, links, data}`); the result event's `structured_output` becomes `job.response` and `response.json` ([skills.md](skills.md#reporting-the-outcome)).
 - `agent_api: mcp` (the default) adds `--mcp-config` with the per-run job API server (`skillhook mcp --job`, started as `<node> <cli.js>` of this installation, or `SKILLHOOK_BIN` from the server's environment) and `mcp__skillhook-job` to `--allowedTools`, so `job_progress`, `job_ask_human`, `job_set_outcome`, `job_note` and `job_context` work under every permission mode ([skills.md](skills.md#reporting-progress-and-asking-a-person)). The user's own MCP servers stay available.
 - A job with `trigger: resume` (a person answered an earlier job) adds `--resume <session id>` and sends only the `<human_answer>` block as the prompt; the session files under `~/.claude/projects` must still exist, so runs never use `--no-session-persistence`.
+- `claude.mcp_servers` are added to the same `--mcp-config` as written, `${NAME}` included: Claude Code fills those from the run's environment, which gets the names the servers refer to from `.env`. Their tools join `--allowedTools` as `mcp__<name>`. `claude.strict_mcp` adds `--strict-mcp-config`, so nothing but these servers and the job API is loaded ([skills.md](skills.md#mcp-servers-of-a-skill)).
 - `--add-dir` is skipped for a directory that is already the cwd.
 - Default permission mode is `bypassPermissions` so unattended runs never stall. `--permission-prompts none` is always set; with `acceptEdits`, `dontAsk` or `plan` a tool that would have prompted is denied instead, which is how `allowed_tools` becomes an allow-list.
 - Model: aliases (`opus`, `sonnet`, `haiku`) or full ids. Effort: passed verbatim to `--effort`.

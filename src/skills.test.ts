@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadSkills, parseSkillDocument, renderSkillTemplate, describeAuth } from "./skills.js";
+import { loadSkills, parseSkillDocument, renderSkillTemplate, describeAuth, skillEnvNames } from "./skills.js";
 import { tempHome, writeSkill } from "./test-support/helpers.js";
 
 describe("parseSkillDocument", () => {
@@ -67,6 +67,15 @@ Do it.
     const skill = parseSkillDocument(text, "/tmp/skills/hello-world");
     expect(skill.config).toMatchObject({ runner: "claude", model: "haiku", timeout_seconds: 900 });
     expect(skill.auth).toMatchObject({ type: "bearer", secret_env: "SKILLHOOK_SECRET_HELLO_WORLD" });
+  });
+});
+
+describe("claude.mcp_servers", () => {
+  it("parses a skill's MCP servers and names the environment variables they refer to, once each", () => {
+    const skill = parseSkillDocument(["---", "name: demo", "description: d", "skillhook:", "  env: [EXTRA, TOKEN]", "  claude:", "    mcp_servers:", "      api:", "        url: https://example.com/mcp/${TENANT}", "        headers:", '          Authorization: "Bearer ${TOKEN}"', "      local:", "        command: ${TOOL_BIN:-tool}", '        args: ["--key", "${TOKEN}"]', "---", "body"].join("\n"), "/skills/demo");
+    expect(Object.keys(skill.config.claude?.mcp_servers ?? {})).toEqual(["api", "local"]);
+    expect(skillEnvNames(skill.config)).toEqual(["EXTRA", "TOKEN", "TENANT", "TOOL_BIN"]);
+    expect(skillEnvNames({})).toEqual([]);
   });
 });
 

@@ -47,14 +47,19 @@ export const claudeRunner: Runner = {
       if (dir !== ctx.cwd) args.push("--add-dir", dir);
     }
     // The job API's tools never need a permission prompt (there is nobody to answer one).
-    const allowed = [...ctx.skill.allowedTools, ...(skillConfig.allowed_tools ?? []), ...(ctx.agentApi ? [`mcp__${ctx.agentApi.name}`] : [])];
+    // Nor do the servers the skill itself declares: naming one in the skill file is the permission.
+    const declared = skillConfig.mcp_servers ?? {};
+    const allowed = [...ctx.skill.allowedTools, ...(skillConfig.allowed_tools ?? []), ...Object.keys(declared).map((name) => `mcp__${name}`), ...(ctx.agentApi ? [`mcp__${ctx.agentApi.name}`] : [])];
     if (allowed.length) args.push("--allowedTools", allowed.join(","));
     if (skillConfig.disallowed_tools?.length) args.push("--disallowedTools", skillConfig.disallowed_tools.join(","));
     if (skillConfig.max_budget_usd) args.push("--max-budget-usd", String(skillConfig.max_budget_usd));
     // The final answer must match the schema; the CLI returns it as `structured_output` on the result event.
     if (ctx.skill.config.response?.mode === "structured") args.push("--json-schema", JSON.stringify(responseSchemaFor(ctx.skill)));
     // The job API (progress, asking a person, the outcome) as an MCP server the agent sees without any user setup.
-    if (ctx.agentApi) args.push("--mcp-config", JSON.stringify({ mcpServers: { [ctx.agentApi.name]: { command: ctx.agentApi.command, args: ctx.agentApi.args, env: ctx.agentApi.env } } }));
+    // The skill's own servers travel with it; `${NAME}` stays as written and Claude Code fills it from the run's environment, so no secret is on the command line.
+    const servers = { ...declared, ...(ctx.agentApi ? { [ctx.agentApi.name]: { command: ctx.agentApi.command, args: ctx.agentApi.args, env: ctx.agentApi.env } } : {}) };
+    if (Object.keys(servers).length) args.push("--mcp-config", JSON.stringify({ mcpServers: servers }));
+    if (skillConfig.strict_mcp) args.push("--strict-mcp-config");
     const system = [ctx.guardrails, skillConfig.append_system_prompt].filter(Boolean).join("\n\n");
     args.push("--append-system-prompt", system);
     args.push(...runnerConfig.args, ...(skillConfig.args ?? []));

@@ -104,6 +104,36 @@ Precedence for `runner`, `model`, `effort` and `cwd`: an explicit override (`ski
 | `append_system_prompt` | string | — | Appended after skillhook's own guardrails in `--append-system-prompt`. |
 | `args` | list of strings | — | Extra argv appended after `runners.claude.args`. |
 | `config_dir` | path (`~` allowed; relative to the skill directory) | `CLAUDE_CONFIG_DIR` from `.env` or the server environment, else `~/.claude` | `CLAUDE_CONFIG_DIR=<dir>` in the run's environment. See [Several Claude accounts on one machine](runners.md#several-claude-accounts-on-one-machine). |
+| `mcp_servers` | map of name → `{ command, args, env }` or `{ url, headers, type }` | — | Added to `--mcp-config` next to the job API; each server's tools are allowed (`mcp__<name>`). See [MCP servers of a skill](#mcp-servers-of-a-skill). |
+| `strict_mcp` | boolean | `false` | `--strict-mcp-config`: the run gets only `mcp_servers` and the job API. |
+
+#### MCP servers of a skill
+
+A skill can carry the tools it needs instead of relying on what the machine's Claude Code happens to have configured:
+
+```yaml
+skillhook:
+  claude:
+    strict_mcp: true          # optional: only these servers, not the machine's own
+    mcp_servers:
+      linear:
+        url: https://mcp.linear.app/mcp
+        headers:
+          Authorization: "Bearer ${LINEAR_API_KEY}"
+      db:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-postgres"]
+        env:
+          DATABASE_URL: "${DATABASE_URL}"
+```
+
+- The servers are written in Claude Code's own `mcpServers` shape: a local command (`command`, `args`, `env`) or a remote server (`url`, `headers`, optional `type: http | sse`).
+- `${NAME}` (or `${NAME:-default}`) in any string is left as written on the command line. Claude Code fills it from the run's environment, and skillhook forwards exactly the names the servers refer to from the machine's `.env`, as it does for `env:`. Store each value once with `skillhook secret set NAME`; `skillhook doctor` reports a name that is missing. The value is never in the skill file, the command line or a job file.
+- A credential header (`Authorization`, `X-API-Key`, …) must be written with `${NAME}`: a skill with the value pasted in is refused.
+- The tools of a declared server need no `allowed_tools` entry. Use `disallowed_tools` to take single tools away (`mcp__linear__delete_issue`).
+- Without `strict_mcp`, the run also has the machine's own servers (its Claude Code configuration, plugins, connectors and the repository's `.mcp.json`). With it, a skill behaves the same on every machine and cannot reach tools it did not name.
+- Names starting with `skillhook` are reserved. A remote server that only offers a browser sign-in (OAuth) cannot be logged in to by an unattended run: give it a token header, or add it to the machine's Claude Code by hand.
+- The Codex and shell runners ignore these fields; a skill that falls back to Codex runs without them.
 
 ### `codex` options
 

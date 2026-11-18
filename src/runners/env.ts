@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import type { ClaudeAuthMode, Config, RunnerName } from "../config.js";
 import type { Secrets } from "../env.js";
-import type { Skill } from "../skills.js";
+import { skillEnvNames, type Skill } from "../skills.js";
 import { expandTilde } from "../util.js";
 
 /** Always copied from the server's own environment. */
@@ -128,7 +128,7 @@ export function withClaudeAuth(env: Record<string, string>, auth: ClaudeAuthMode
 }
 
 export function buildRunEnv(input: RunEnvInput): Record<string, string> {
-  const explicit = [...input.config.env_passthrough, ...(input.skill.config.env ?? [])];
+  const explicit = [...input.config.env_passthrough, ...skillEnvNames(input.skill.config)];
   const auth = input.runner === "claude" ? input.config.runners.claude.auth : "auto";
   const env = withClaudeAuth(withClaudeConfigDir(baseRunEnv(input), claudeConfigDir(input.skill), explicit, auth), auth, explicit);
   for (const key of explicit) {
