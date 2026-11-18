@@ -2,6 +2,7 @@
 // `GET /events` (SSE), `GET /jobs/<id>/events` and, later, the cloud link subscribe. A listener that throws
 // is logged and never breaks the publisher, and there is no listener cap (every `?wait=` request adds one).
 import type { AccountState } from "./accounts.js";
+import type { SkillsSyncReport } from "./cloud/managed.js";
 import type { DeliveryRecord } from "./delivery-log.js";
 import type { HealthChange, HealthReport } from "./health.js";
 import type { JobRecord } from "./jobs.js";
@@ -35,8 +36,10 @@ export interface EventMap {
   "schedule.registered": { skill: string; cron: string; timezone: string; next_due: string | null };
   "schedule.fired": { skill: string; slot: string; job: JobRecord; caught_up: boolean };
   "schedule.skipped": { skill: string; slot: string; reason: SkipReason };
-  /** Noticed by the registry on `get()` / `list()` once it has been primed by a first `list()`. */
-  "skill.changed": { name: string; action: "added" | "changed" | "removed"; source: SkillSource };
+  /** Noticed by the registry on `get()` / `list()` once it has been primed by a first `list()`. `definition_sha256` is the content hash of the skill as it now is (null when it was removed or has no definition), so the cloud knows whether it already holds the text. */
+  "skill.changed": { name: string; action: "added" | "changed" | "removed"; source: SkillSource; definition_sha256: string | null };
+  /** The cloud-managed skills of this machine were reconciled with what Skillhook Cloud assigns to it (on connect, every snapshot interval, or on `skills.sync`). */
+  "skills.synced": SkillsSyncReport;
   /** A fresh health report whose checks differ from the previous one (or the first report of that flavour). */
   "health.changed": { report: HealthReport; changed: HealthChange[] };
   /** A runner became usable or stopped being so (installed, logged in), as the readiness check before jobs sees it. */
@@ -51,7 +54,7 @@ export interface EventMap {
 
 export type EventType = keyof EventMap;
 
-export const EVENT_TYPES: EventType[] = ["server.started", "server.stopping", "delivery.received", "job.queued", "job.started", "job.updated", "job.cancelled", "job.finished", "job.progress", "job.waiting_human", "job.answered", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed", "health.changed", "runners.changed", "account.changed", "account.updated", "config.changed"];
+export const EVENT_TYPES: EventType[] = ["server.started", "server.stopping", "delivery.received", "job.queued", "job.started", "job.updated", "job.cancelled", "job.finished", "job.progress", "job.waiting_human", "job.answered", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed", "skills.synced", "health.changed", "runners.changed", "account.changed", "account.updated", "config.changed"];
 
 export interface SkillhookEvent<K extends EventType = EventType> {
   /** Increases by one per event in this process; `GET /events` sends it as the SSE id. */

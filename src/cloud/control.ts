@@ -20,11 +20,12 @@ import { enqueueReplay, planReplay, ReplayError } from "../replay.js";
 import type { RunOverrides } from "../run.js";
 import { buildSchedulePayload, ScheduleControlError, type Scheduler } from "../scheduler.js";
 import type { ServerControl } from "../server.js";
-import { parseSkillDocument, SkillError } from "../skills.js";
+import { parseSkillDocument, SkillError, type SkillSource } from "../skills.js";
 import { applyUpdate, type ApplyUpdateResult } from "../update.js";
 import { isValidSkillName } from "../util.js";
 import { CommandError, type CommandHandler } from "./commands.js";
 import { CLOUD_PRIVATE_KEY_ENV } from "./config.js";
+import { ManagedError, type ManagedSkills } from "./managed.js";
 import type { Command, CommandType } from "./protocol.js";
 import { openSealed, SealError, sealForRecipient } from "./seal.js";
 
@@ -49,6 +50,15 @@ export interface ControlDeps {
   scheduler?: Pick<Scheduler, "pause" | "resume">;
   /** Injectable for tests. */
   applyUpdate?: (options: { install: boolean }) => Promise<ApplyUpdateResult>;
+  /** Cloud-managed skills, for `skills.sync` and `skill.adopt`. */
+  managed?: ManagedSkills;
+}
+
+/** Who owns a skill that is not the machine's own, for the messages of `skill.put` / `skill.delete`. */
+function ownerOf(source: SkillSource): string {
+  if (source.type === "project") return "a linked repository; change it there";
+  if (source.type === "cloud") return "Skillhook Cloud (it is cloud-managed); save it there and the machine pulls it";
+  return `${source.type}; change it there`;
 }
 
 type Args<T> = T;
@@ -227,7 +237,7 @@ export function createControlHandlers(deps: ControlDeps): Partial<Record<Command
     "skill.put": (args: Args<{ name: string; content: string; allow_unauthenticated?: boolean }>, command) => {
       if (!isValidSkillName(args.name)) throw new CommandError("invalid_args", `"${args.name}" is not a valid skill name`);
       const existing = deps.registry.get(args.name);
-      if (existing && existing.source.type !== "home") throw new CommandError("conflict", `"${args.name}" comes from ${existing.source.type === "project" ? "a linked repository" : existing.source.type}; change it there`);
+      if (existing && existing.source.type !== "home") throw new CommandError("conflict", `"${args.name}" comes from ${ownerOf(existing.source)}`);
       const dir = path.join(deps.paths.skillsDir, args.name);
       let skill: ReturnType<typeof parseSkillDocument>;
       try {
@@ -247,7 +257,7 @@ export function createControlHandlers(deps: ControlDeps): Partial<Record<Command
     "skill.delete": (args: Args<{ name: string }>, command) => {
       const skill = deps.registry.get(args.name);
       if (!skill) throw new CommandError("not_found", `no skill named "${args.name}"`);
-      if (skill.source.type !== "home") throw new CommandError("conflict", `"${args.name}" comes from ${skill.source.type === "project" ? "a linked repository" : skill.source.type}; remove it there`);
+      if (skill.source.type !== "home") throw new CommandError("conflict", `"${args.name}" comes from ${ownerOf(skill.source).replace("save it there and the machine pulls it", "unassign it there and the machine removes it").replace("change it there", "remove it there")}`);
       const dir = path.dirname(skill.file);
       if (path.dirname(dir) !== path.resolve(deps.paths.skillsDir)) throw new CommandError("conflict", `"${args.name}" is not a directory of ${deps.paths.skillsDir}`);
       // Kept, not deleted: the directory moves under the jobs directory (outside the link's spool, which a disconnect clears), where a person can restore it.
@@ -263,5 +273,30 @@ export function createControlHandlers(deps: ControlDeps): Partial<Record<Command
       deps.logger.warn("skill removed from the cloud", { skill: args.name, kept_at: target, by: requester(command) });
       return { result: { removed: true, name: args.name, kept_at: target, restorable: existsSync(target) } };
     },
+
+    "skills.sync": async (_args: Args<Record<string, never>>, command) => {
+      const managed = requireManaged(deps);
+      const report = await managed.reconcile("command", { by: requester(command) });
+      if (!report) throw new CommandError("denied_by_policy", "this machine does not pull skills from the cloud", "set cloud.managed_skills: true in skillhook.json on the machine (and keep cloud.mode: control, or allow skills.sync)");
+      return { result: report };
+    },
+
+    "skill.adopt": (args: Args<{ name: string; sha256: string }>, command) => {
+      const managed = requireManaged(deps);
+      try {
+        return { result: managed.adopt(args.name, args.sha256, { by: requester(command) }) };
+      } catch (error) {
+        if (error instanceof ManagedError) throw new CommandError(error.code, error.message);
+        throw error;
+      }
+    },
   };
+}
+
+/** The managed-skills side, when this server has one and the machine lets the cloud manage skills. */
+function requireManaged(deps: ControlDeps): ManagedSkills {
+  if (!deps.managed) throw new CommandError("unavailable", "this server has no cloud-managed skills");
+  const gate = deps.managed.gate();
+  if (!gate.ok) throw new CommandError("denied_by_policy", `this machine does not pull skills from the cloud: ${gate.reason}`, "set cloud.managed_skills: true in skillhook.json on the machine (and keep cloud.mode: control, or allow skills.sync)");
+  return deps.managed;
 }

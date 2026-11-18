@@ -68,6 +68,10 @@ export interface JobRecord {
   webhook_policy?: string;
   /** Explicit runner/model/cwd overrides, so a project refresh can resolve new defaults. */
   run_overrides?: RunOverrides;
+  /** For a cloud-managed skill: the content hash of the definition the run used (src/definitions.ts). */
+  definition_sha256?: string;
+  /** For a cloud-managed skill: whether Skillhook Cloud confirmed that definition right before the run (false: it ran the copy on disk because the cloud could not be asked). */
+  definition_fresh?: boolean;
 
   /** What the agent last reported while running (`skillhook job progress`, the `job_progress` tool). */
   progress?: JobProgress;

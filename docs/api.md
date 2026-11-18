@@ -260,7 +260,7 @@ The quick flavour, as `skillhook doctor` prints it: `GET /health/checks?deep=0` 
 }
 ```
 
-`runner`, `model`, `effort`, `cwd` and `timeout_seconds` are effective values after `defaults`. `auth.type` is the normalized type: `github`, `sentry` and `linear` appear as `hmac`, `granola` and `svix` as `standard-webhooks`; `auth.how` spells out the preset. `auth.configured` says whether the secret is present. `webhook` is false for a schedule-only skill; `schedule` is `null` or `{"cron", "timezone", "catch_up", "overlap", "next_run_at"}` ([schedules.md](schedules.md)). `source` says where the skill is defined: `{"type": "home"}` for `<home>/skills/<name>`, or `{"type": "project", "dir", "file", "kind"}` for a hook of a linked repository's `skillhook.yaml` (`kind` is `run`, `skill` or `prompt`; see [projects.md](projects.md)). This call rescans the skills directory and every linked repository, so new directories and hooks appear immediately.
+`runner`, `model`, `effort`, `cwd` and `timeout_seconds` are effective values after `defaults`. `auth.type` is the normalized type: `github`, `sentry` and `linear` appear as `hmac`, `granola` and `svix` as `standard-webhooks`; `auth.how` spells out the preset. `auth.configured` says whether the secret is present. `webhook` is false for a schedule-only skill; `schedule` is `null` or `{"cron", "timezone", "catch_up", "overlap", "next_run_at"}` ([schedules.md](schedules.md)). `source` says where the skill is defined: `{"type": "home"}` for `<home>/skills/<name>`, `{"type": "project", "dir", "file", "kind"}` for a hook of a linked repository's `skillhook.yaml` (`kind` is `run`, `skill` or `prompt`; see [projects.md](projects.md)), or `{"type": "cloud", "sha256", "installed_at"}` for a skill Skillhook Cloud assigned to this machine ([cloud.md](cloud.md#cloud-managed-skills)). `definition` is `{"sha256", "kind": "skill" | "hook", "bytes", "files"}`: the content hash of the files that define the skill (the SKILL.md directory, or a hook's block and the SKILL.md it names), which is what the cloud keys its copy by, so two machines serving the same files show the same hash; `null` for an ad-hoc skill. This call rescans the skills directory, every linked repository and the cloud-managed skills, so new directories and hooks appear immediately.
 
 ## `POST /skills/<skill>/run`
 
@@ -396,7 +396,8 @@ A `text/event-stream` of the server's event bus. Each message carries `id` (the 
 | `schedule.registered` | `{skill, cron, timezone, next_due}` |
 | `schedule.fired` | `{skill, slot, job, caught_up}` |
 | `schedule.skipped` | `{skill, slot, reason}`: `in_flight`, `caught_up`, `too_old` or `duplicate` |
-| `skill.changed` | `{name, action, source}` with `action` `added`, `changed` or `removed`, noticed when a lookup or listing reads the changed file |
+| `skill.changed` | `{name, action, source, definition_sha256}` with `action` `added`, `changed` or `removed`, noticed when a lookup or listing reads the changed file; `definition_sha256` is the content hash of the skill as it now is (`null` when removed) |
+| `skills.synced` | `{at, reason, installed, updated, removed, unchanged, errors}`: the cloud-managed skills were reconciled with what Skillhook Cloud assigns to this machine (`reason` `connect`, `interval`, `command` or `cli`; [cloud.md](cloud.md#cloud-managed-skills)) |
 | `health.changed` | `{report, changed}`: a fresh health report whose checks differ from the previous one of the same flavour (`changed` lists `{name, from, to}`; the first report of a flavour has `from: null`) |
 | `runners.changed` | `{runner, readiness, previous?}`: a runner became usable or stopped being so (installed, logged in), as the readiness check sees it |
 | `account.changed` | `{account, runner, readiness, previous?}`: an account became usable or stopped being so (logged in, logged out, expired, token missing), as the readiness check before jobs (and `serve` at start) sees it |
@@ -546,6 +547,7 @@ Query: `since=<24h|7d|2w|ISO-8601>` (default: everything on disk, newest 5000 jo
 | `adhoc` | `true`, optional | The SKILL.md came with the request (`POST /skills/test`, `skillhook run --file`) and lives in `jobs/<id>/skill/<name>/`. |
 | `skill_file` | string, optional | The `SKILL.md` (or `skillhook.yaml`) the job ran from. |
 | `project_commit` | string, optional | Git commit the runner started from for a linked project with refresh enabled. |
+| `definition_sha256`, `definition_fresh` | string, boolean, optional | For a cloud-managed skill: the content hash of the definition the run used, and whether Skillhook Cloud confirmed it right before the run (`false`: the copy on disk ran because the cloud could not be asked). See [cloud.md](cloud.md#cloud-managed-skills). |
 | `delivery_id` | string, optional | Provider delivery id when known; `schedule:<wall-clock slot>` for scheduled runs. |
 | `fingerprint` | string, optional | SHA-256 of the payload and query string of a webhook delivery; what the in-flight duplicate check compares. |
 | `source` | object | `ip`, `method` (`POST`, `PUT`, `LOCAL` for CLI/MCP runs, `SCHEDULE` for scheduled runs, `REPLAY` for replays, whose `ip` is the original sender's, `TEST` for ad-hoc runs, `RESUME` for resumed runs, `CLOUD` for runs started from Skillhook Cloud), `path`, `content_type`, `user_agent`. |

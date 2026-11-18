@@ -23,6 +23,7 @@ import { CommandError, createCommandDispatcher, type CommandDeps, type CommandDi
 import { CLOUD_TOKEN_ENV, cloudDisabledByEnv, isSecureCloudUrl, resolveCloudUrl, type CloudPolicy } from "./config.js";
 import { CloudHttpError, cloudRequest } from "./http.js";
 import { processIngressItem } from "./ingress.js";
+import type { ManagedSkills } from "./managed.js";
 import { CommandLedger, IngressLedger, Outbox } from "./outbox.js";
 import { machineInfo } from "./pair.js";
 import { LIMITS, PROTOCOL_VERSION, SyncResponseSchema, type CloudEventType, type CommandType, type EventEnvelope, type Hints, type LinkReason, type LinkState, type LinkStatus, type SyncRequest, type SyncResponse } from "./protocol.js";
@@ -50,6 +51,8 @@ export interface CloudLinkDeps {
   fetchImpl?: typeof fetch;
   /** Control command handlers (skill.run, job.answer, config.patch, …), when this version provides them. */
   control?: Partial<Record<CommandType, CommandHandler>>;
+  /** Cloud-managed skills: reconciled with the cloud's assignments on connect and at every snapshot, reported in the snapshot. */
+  managed?: ManagedSkills;
   /** The queue's numbers for the status line. */
   queueStats?: () => { running: number; queued: number };
   runningJobs?: () => string[];
@@ -108,10 +111,10 @@ export interface LinkStatusView extends LinkStatus {
 }
 
 /** Commands after which the snapshot differs (skills, whether their secrets are set, the configuration, a paused schedule): one goes at once. */
-const RESNAPSHOT: ReadonlySet<string> = new Set(["skill.put", "skill.delete", "config.patch", "secret.generate", "secret.set", "schedule.pause", "schedule.resume"]);
+const RESNAPSHOT: ReadonlySet<string> = new Set(["skill.put", "skill.delete", "skills.sync", "skill.adopt", "config.patch", "secret.generate", "secret.set", "schedule.pause", "schedule.resume"]);
 
 /** Event types that travel; `server.*` stays local. */
-const UPLOADED: Set<string> = new Set(["delivery.received", "job.queued", "job.started", "job.updated", "job.finished", "job.cancelled", "job.progress", "job.waiting_human", "job.answered", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed", "config.changed", "health.changed", "runners.changed", "account.changed", "account.updated"]);
+const UPLOADED: Set<string> = new Set(["delivery.received", "job.queued", "job.started", "job.updated", "job.finished", "job.cancelled", "job.progress", "job.waiting_human", "job.answered", "schedule.registered", "schedule.fired", "schedule.skipped", "skill.changed", "skills.synced", "config.changed", "health.changed", "runners.changed", "account.changed", "account.updated"]);
 
 /**
  * A job fell back from Claude Code because its login failed, or a runner or account became usable or unusable: the
@@ -191,6 +194,7 @@ export class CloudLink {
       snapshot: () => this.snapshot(),
       uploadPayloads: () => this.uploadPayloads(),
       uploadArtifacts: () => this.uploadArtifacts(),
+      uploadDefinitions: () => this.deps.config.cloud.upload_definitions,
       control: deps.control,
       afterAck: (commandId, fn) => this.afterAck(commandId, fn),
       upload: (jobId, name, data) => this.upload(jobId, name, data),
@@ -413,7 +417,7 @@ export class CloudLink {
   }
 
   private snapshot() {
-    return buildSnapshot({ config: this.deps.config, secrets: this.deps.secrets, fileSecrets: this.deps.fileSecrets, registry: this.deps.registry, store: this.deps.store, deliveryLog: this.deps.deliveryLog, schedules: this.deps.schedules, health: this.deps.health, readiness: this.deps.readiness, serverState: this.deps.serverState });
+    return buildSnapshot({ config: this.deps.config, secrets: this.deps.secrets, fileSecrets: this.deps.fileSecrets, registry: this.deps.registry, store: this.deps.store, deliveryLog: this.deps.deliveryLog, schedules: this.deps.schedules, health: this.deps.health, readiness: this.deps.readiness, serverState: this.deps.serverState, managed: this.deps.managed });
   }
 
   /** Progress lines of one job are coalesced: a change of state always travels, the same state at most every 5 s. */
@@ -667,8 +671,11 @@ export class CloudLink {
           void readiness.get(account.runner, { account }).catch((error: unknown) => this.deps.logger.warn("account readiness check for the cloud failed", { account: account.name, error: errorMessage(error) }));
         }
       }
+      // The cloud-managed skills: what the cloud assigns this machine now (nothing happens unless cloud.managed_skills and the policy allow).
+      this.pull("connect");
     }
     const snapshotDue = now - this.lastSnapshotAt >= (this.hints.snapshot_interval_s ?? cloud.snapshot_interval_seconds) * 1000;
+    if (snapshotDue && this.lastSnapshotAt > 0) this.pull("interval");
     const healthSoon = this.healthDue && now - this.lastHealthAt >= this.timing.healthSoonMs;
     if (this.deps.health && (healthSoon || now - this.lastHealthAt >= (this.hints.health_interval_s ?? cloud.health_interval_seconds) * 1000)) {
       this.lastHealthAt = now;
@@ -748,6 +755,21 @@ export class CloudLink {
     const newResults = this.commandLedger.pendingResults(LIMITS.max_command_results).some((r) => !sentResults.has(r.command_id));
     const newAcks = this.ingressLedger.pendingAcks(LIMITS.max_ingress_items * 5).some((a) => !sentAcks.has(a.id));
     return moreEvents || newResults || newAcks || this.transient.length > 0 || response.commands.length > 0 || response.ingress.length > 0 ? 0 : response.next_poll_ms;
+  }
+
+  /** Reconciles the cloud-managed skills in the background; when something changed, the next sync carries a snapshot so the dashboard sees it now. */
+  private pull(reason: "connect" | "interval"): void {
+    const managed = this.deps.managed;
+    if (!managed) return;
+    void managed
+      .reconcile(reason)
+      .then((report) => {
+        if (report && (report.installed.length || report.updated.length || report.removed.length)) {
+          this.lastSnapshotAt = 0;
+          this.wake();
+        }
+      })
+      .catch((error: unknown) => this.deps.logger.warn("cloud-managed skills: pull failed", { reason, error: errorMessage(error) }));
   }
 
   private queueStats(): { running: number; queued: number } {

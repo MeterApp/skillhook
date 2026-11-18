@@ -207,6 +207,12 @@ export const ConfigSchema = z
         upload_artifacts: z.boolean().default(true),
         /** Accept hosted-ingress deliveries (webhooks the cloud received for this machine while it was asleep). */
         ingress: z.boolean().default(true),
+        /** Answer `definitions.get` and the content of `skill.get`: the text of the skills this machine serves, so the dashboard shows every skill from its own copy. */
+        upload_definitions: z.boolean().default(true),
+        /** Serve the skills Skillhook Cloud assigns to this machine (`<home>/cloud-skills`): pulled on connect, every snapshot interval and on `skills.sync`, and checked against the cloud before each run. Also needs `mode: control` or `skills.sync` in `allow_commands`. */
+        managed_skills: z.boolean().default(false),
+        /** Fail a cloud-managed skill's job when the cloud cannot confirm its current definition before the run, instead of running the copy on disk. */
+        require_fresh_definitions: z.boolean().default(false),
         snapshot_interval_seconds: z.number().int().min(10).max(86_400).default(60),
         health_interval_seconds: z.number().int().min(60).max(86_400).default(600),
         /** Events kept on disk while the cloud is unreachable (oldest dropped beyond this). */

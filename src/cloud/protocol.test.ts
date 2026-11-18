@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildDefinition, DEFINITION_KINDS, DEFINITION_LIMITS, isDefinitionPath } from "../definitions.js";
 import { DELIVERY_OUTCOMES } from "../delivery-log.js";
 import { EVENT_TYPES } from "../events.js";
 import { HEALTH_GROUPS } from "../health.js";
@@ -40,6 +41,33 @@ describe("protocol vocabulary", () => {
     expect([...protocol.ISSUE_KINDS]).toEqual(["bug", "question", "feature", "other"]);
     expect([...protocol.ISSUE_SEVERITIES]).toEqual(["low", "normal", "high", "urgent"]);
     expect(LIMITS.max_issue_report_bytes).toBe(64 * 1024);
+    // Skill definitions: the kinds, the path rule and the limits are the ones src/definitions.ts builds with.
+    expect([...protocol.DEFINITION_KINDS]).toEqual([...DEFINITION_KINDS]);
+    for (const sample of ["SKILL.md", ".claude/skills/x/SKILL.md", "a/b-c_d.txt", "../x", "a/../b", "./x", "/abs", "a\\b", "", "a//b", "x".repeat(513)]) expect(protocol.isDefinitionPath(sample), sample).toBe(isDefinitionPath(sample));
+    expect({ files: LIMITS.max_definition_files, file: LIMITS.max_definition_file_bytes, bytes: LIMITS.max_definition_bytes }).toEqual({ files: DEFINITION_LIMITS.max_files, file: DEFINITION_LIMITS.max_file_bytes, bytes: DEFINITION_LIMITS.max_bytes });
+    expect(COMMAND_CLASS["definitions.get"]).toBe("read");
+    expect(COMMAND_CLASS["skills.sync"]).toBe("control");
+    expect(COMMAND_CLASS["skill.adopt"]).toBe("control");
+  });
+
+  it("carries a skill definition and an assignment", () => {
+    const definition = buildDefinition("skill", "hello", { "SKILL.md": "---\nname: hello\ndescription: d\n---\n", "references/a.md": "A" });
+    expect(protocol.DefinitionSchema.parse(definition)).toEqual(definition);
+    expect(protocol.DefinitionSchema.safeParse({ ...definition, files: [] }).success).toBe(false);
+    for (const bad of ["../x", "a/../b", "./x", "/etc/passwd", "a\\b", "", "a//b"]) {
+      expect(protocol.DefinitionSchema.safeParse({ ...definition, files: [{ path: bad, sha256: "0".repeat(64), bytes: 0, text: "" }] }).success, bad).toBe(false);
+    }
+    expect(protocol.DefinitionSchema.safeParse({ ...definition, files: [{ path: ".claude/skills/x/SKILL.md", sha256: "0".repeat(64), bytes: 0, text: "" }] }).success).toBe(true);
+    expect(protocol.DefinitionSchema.safeParse({ ...definition, sha256: "xyz" }).success).toBe(false);
+    expect(protocol.AssignedSkillsResponseSchema.parse({ ok: true, skills: [{ name: "hello", sha256: definition.sha256, allow_unauthenticated: true, since: "x" }] }).skills[0]).toMatchObject({ name: "hello", since: "x" });
+    expect(protocol.AssignedSkillResponseSchema.parse({ ok: true, skill: { name: "hello", sha256: definition.sha256 }, definition }).definition.sha256).toBe(definition.sha256);
+    expect(parseCommandArgs("definitions.get", { sha256: [definition.sha256] })).toMatchObject({ ok: true });
+    expect(parseCommandArgs("definitions.get", { sha256: ["abc"] })).toMatchObject({ ok: false });
+    expect(parseCommandArgs("definitions.get", { sha256: Array.from({ length: 21 }, () => definition.sha256) })).toMatchObject({ ok: false });
+    expect(parseCommandArgs("skills.sync", {})).toEqual({ ok: true, args: {} });
+    expect(parseCommandArgs("skill.adopt", { name: "hello", sha256: definition.sha256 })).toMatchObject({ ok: true });
+    expect(parseCommandArgs("skill.adopt", { name: "hello" })).toMatchObject({ ok: false });
+    expect(protocol.SnapshotSchema.parse({ skills: [], skill_errors: [], projects: [], schedules: [], config: {}, managed: { enabled: true, allowed: false, last_sync_at: null, skills: [{ name: "hello", sha256: definition.sha256, installed_at: "2026-09-28T12:00:00.000Z" }] } }).managed?.skills).toHaveLength(1);
   });
 
   it("validates command arguments per type", () => {
