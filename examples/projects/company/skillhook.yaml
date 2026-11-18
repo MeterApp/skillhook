@@ -13,12 +13,18 @@
 # What the agents may decide alone and what needs a person is in .claude/skills/company-rules.md. Read it first.
 # Secrets are named here, never stored here: `skillhook secret set NAME` keeps each value on the machine.
 
+# The skills this repository owns (Claude Code finds them in .claude/skills too); the hooks refer to them as @name.
+skills:
+  company-task: .claude/skills/company-task
+  company-incident: .claude/skills/company-incident
+  company-daily: .claude/skills/company-daily
+
 hooks:
   # GitHub → Settings → Webhooks: content type application/json, event "Issues", the secret from
   # `skillhook secret generate GITHUB_WEBHOOK_SECRET`, the URL from `skillhook url __PROJECT__-task`.
   # Label an issue `agent` to hand it over.
   __PROJECT__-task:
-    skill: .claude/skills/company-task
+    skill: "@company-task"
     auth: { type: github, secret_env: GITHUB_WEBHOOK_SECRET }
     when:
       - { header: x-github-event, equals: issues }
@@ -31,7 +37,7 @@ hooks:
   # __PROJECT__-incident`), added as an action of the alert for new and regressed issues. Its Client Secret:
   # `skillhook secret set SENTRY_CLIENT_SECRET`. Remove this hook if you do not use Sentry.
   __PROJECT__-incident:
-    skill: .claude/skills/company-incident
+    skill: "@company-incident"
     auth: { type: sentry, secret_env: SENTRY_CLIENT_SECRET }
     when:
       - { header: sentry-hook-resource, equals: event_alert }
@@ -40,7 +46,7 @@ hooks:
 
   # No webhook: the schedule is the trigger. `skillhook schedules run __PROJECT__-daily` runs it now.
   __PROJECT__-daily:
-    skill: .claude/skills/company-daily
+    skill: "@company-daily"
     webhook: false
     schedule:
       cron: "5 7 * * *"               # UTC; add `timezone: Europe/Berlin` for local time

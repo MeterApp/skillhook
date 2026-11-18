@@ -78,6 +78,10 @@ The starting commit is saved as `project_commit` in the job record, written to t
 
 ```yaml
 # yaml-language-server: $schema=https://raw.githubusercontent.com/MeterApp/skillhook/main/schema/skillhook.yaml.schema.json
+# The skills this repository owns, by name; hooks refer to them as @name.
+skills:
+  release-notes: .claude/skills/release-notes
+
 hooks:
   # A shell command: no agent involved. Runs in the repository with the payload on stdin.
   pull-after-merge:
@@ -89,9 +93,9 @@ hooks:
       - { path: action, equals: closed }
       - { path: pull_request.merged, equals: true }
 
-  # An Agent Skill that lives in the repository. Its skillhook: block applies; keys set here win.
+  # An Agent Skill that lives in the repository, declared above. Its skillhook: block applies; keys set here win.
   release-notes:
-    skill: .claude/skills/release-notes
+    skill: "@release-notes"
     model: sonnet
     auth: { type: github, secret_env: GITHUB_WEBHOOK_SECRET }
     when:
@@ -117,6 +121,25 @@ A hook's own `claude:` keys win over the file's, key by key, and so do those of 
 
 `hooks` is a map from webhook name to hook. The name follows the skill naming rule (1-64 lowercase letters, digits and single hyphens) and becomes the URL: `POST <public_url>/hooks/<name>`. `skillhook.yml` is accepted too. Unknown keys are rejected, so a typo cannot silently disable a filter.
 
+## The repository's skills: `skills:`
+
+`skills` names the Agent Skills the repository owns and says where each lives: a map from skill name to the SKILL.md directory (or the file itself), relative to the repository, as a path or `{ path: … }`. The name must be the SKILL.md's `name`, which is also its directory's name, so `release-notes: .claude/skills/release-notes` is the usual shape; keeping them under `.claude/skills/` lets Claude Code find them interactively too.
+
+```yaml
+skills:
+  issue-triage: .claude/skills/issue-triage
+  release-notes: { path: tools/skills/release-notes }
+hooks:
+  issue-opened:
+    skill: "@issue-triage"
+    when: [{ header: x-github-event, equals: issues }, { path: action, equals: opened }]
+  issue-labelled:
+    skill: "@issue-triage"
+    when: [{ header: x-github-event, equals: issues }, { path: action, equals: labeled }]
+```
+
+A hook refers to a declared skill as `skill: "@name"` (quoted, since `@` starts a YAML tag). A path in `skill:` still works, so existing files need no change. The difference is what the file states: the `skills:` list is the repository's inventory of skills, checked whole on every load (a declared skill whose directory is missing, whose SKILL.md does not parse, or whose name differs from the key is reported as `@name` by `skillhook projects`, `skills validate` and `doctor`, used by a hook or not), a hook that names an undeclared `@name` is an error that lists what is declared, and `skillhook projects` shows each declared skill with the hooks that use it. The same list is what a repository publishes to Skillhook Cloud as its skills ([cloud.md](cloud.md)). In `GET /skills` a hook that refers to a declared skill carries `source.skill`, the declared name.
+
 ## What a hook accepts
 
 Exactly one of these says what runs:
@@ -124,7 +147,7 @@ Exactly one of these says what runs:
 | Key | Type | What runs |
 |---|---|---|
 | `run` | string or list of strings | A shell command through the [shell runner](runners.md#shell-runner): a string is executed with `/bin/sh -c`, a list directly (first element is the executable). Implies `runner: shell`. |
-| `skill` | path | A directory containing a `SKILL.md` (or the path of the file), relative to the repository. The SKILL.md's frontmatter, body, `allowed-tools` and reference files are used exactly as for a skill in `~/.skillhook/skills`. |
+| `skill` | `@name` or path | A skill declared under [`skills:`](#the-repositorys-skills-skills) as `"@name"`, or a directory containing a `SKILL.md` (or the path of the file), relative to the repository. The SKILL.md's frontmatter, body, `allowed-tools` and reference files are used exactly as for a skill in `~/.skillhook/skills`. |
 | `prompt` | string | The body of an agent run, with the same `{{placeholders}}` as a SKILL.md body (`{{payload.x}}`, `{{job_dir}}`, …). |
 
 Everything else is the [`skillhook:` block](skills.md#the-skillhook-block) of a SKILL.md, key for key: `description`, `runner`, `model`, `effort`, `cwd`, `timeout_seconds`, `auth`, `when`, `env`, `concurrency`, `dedupe`, `claude`, `codex`, `shell`, `enabled`, `schedule`, `webhook`. Two defaults differ from a skill directory:
@@ -223,7 +246,7 @@ Several machines can link the same repository; each has its own URL, secrets and
 | Where | What it shows |
 |---|---|
 | `skillhook.yaml` in the repository, and its git history | The intended mapping, reviewable in pull requests. |
-| `skillhook projects` | Each linked repository with its hooks: runner, kind (`run`, `skill`, `prompt`), auth, URL, and any error. |
+| `skillhook projects` | Each linked repository with its hooks: runner, kind (`run`, `skill`, `prompt`), auth, URL, and any error; and its declared skills with the hooks that use each. |
 | `skillhook skills list` | Every routable name with a `source` column (the skills directory or the repository). |
 | `skillhook skills show <hook>` | The effective settings, the source file, and for `skill` hooks the SKILL.md path. |
 | `GET /skills`, MCP `list_skills` / `list_projects` | The same as data: each skill carries `source: {type, dir, file, kind}`. |
