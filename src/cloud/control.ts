@@ -4,7 +4,7 @@
 // never touch, skills that belong to a repository, secrets that must be sealed to whoever asked).
 import { cpSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { AnswerError, answerJob } from "../answer.js";
+import { AnswerError, answerJob, closeJob } from "../answer.js";
 import { ConfigError, updateConfig, type Config, type ConfigRef } from "../config.js";
 import type { DeliveryLog } from "../delivery-log.js";
 import { isSkillhookCredential, type Secrets } from "../env.js";
@@ -135,6 +135,16 @@ export function createControlHandlers(deps: ControlDeps): Partial<Record<Command
       try {
         const answered = answerJob(ops, { jobId: args.id, text: args.answer, option: args.option, by: args.by ?? requester(command), resume: args.resume }, { queue: deps.queue, events: deps.events });
         return { result: { job_id: args.id, delivered: answered.delivered, answer: answered.answer, resume_job_id: answered.resumeJob?.id ?? null } };
+      } catch (error) {
+        if (error instanceof AnswerError) throw new CommandError(error.status === 404 ? "not_found" : "conflict", error.message);
+        throw error;
+      }
+    },
+
+    "job.close": (args: Args<{ id: string; reason?: string; by?: string }>, command) => {
+      try {
+        const closed = closeJob(ops, { jobId: args.id, reason: args.reason, by: args.by ?? requester(command) }, { queue: deps.queue, events: deps.events });
+        return { result: { job_id: args.id, closed: closed.closed } };
       } catch (error) {
         if (error instanceof AnswerError) throw new CommandError(error.status === 404 ? "not_found" : "conflict", error.message);
         throw error;

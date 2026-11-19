@@ -42,6 +42,7 @@ Related: [security.md](security.md) (authentication), [skills.md](skills.md) (fi
 | `POST` | `/jobs/<id>/cancel` | admin | Cancel a queued or running job. |
 | `GET` | `/jobs/<id>/progress` | admin | What the agent reported: current state, pending question, answer, timeline. |
 | `POST` | `/jobs/<id>/answer` | admin | A person's answer: delivered live to a waiting job, or a new job continues the session. |
+| `POST` | `/jobs/<id>/close` | admin | Stops a finished job from waiting for a person without answering it. |
 | `GET` | `/jobs/<id>/artifacts/<name>` | admin | One artifact file as it is on disk (`?tail=<bytes>` for its end). |
 | `GET` | `/jobs/<id>/events` | admin | Server-sent events for one job: `status` snapshots, `stdout`/`stderr` as they are written, `end`. |
 | `GET` | `/events` | admin | Server-sent events for the whole server: `delivery.received`, `job.*`, `schedule.*`, `skill.changed`, `server.*` (`?types=` to filter). |
@@ -362,6 +363,17 @@ curl -sS -X POST -H "Authorization: Bearer $SKILLHOOK_ADMIN_TOKEN" -H "content-t
   http://127.0.0.1:8787/jobs/20260916T025442Z-r1wn6g/answer
 ```
 
+
+## `POST /jobs/<id>/close`
+
+Stops a finished job from waiting for a person without answering it: nothing is delivered and no agent resumes. For a question that went stale or a finding that cleared by itself. Body (optional):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `reason` | string | Why it no longer needs a person (up to 2,000 characters). |
+| `by` | string | Who closed it. |
+
+Response: `{ok, job_id, closed: {at, by?, reason?}, job}`; the job records `closed` and leaves `GET /jobs?waiting=1`, `stats.waiting_for_human` and Skillhook Cloud's inbox (`job.updated` with `fields: ["closed"]`). `409 not_waiting` when it is not waiting (already answered, resumed or closed), `409 running` when it is still queued or running (answer it, or cancel it), `404 unknown_job`.
 ## `GET /jobs/<id>/artifacts/<name>`
 
 `<name>` is one of `stdout`, `stderr`, `prompt`, `result`, `payload`, `event`, `response`. The body is the file as written, with no JSON envelope: `application/json` for `event` and for a `payload` that was parsed as JSON, `text/plain` otherwise. `x-artifact-bytes` carries the file's full size. `?tail=<bytes>` returns only the last `<bytes>` bytes and adds `x-artifact-truncated: true`. A name outside the list, or a file the job has not written yet, is `404 unknown_artifact`.
@@ -540,6 +552,7 @@ Query: `since=<24h|7d|2w|ISO-8601>` (default: everything on disk, newest 5000 jo
 | `answer` | object, optional | The person's answer: `{"question_id"?, "text", "option"?, "options"?, "by"?, "at"}` (`options`: the picks of a multiple-choice question, the lines of `text` that are options). |
 | `resume_of`, `resume` | optional | For `trigger: resume`: the job whose answer this run carries, and `{"session_id", "runner"}` when that job's session is continued (absent when the skill had to run afresh; `runner_reason` then says why). |
 | `resolved_by` | string, optional | The resume job an answer to this job started. |
+| `closed` | object, optional | `{at, by?, reason?}`: a person closed the job without answering it; it no longer waits. |
 | `runner_reason` | string, optional | Why the run differs from what was asked: a resume without a session, or a fallback runner (`fallback: claude not logged in`, `fallback: claude failed (rate_limit)`). |
 | `runner_requested` | string, optional | The runner the skill asked for, when `runner` is a fallback that took over. |
 | `failure` | object, optional | For `failed` and `timed_out` jobs: `{"kind", "code"?, "retryable", "message"?}` with `kind` one of `auth`, `usage_limit`, `rate_limit`, `budget`, `max_turns`, `not_found`, `timeout`, `crash`, `unknown` ([runners.md](runners.md#failure-kinds)). |

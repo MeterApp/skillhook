@@ -491,6 +491,22 @@ describe("CloudLink", () => {
     expect(readScheduleStates(paths.jobsDir).ticker?.paused).toBeUndefined();
   });
 
+  it("closes a job waiting for a person from the cloud without resuming it, and uploads the closure", async () => {
+    const { fake, link, store } = await setup({ control: true, cloud: { mode: "control" } });
+    link.start();
+    await waitUntil(() => link.status().state === "connected");
+    const stale = store.create({ skill: "hello", trigger: "webhook", runner: "claude", source: { ip: "203.0.113.1", method: "POST", path: "/hooks/hello", content_type: "application/json" }, event: event("hello") });
+    store.update(stale.id, { status: "succeeded", outcome: "needs_human", response: { outcome: "needs_human", summary: "Revert the deploy?" }, finished_at: new Date().toISOString() });
+    const done = await runCommands(fake, [cmd("close", "job.close", { id: stale.id, reason: "The error stopped by itself." }), cmd("close-again", "job.close", { id: stale.id }), cmd("close-missing", "job.close", { id: "20260101T000000Z-nopenp" })]);
+    expect(done.close).toMatchObject({ ok: true, result: { job_id: stale.id, closed: { by: "ada", reason: "The error stopped by itself." } } });
+    expect(done["close-again"]).toMatchObject({ ok: false, error: { code: "conflict" } });
+    expect(done["close-missing"]).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(store.get(stale.id)).toMatchObject({ closed: { by: "ada" } });
+    expect(store.get(stale.id)?.answer).toBeUndefined();
+    expect(store.list().some((j) => j.resume_of === stale.id)).toBe(false);
+    await fake.waitFor(() => fake.requests.some((r) => r.events.some((e) => e.type === "job.updated" && (e.data as { job: { id: string; closed?: { reason?: string } }; fields: string[] }).job.closed?.reason === "The error stopped by itself." && (e.data as { fields: string[] }).fields.includes("closed"))));
+  });
+
   it("acts on the machine in control mode: runs, tests, replays, answers, patches config within bounds, restarts after the answer", async () => {
     const { fake, link, store, paths, config, restarts, registry } = await setup({ control: true, cloud: { mode: "control" } });
     link.start();

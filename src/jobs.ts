@@ -85,6 +85,8 @@ export interface JobRecord {
   resume?: { session_id: string; runner: RunnerName };
   /** Set on the original job when its answer started a resume job. */
   resolved_by?: string;
+  /** Set when a person closed the job without answering it (the question went stale, the finding cleared by itself): it no longer waits for anyone. */
+  closed?: JobClosure;
   /** Why the runner or the way of running differs from what was asked (a resume without a session, a fallback). */
   runner_reason?: string;
   /** The runner the skill asked for, when `runner` is a fallback that took over. */
@@ -462,9 +464,16 @@ export function isTerminal(status: JobStatus): boolean {
   return TERMINAL_STATUSES.includes(status);
 }
 
+/** A waiting job a person closed without an answer: when, who and why. */
+export interface JobClosure {
+  at: string;
+  by?: string;
+  reason?: string;
+}
+
 /** A person's turn: the agent asked something nobody answered yet, or it finished saying a person must act and nobody answered or resumed it since. */
-export function isWaitingForHuman(job: Pick<JobRecord, "status" | "runner" | "outcome" | "response" | "question" | "answer" | "resolved_by">): boolean {
-  if (job.answer) return false;
+export function isWaitingForHuman(job: Pick<JobRecord, "status" | "runner" | "outcome" | "response" | "question" | "answer" | "resolved_by" | "closed">): boolean {
+  if (job.answer || job.closed) return false;
   if (job.question && !job.question.answered_at) return true;
   return isTerminal(job.status) && jobOutcome(job) === "needs_human" && !job.resolved_by;
 }
