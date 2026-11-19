@@ -4,6 +4,9 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+## 0.18.0 (2026-11-19)
+
+- **Close a job that waits for a person** without answering it: `skillhook jobs close <id> [--reason TEXT] [--by NAME]`, `POST /jobs/<id>/close`, the MCP tool `close_job` and the cloud control command `job.close {id, reason?, by?}`. For a question that went stale or a finding that cleared by itself: nothing is delivered, no agent resumes, and the job records `closed: {at, by?, reason?}`, leaves `jobs list --waiting` and the waiting count, and reaches Skillhook Cloud in `job.updated` (`fields: ["closed"]`), so it leaves the inbox there too. Until now such a job waited until someone answered it. A job still running is answered or cancelled instead. The cloud must send `job.close` only to machines on 0.18.0 or later.
 - The cloud snapshot (`SnapshotSchema`) keeps fields it does not know instead of refusing them, like every other record the cloud stores as JSON. A cloud built on 0.16.0 refused every sync from 0.17.0 machines for about two hours, because 0.17.0 added `managed` to the snapshot. From this version, a field that a later release adds no longer breaks a cloud that has not upgraded yet.
 
 ## 0.17.0 (2026-11-18)

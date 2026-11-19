@@ -18,7 +18,7 @@ import { applyUpdate, type ApplyUpdateResult } from "./update.js";
 import { FAILURE_KINDS, type FailureKind } from "./runners/failure.js";
 import { describeCondition, evaluateConditions } from "./filters.js";
 import { newJobId } from "./ids.js";
-import { AnswerError, answerJob, type AnswerJobResult } from "./answer.js";
+import { AnswerError, answerJob, closeJob, type AnswerJobResult } from "./answer.js";
 import { isTerminal, isWaitingForHuman, JOB_ARTIFACTS, JOB_STATUSES, type JobArtifact, type JobRecord, type JobStatus, type JobStore } from "./jobs.js";
 import type { Logger } from "./logger.js";
 import { createAdhocJob, createManualJob } from "./manual.js";
@@ -1023,6 +1023,20 @@ export function createServer(deps: ServerDeps): Server {
         const wait = Math.min(Number(body.wait ?? 0) || parseWait(url, headers, config.max_wait_seconds), config.max_wait_seconds);
         const resumeJob = result.resumeJob && wait > 0 ? ((await queue.waitFor(result.resumeJob.id, wait * 1000)) ?? result.resumeJob) : result.resumeJob;
         return send(res, 200, { ok: true, job_id: id, delivered: result.delivered, answer: result.answer, resume_job_id: resumeJob?.id ?? null, ...(resumeJob ? { resume_job: publicJob(resumeJob) } : {}), job: publicJob(result.job) });
+      }
+      if (segments.length === 3 && segments[2] === "close" && method === "POST") {
+        const rawBody = await readBody(req, config.max_body_bytes);
+        const body = rawBody.length ? (parseBody(headers["content-type"], rawBody).payload as Record<string, unknown>) : {};
+        if (!isPlainObject(body)) throw new HttpError(400, "bad_request", "expected a JSON object body");
+        let result: ReturnType<typeof closeJob>;
+        try {
+          result = closeJob({ store }, { jobId: id, by: typeof body.by === "string" ? body.by : undefined, reason: typeof body.reason === "string" ? body.reason : undefined }, { queue, events: deps.events });
+        } catch (error) {
+          if (error instanceof AnswerError) throw new HttpError(error.status, error.code, error.message);
+          throw error;
+        }
+        logger.info("job closed", { job: id, by: result.closed.by });
+        return send(res, 200, { ok: true, job_id: id, closed: result.closed, job: publicJob(result.job) });
       }
       if (segments.length === 4 && segments[2] === "artifacts" && method === "GET") return sendArtifact(res, url, job, segments[3] as string);
       if (segments.length === 3 && segments[2] === "cancel" && method === "POST") {

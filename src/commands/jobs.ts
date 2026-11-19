@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { AnswerError, answerJob, type AnswerJobResult } from "../answer.js";
+import { AnswerError, answerJob, closeJob, type AnswerJobResult } from "../answer.js";
 import { adminRequest, findRunningServer, openAdminEventStream } from "../client.js";
 import { isTerminal, isWaitingForHuman, JOB_STATUSES, type JobArtifact, type JobRecord, type JobStatus } from "../jobs.js";
 import { createOps, runJobLocally } from "../ops.js";
@@ -20,6 +20,7 @@ export const JOBS_USAGE = `Usage:
   skillhook jobs show <id> [--result] [--response] [--prompt] [--stdout] [--stderr]
   skillhook jobs logs <id> [--follow|-f] [--stderr]
   skillhook jobs answer <id> ["<answer>"] [--option X]... [--by NAME] [--no-resume] [--wait S]   answer the question a job asked, or a job that ended needs_human (a new job then continues its session); --option once per pick of a multiple-choice question, the picks are the answer when no text is given
+  skillhook jobs close <id> [--reason TEXT] [--by NAME]   stop a finished job waiting for a person without answering it (the question went stale, the finding cleared by itself); no agent resumes
   skillhook jobs cancel <id>
   skillhook jobs replay <id> [--skip-filters] [--runner R] [--model M] [--effort E] [--wait S]   run the same request again as a new job
   skillhook jobs resume <id> [--exec]      print (or run) the command that reopens the agent session
@@ -70,10 +71,11 @@ export async function jobsCommand(ctx: Ctx): Promise<number> {
             ]
           : []),
         ...(job.progress ? [`  progress: ${job.progress.state}: ${job.progress.message.split("\n")[0] ?? ""}${job.progress.percent !== undefined ? ` (${job.progress.percent}%)` : ""}`] : []),
-        ...(job.question ? [`  question: ${job.question.text.split("\n")[0] ?? ""}${formatChoices(job.question)}${job.question.answered_at ? "" : "  (unanswered: skillhook jobs answer " + job.id + ' "…")'}`] : []),
+        ...(job.question ? [`  question: ${job.question.text.split("\n")[0] ?? ""}${formatChoices(job.question)}${job.question.answered_at || job.closed ? "" : "  (unanswered: skillhook jobs answer " + job.id + ' "…")'}`] : []),
         ...(job.answer ? [`  answer:   ${job.answer.option && job.answer.option !== job.answer.text ? `${job.answer.option}: ` : ""}${job.answer.options?.length ? job.answer.options.join(", ") : (job.answer.text.split("\n")[0] ?? "")}${job.answer.by ? ` (${job.answer.by})` : ""}`] : []),
         ...(job.resume_of ? [`  resumes:  job ${job.resume_of}${job.resume ? ` (session ${job.resume.session_id})` : job.runner_reason ? ` (${job.runner_reason})` : ""}`] : []),
         ...(job.resolved_by ? [`  resolved: by job ${job.resolved_by}`] : []),
+        ...(job.closed ? [`  closed:   ${job.closed.at}${job.closed.by ? ` by ${job.closed.by}` : ""}${job.closed.reason ? `: ${job.closed.reason.split("\n")[0] ?? ""}` : ""}`] : []),
         `  runner:   ${job.runner}${job.model ? ` (${job.model})` : ""}${job.effort ? ` effort=${job.effort}` : ""}${job.runner_requested ? `  (asked for ${job.runner_requested}: ${job.runner_reason ?? "fallback"})` : ""}`,
         ...(job.failure ? [`  failure:  ${job.failure.kind}${job.failure.code ? ` (${job.failure.code})` : ""}${job.failure.retryable ? ", retryable" : ""}`] : []),
         ...(job.account ? [`  account:  ${job.account}${job.account_requested && job.account_requested !== job.account ? ` (asked for ${job.account_requested})` : ""}`] : []),
@@ -129,6 +131,28 @@ export async function jobsCommand(ctx: Ctx): Promise<number> {
         return finished.status === "succeeded" ? 0 : 1;
       }
       ctx.print(describeAnswer(result.delivered, job.id), { ok: true, job_id: job.id, delivered: result.delivered, answer: result.answer, resume_job_id: null, job: publicJob(result.job), via: "local" });
+      return 0;
+    }
+    case "close": {
+      const job = store.get(requireId(id));
+      if (!job) throw new CommandError(`Unknown job ${id}`);
+      const reason = str(ctx.flags, "reason") ?? ctx.args[2];
+      const by = str(ctx.flags, "by") ?? ctx.io.env.USER;
+      const running = await findRunningServer(ctx.paths);
+      if (running) {
+        const response = await adminRequest<Record<string, unknown>>(running.baseUrl, ctx.secrets(), `/jobs/${job.id}/close`, { method: "POST", body: { reason, by } });
+        if (response.status >= 400) throw new CommandError(`Could not close ${job.id}: ${String(response.body.error)}: ${String(response.body.message)}`);
+        ctx.print(`Closed ${job.id}: it no longer waits for a person.`, { ...response.body, via: "server", base_url: running.baseUrl });
+        return 0;
+      }
+      let result: ReturnType<typeof closeJob>;
+      try {
+        result = closeJob({ store }, { jobId: job.id, by, reason });
+      } catch (error) {
+        if (error instanceof AnswerError) throw new CommandError(error.message);
+        throw error;
+      }
+      ctx.print(`Closed ${job.id}: it no longer waits for a person.`, { ok: true, job_id: job.id, closed: result.closed, job: publicJob(result.job), via: "local" });
       return 0;
     }
     case "logs":

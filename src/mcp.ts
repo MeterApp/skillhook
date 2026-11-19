@@ -16,7 +16,7 @@ import { listExamples } from "./examples.js";
 import { JOB_ARTIFACTS, JOB_STATUSES, type JobArtifact, type JobStatus } from "./jobs.js";
 import { TRIGGERS, type Trigger } from "./payload.js";
 import { JOB_OUTCOMES, type JobOutcome } from "./response.js";
-import { addExampleSkill, AnswerError, answerJob, createOps, createSkill, generateSecretFor, initProject, linkProject, listProjects, planReplay, postToServer, publicJob, resolveBaseUrl, resolveSecretName, runAdhocLocally, runJobLocally, runSkillLocally, sendSignedWebhook, setSecret, triggerViaServer, unlinkProject, webhookUrl, type LinkResult, type Ops } from "./ops.js";
+import { addExampleSkill, AnswerError, answerJob, closeJob, createOps, createSkill, generateSecretFor, initProject, linkProject, listProjects, planReplay, postToServer, publicJob, resolveBaseUrl, resolveSecretName, runAdhocLocally, runJobLocally, runSkillLocally, sendSignedWebhook, setSecret, triggerViaServer, unlinkProject, webhookUrl, type LinkResult, type Ops } from "./ops.js";
 import { readProgress } from "./progress.js";
 import { resolveRunSettings } from "./run.js";
 import type { Paths } from "./paths.js";
@@ -275,7 +275,7 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
 
   server.registerTool(
     "list_jobs",
-    { title: "List jobs", description: "Recent jobs, newest first. `status` is how the process ended, `outcome` whether the task was done. `waiting: true` lists only the jobs waiting for a person (an unanswered question, or outcome needs_human not yet resumed): answer them with answer_job. `after` (the `next_after` of the previous call) pages further back; `since` is an ISO-8601 instant.", inputSchema: z.object({ skill: z.string().optional(), status: z.enum(JOB_STATUSES as [JobStatus, ...JobStatus[]]).optional(), outcome: z.enum(JOB_OUTCOMES as [JobOutcome, ...JobOutcome[]]).optional(), trigger: z.enum(TRIGGERS as [Trigger, ...Trigger[]]).optional(), failure: FailureKindSchema.optional().describe("only jobs that failed this way: auth, usage_limit, rate_limit, budget, max_turns, not_found, timeout, crash, unknown"), waiting: z.boolean().optional(), since: z.string().optional(), after: z.string().optional(), limit: z.number().int().min(1).max(200).optional() }) },
+    { title: "List jobs", description: "Recent jobs, newest first. `status` is how the process ended, `outcome` whether the task was done. `waiting: true` lists only the jobs waiting for a person (an unanswered question, or outcome needs_human not yet resumed): answer them with answer_job, or close_job those that no longer need anyone. `after` (the `next_after` of the previous call) pages further back; `since` is an ISO-8601 instant.", inputSchema: z.object({ skill: z.string().optional(), status: z.enum(JOB_STATUSES as [JobStatus, ...JobStatus[]]).optional(), outcome: z.enum(JOB_OUTCOMES as [JobOutcome, ...JobOutcome[]]).optional(), trigger: z.enum(TRIGGERS as [Trigger, ...Trigger[]]).optional(), failure: FailureKindSchema.optional().describe("only jobs that failed this way: auth, usage_limit, rate_limit, budget, max_turns, not_found, timeout, crash, unknown"), waiting: z.boolean().optional(), since: z.string().optional(), after: z.string().optional(), limit: z.number().int().min(1).max(200).optional() }) },
     wrap(async ({ skill, status, outcome, trigger, failure, waiting, since, after, limit }) => {
       const o = ops();
       const page = o.store.listPage({ skill, status, outcome, trigger, failure, waiting: waiting || undefined, since, after, limit: limit ?? 20 });
@@ -375,6 +375,28 @@ export function buildMcpServer(paths: Paths, env: NodeJS.ProcessEnv = process.en
         return ok({ via: "local", ok: finished.status === "succeeded", job_id: id, delivered: "resumed", answer: result.answer, resume_job_id: finished.id, resume_job: publicJob(finished), job: publicJob(result.job) }, `Job ${finished.id} continues ${id}: ${finished.status}${finished.outcome ? ` (${finished.outcome})` : ""}${finished.error ? ` (${finished.error})` : ""}`);
       }
       return ok({ via: "local", ok: true, job_id: id, delivered: result.delivered, answer: result.answer, resume_job_id: null, job: publicJob(result.job) }, result.delivered === "live" ? `Delivered to the running job ${id}` : `Recorded on job ${id}`);
+    }),
+  );
+
+  server.registerTool(
+    "close_job",
+    { title: "Close a waiting job", description: "Stops a finished job from waiting for a person without answering it: nothing is delivered and no agent resumes. Use it when the question went stale or the finding cleared by itself (list_jobs with waiting: true finds them); the job records `closed: {at, by, reason}` and leaves the waiting list. A job still running is answered with answer_job or stopped with cancel_job instead.", inputSchema: z.object({ id: z.string(), reason: z.string().max(2000).optional().describe("why it no longer needs a person"), by: z.string().optional() }) },
+    wrap(async ({ id, reason, by }) => {
+      const o = ops();
+      const viaServer = await postToServer(o, `/jobs/${id}/close`, { reason, by });
+      if (viaServer) {
+        const body = viaServer.body as Record<string, unknown>;
+        if (viaServer.status >= 400) throw new Error(`${String(body.error)}: ${String(body.message)}`);
+        return ok({ via: "server", base_url: viaServer.baseUrl, ...body }, `Closed job ${id}`);
+      }
+      let result: ReturnType<typeof closeJob>;
+      try {
+        result = closeJob(o, { jobId: id, reason, by });
+      } catch (error) {
+        if (error instanceof AnswerError) throw new Error(error.message);
+        throw error;
+      }
+      return ok({ via: "local", ok: true, job_id: id, closed: result.closed, job: publicJob(result.job) }, `Closed job ${id}`);
     }),
   );
 

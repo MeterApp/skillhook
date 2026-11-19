@@ -286,7 +286,7 @@ Every definition is checked before a file is written: every file's hash, the def
 
 Read commands (both modes): `ping`, `health.get`, `snapshot.get`, `runners.get`, `accounts.get` (`{account?, refresh?, usage?}`, [what it answers](#accounts)), `skills.list`, `skill.get`, `definitions.get` (`{sha256: [...]}`, [skill definitions](#skill-definitions-in-the-cloud)), `delivery.list`, `delivery.get`, `job.list`, `job.get`, `job.artifact`, `job.watch`, `job.unwatch`, `job.progress.get`, `stats.get`, `config.get`, `secret.list` (names only), `service.status`, `logs.tail`, `schedules.list`, `update.check`, `expose.status`.
 
-Control commands (`mode: control` or an allow entry): `skill.put`, `skill.delete`, `skills.sync`, `skill.adopt`, `skill.run`, `skill.test`, `delivery.replay`, `job.cancel`, `job.replay`, `job.answer`, `config.patch`, `secret.generate`, `service.restart`, `schedule.run`, `schedule.pause`, `schedule.resume`, `update.install`.
+Control commands (`mode: control` or an allow entry): `skill.put`, `skill.delete`, `skills.sync`, `skill.adopt`, `skill.run`, `skill.test`, `delivery.replay`, `job.cancel`, `job.replay`, `job.answer`, `job.close`, `config.patch`, `secret.generate`, `service.restart`, `schedule.run`, `schedule.pause`, `schedule.resume`, `update.install`.
 
 Results are scrubbed like events. Each command runs once: its id is remembered in `jobs/.cloud/commands.json`, and a command the cloud sends again is answered from the kept result.
 
@@ -303,6 +303,7 @@ What each control command does, and the rules it adds on top of the policy:
 | `delivery.replay`, `job.replay` | Replays a recorded delivery or an earlier job, like `skillhook deliveries replay` / `jobs replay` (`force` for a rejected delivery, `skip_filters`). |
 | `job.cancel` | Cancels a queued or running job. |
 | `job.answer` | A person's answer to a job waiting for one: delivered live, or a new job resumes the agent's session ([skills.md](skills.md#reporting-progress-and-asking-a-person)); `by` defaults to the requester's name. |
+| `job.close` | Stops a finished job from waiting for a person without answering it (`reason`, `by` optional; `by` defaults to the requesting dashboard user). Machines before 0.18.0 do not know it. |
 | `config.patch` | Changes `skillhook.json` like `PATCH /config`, except for `host`, `port`, `trust_proxy`, `runners`, `env_passthrough`, `projects`, `project_refresh` and `cloud`, which the cloud may never change. |
 | `service.restart` | Restarts a server run by launchd / systemd once the cloud has the answer (`when: idle` pauses dispatch and lets running jobs finish up to `wait_seconds`, then resumes dispatch if jobs remain; `now` terminates them without waiting. Through version 0.10.4, even `idle` terminates jobs when the wait expires). |
 | `schedule.run` | Fires a scheduled skill now. |
