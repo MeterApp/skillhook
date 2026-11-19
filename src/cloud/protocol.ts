@@ -409,7 +409,9 @@ export const SnapshotSchema = z
     /** The cloud-managed skills this machine serves and whether it may pull more (absent from machines before 0.17.0). */
     managed: ManagedSkillsStateSchema.optional(),
   })
-  .strict();
+  // Loose like every record the cloud stores as JSON: a field a newer machine adds (0.17.0's `managed`) must not make an
+  // older cloud refuse the whole sync (SKILLHOOK-CLOUD-11, 2026-11-18: every 0.17.0 sync got 400 for about two hours).
+  .loose();
 export type Snapshot = z.infer<typeof SnapshotSchema>;
 
 // ---------------------------------------------------------------------------

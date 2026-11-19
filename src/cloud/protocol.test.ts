@@ -68,6 +68,9 @@ describe("protocol vocabulary", () => {
     expect(parseCommandArgs("skill.adopt", { name: "hello", sha256: definition.sha256 })).toMatchObject({ ok: true });
     expect(parseCommandArgs("skill.adopt", { name: "hello" })).toMatchObject({ ok: false });
     expect(protocol.SnapshotSchema.parse({ skills: [], skill_errors: [], projects: [], schedules: [], config: {}, managed: { enabled: true, allowed: false, last_sync_at: null, skills: [{ name: "hello", sha256: definition.sha256, installed_at: "2026-09-28T12:00:00.000Z" }] } }).managed?.skills).toHaveLength(1);
+    // A newer machine's additional snapshot field is kept, not refused (SKILLHOOK-CLOUD-11): an older cloud must keep syncing.
+    expect(protocol.SnapshotSchema.parse({ skills: [], skill_errors: [], projects: [], schedules: [], config: {}, future_field: { a: 1 } })).toMatchObject({ future_field: { a: 1 } });
+    expect(protocol.SyncRequestSchema.shape.snapshot.unwrap().safeParse({ skills: [], skill_errors: [], projects: [], schedules: [], config: {}, future_field: 1 }).success).toBe(true);
   });
 
   it("validates command arguments per type", () => {
