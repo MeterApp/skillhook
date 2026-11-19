@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { accountViewForUpload, capText, maskEmails, REDACTED, redactUpload, scrubSecrets, secretValues } from "./redact.js";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { accountViewForUpload, capText, maskEmails, REDACTED, redactUpload, scrubAssignments, scrubSecrets, scrubValues, secretValues } from "./redact.js";
 
 // Placeholder values only: nothing here resembles a real credential format.
 const FAKE_ENV = {
@@ -79,5 +82,39 @@ describe("redaction for uploads", () => {
   it("keeps an account's view to its allow-list: no directory, no paths, no unknown fields", () => {
     const view = accountViewForUpload({ name: "work", runner: "claude", kind: "login", dir: "/Users/ada/.claude", default_dir: true, status: "ready", extra: "x", identity: { email: "ada@example.com", plan: "max", checked_at: "t", secret: "s" }, attention: [{ level: "warn", code: "usage_high", message: "usage high", internal: 1 }], readiness: { runner: "claude", path: "/bin/claude", config_dir: "/Users/ada/.claude", ready: true, detail: "ok" } });
     expect(view).toEqual({ name: "work", runner: "claude", kind: "login", default_dir: true, status: "ready", identity: { email: "a…@example.com", plan: "max", checked_at: "t" }, attention: [{ level: "warn", code: "usage_high", message: "usage high" }], readiness: { runner: "claude", ready: true, detail: "ok" } });
+  });
+});
+
+describe("a printed environment", () => {
+  it("blanks the value of every credential-looking assignment, known to the machine or not", () => {
+    const dump = ["HOME=/Users/ada", "TWILIO_AUTH_TOKEN=placeholder0123456789abcdef", "ASC_PRIVATE_KEY_B64=cGxhY2Vob2xkZXI9PQ==", "ASC_PRIVATE_KEY_PATH=/Users/ada/keys/asc.p8", "LANG=en_US.UTF-8", "STITCH_API_KEY=placeholder-stitch-value"].join("\n");
+    const out = scrubSecrets(dump, {});
+    expect(out).toContain("HOME=/Users/ada");
+    expect(out).toContain("LANG=en_US.UTF-8");
+    expect(out).toContain("ASC_PRIVATE_KEY_PATH=/Users/ada/keys/asc.p8");
+    expect(out).toContain(`TWILIO_AUTH_TOKEN=${REDACTED}`);
+    expect(out).toContain(`ASC_PRIVATE_KEY_B64=${REDACTED}`);
+    expect(out).toContain(`STITCH_API_KEY=${REDACTED}`);
+    expect(out).not.toContain("placeholder");
+  });
+
+  it("handles quoted and JSON-escaped dumps, as a runner's stream-json transcript holds them", () => {
+    expect(scrubAssignments(`declare -x SENTRY_AUTH_TOKEN="placeholder-sentry-value"`)).toBe(`declare -x SENTRY_AUTH_TOKEN="${REDACTED}"`);
+    const line = JSON.stringify({ content: `export CROWDIN_API_TOKEN='placeholder-crowdin'\nMESHY_API_KEY="placeholder-meshy-1"\nUSER=ada` });
+    const out = scrubAssignments(line);
+    expect(out).not.toContain("placeholder");
+    expect(JSON.parse(out).content).toContain("USER=ada");
+  });
+
+  it("leaves references, placeholders, short values and ordinary code alone", () => {
+    for (const text of ["API_KEY=$OTHER_KEY", "GH_TOKEN=<your token>", 'SECRET_KEY="${VAULT}"', "MAX_KEY=12", "const apiKey=computeKey()", "SKILLHOOK_JOB_ID=20261118T070516Z-6c835k", `X_TOKEN=${REDACTED}`]) expect(scrubAssignments(text)).toBe(text);
+  });
+
+  it("scrubs the values of the files cloud.scrub_env_files names, whatever their names", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "skillhook-scrub-"));
+    const file = path.join(dir, "shell.env");
+    writeFileSync(file, "export REVENUE_CAT_MCP=placeholder-revenuecat-value\nSHORT=abc\n");
+    const values = scrubValues({ SKILLHOOK_SECRET_HELLO: "placeholder-hello-value" }, { public_env: [], scrub_env_files: [file, path.join(dir, "missing.env")] });
+    expect(scrubSecrets("curl -H placeholder-revenuecat-value and placeholder-hello-value abc", values)).toBe(`curl -H ${REDACTED} and ${REDACTED} abc`);
   });
 });

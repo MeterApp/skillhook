@@ -4,6 +4,7 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- Uploads to Skillhook Cloud are scrubbed by shape as well as by known value. Until now only values present in `<home>/.env` were replaced, so a credential that reached a run another way (Claude Code loads the login shell's profile, and a profile that exports `~/.env` hands every run its tokens) left the machine in clear when an agent printed its environment and someone fetched the transcript. Now the value of every credential-looking `NAME=value` (`…_TOKEN=`, `…_API_KEY=`, `…_SECRET=`, `…_PASSWORD=`) is replaced with `[redacted]` in every uploaded string, and `cloud.scrub_env_files` names more dotenv files whose values are scrubbed like `.env`'s. The run guardrails tell agents never to print the environment or use `export $(…)`. Files on the machine itself (`stdout.log`, the runner's session transcript) are unchanged.
 - The cloud snapshot (`SnapshotSchema`) keeps fields it does not know instead of refusing them, like every other record the cloud stores as JSON. A cloud built on 0.16.0 refused every sync from 0.17.0 machines for about two hours, because 0.17.0 added `managed` to the snapshot. From this version, a field that a later release adds no longer breaks a cloud that has not upgraded yet.
 
 ## 0.17.0 (2026-11-18)
