@@ -4,6 +4,8 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- The cloud snapshot (`SnapshotSchema`) keeps fields it does not know instead of refusing them, like every other record the cloud stores as JSON. A cloud built on 0.16.0 refused every sync from 0.17.0 machines for about two hours, because 0.17.0 added `managed` to the snapshot. From this version, a field that a later release adds no longer breaks a cloud that has not upgraded yet.
+
 ## 0.17.0 (2026-11-18)
 
 - Every skill carries a **definition hash**: the SHA-256 of the files that define it (the SKILL.md directory, or a hook's block of `skillhook.yaml` and the SKILL.md it names), the same for the same files on every machine. `GET /skills`, `skillhook skills list --json` and the cloud snapshot carry it as `definition: {sha256, kind, bytes, files}`, `skills show` prints it, and `skill.changed` says `definition_sha256`. Skillhook Cloud keeps a copy of every skill keyed by it, so the dashboard shows and diffs skills from its own database: it asks for the text it lacks with the new read command `definitions.get` (up to twenty hashes), and `skill.get` answers with the whole definition. `cloud.upload_definitions: false` keeps the text on the machine (the hashes still travel).
