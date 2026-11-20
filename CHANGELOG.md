@@ -4,6 +4,8 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- The scheduler starts after the Skillhook Cloud link, so the slots missed while the server was down now reach the cloud. Its first tick after a start reports them as `schedule.fired` with `caught_up` and `schedule.skipped`, and it used to run before the link subscribed to the event bus, so those events were only in the local log. The jobs themselves always reached the cloud. Seen on 2026-11-12 and 2026-11-18: no missed slot appeared in the cloud's events after a restart.
+
 ## 0.18.0 (2026-11-19)
 
 - **Close a job that waits for a person** without answering it: `skillhook jobs close <id> [--reason TEXT] [--by NAME]`, `POST /jobs/<id>/close`, the MCP tool `close_job` and the cloud control command `job.close {id, reason?, by?}`. For a question that went stale or a finding that cleared by itself: nothing is delivered, no agent resumes, and the job records `closed: {at, by?, reason?}`, leaves `jobs list --waiting` and the waiting count, and reaches Skillhook Cloud in `job.updated` (`fields: ["closed"]`), so it leaves the inbox there too. Until now such a job waited until someone answered it. A job still running is answered or cancelled instead. The cloud must send `job.close` only to machines on 0.18.0 or later.
