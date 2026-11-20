@@ -773,6 +773,17 @@ describe("HTTP surface", () => {
     expect((recorded.answer as { question_id?: string }).question_id).toBeUndefined();
     expect(store.get(stId)).toMatchObject({ answer: { text: "Handled by hand" } });
     expect(store.get(stId)?.resolved_by).toBeUndefined();
+    // Closing stops a job from waiting without an answer and without a resume.
+    const stale = await json(await fetch(`${base}/hooks/structured?wait=20`, { method: "POST", body: '{"k":"close"}', headers: { authorization: "Bearer st", "content-type": "application/json" } }));
+    const staleId = String(stale.job_id);
+    expect((await fetch(`${base}/jobs/${staleId}/close`, { method: "POST", headers: { "x-forwarded-for": "203.0.113.1", "content-type": "application/json" }, body: "{}" })).status).toBe(401);
+    const closed = await json(await fetch(`${base}/jobs/${staleId}/close`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ reason: "Fixed upstream", by: "grace" }) }));
+    expect(closed).toMatchObject({ ok: true, job_id: staleId, closed: { by: "grace", reason: "Fixed upstream" }, job: { id: staleId, closed: { reason: "Fixed upstream" } } });
+    expect(store.get(staleId)?.answer).toBeUndefined();
+    expect(((await json(await fetch(`${base}/jobs?waiting=1`, { headers: auth }))) as unknown as { jobs: { id: string }[] }).jobs.map((j) => j.id)).not.toContain(staleId);
+    const closeAgain = await fetch(`${base}/jobs/${staleId}/close`, { method: "POST", headers: auth });
+    expect(closeAgain.status).toBe(409);
+    expect((await fetch(`${base}/jobs/20260101T000000Z-nopenp/close`, { method: "POST", headers: auth })).status).toBe(404);
     const last = (await json(await fetch(`${base}/jobs?waiting=1`, { headers: auth }))) as unknown as { jobs: { id: string }[] };
     expect(last.jobs.map((j) => j.id)).not.toContain(stId);
     expect((await fetch(`${base}/jobs/${stId}/answer`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ answer: "x", resume: "maybe" }) })).status).toBe(400);

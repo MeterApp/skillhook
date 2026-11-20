@@ -346,6 +346,10 @@ describe("cli", () => {
     expect(String(notWaiting.json().error)).toContain("not waiting");
     const noText = io();
     expect(await main(["jobs", "answer", job.id, ...dir, "--json"], noText.cli)).toBe(2);
+    // A job already answered cannot be closed; a fresh needs_human one can, once.
+    const closedAnswered = io();
+    expect(await main(["jobs", "close", job.id, ...dir, "--json"], closedAnswered.cli)).toBe(1);
+    expect(String(closedAnswered.json().error)).toContain("not waiting");
   });
 
   it("names the job, reports a headline with typed links and offers choices from the terminal", async () => {
@@ -1364,7 +1368,7 @@ describe("cli", () => {
       secret: [[], ["list"], ["set", "hello", "--value", "changed"], ["set", "hello", "--stdin"], ["generate", "admin", "--force"], ["rotate", "hello"], ["unset", "hello"]],
       run: [["hello", "--payload", "{}"], ["hello", "--dry-run"], ["--file", path.join(home.skillsDir, "hello", "SKILL.md")], ["--stdin"]],
       send: [["hello", "--wait", "5"]],
-      jobs: [[], ["list"], ["show", job], ["logs", job, "--follow"], ["answer", job, "yes", "--no-resume"], ["cancel", job], ["replay", job], ["resume", job], ["path", job], ["prune", "--keep", "0"]],
+      jobs: [[], ["list"], ["show", job], ["logs", job, "--follow"], ["answer", job, "yes", "--no-resume"], ["close", job, "--reason", "stale"], ["cancel", job], ["replay", job], ["resume", job], ["path", job], ["prune", "--keep", "0"]],
       job: [[], ["progress", "halfway", "--percent", "50"], ["ask", "Go?", "--wait", "0"], ["outcome", "completed", "--summary", "done"], ["note", "noted"], ["context"], ["prune", "--keep", "0"]],
       deliveries: [[], ["list"], ["show", delivery, "--body"], ["replay", delivery, "--force"]],
       expose: [[], ["tailscale"], ["serve"], ["status"], ["off"], ["cloudflare"], ["ngrok"]],

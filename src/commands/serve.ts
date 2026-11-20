@@ -18,7 +18,7 @@ import { Scheduler } from "../scheduler.js";
 import { clearServerState, createServer, writeServerState, type ServerControl } from "../server.js";
 import { serviceStatus } from "../service.js";
 import { errorMessage } from "../util.js";
-import { attemptedRecently, autoUpdateEnabled, checkForUpdate, detectInstall, installedAcceptsConfig, installedVersion, isNewerVersion, lastInstall, releaseNotesUrl, spawnBackgroundRefresh, UPDATE_CHECK_INTERVAL_MS } from "../update.js";
+import { attemptedRecently, autoUpdateEnabled, checkForUpdate, createRestartGate, detectInstall, installedAcceptsConfig, installedVersion, isNewerVersion, lastInstall, releaseNotesUrl, spawnBackgroundRefresh, UPDATE_CHECK_INTERVAL_MS } from "../update.js";
 import { VERSION } from "../version.js";
 import { DaemonSentry } from "../sentry.js";
 import { installDaemonErrorReporting } from "../daemon-errors.js";
@@ -116,7 +116,6 @@ async function runDaemon(ctx: Ctx, sentry: DaemonSentry): Promise<number> {
   const recovered = store.recoverOnStartup();
   if (recovered.interrupted.length) logger.warn("marked jobs interrupted from a previous run", { jobs: recovered.interrupted.map((j) => j.id) });
   for (const job of recovered.queued) queue.enqueue(job);
-  scheduler.start();
   accounts.start();
 
   await new Promise<void>((resolve, reject) => {
@@ -134,6 +133,9 @@ async function runDaemon(ctx: Ctx, sentry: DaemonSentry): Promise<number> {
   const cloudControl = createControlHandlers({ paths: ctx.paths, config, configRef, secrets, fileSecrets, registry, store, deliveryLog, queue, events, logger, serverControl: control, scheduler, managed });
   link = new CloudLink({ paths: ctx.paths, config, secrets, fileSecrets, events, logger, registry, store, deliveryLog, schedules: () => scheduler.status(), health, readiness, serverState: () => state, localBaseUrl: () => localBaseUrl({ host, port: boundPort }), env: ctx.io.env, queueStats: () => queue.stats(), runningJobs: () => queue.stats().running_ids, control: cloudControl, managed });
   link.start();
+  // The scheduler starts after the cloud link subscribed: its first tick reports the slots missed while the server was
+  // down (schedule.fired caught_up, schedule.skipped), and an event published before the link listens never reaches the cloud.
+  scheduler.start();
   for (const job of recovered.interrupted) events.emit("job.finished", { job });
   logger.info("skillhook listening", { url: `http://${host}:${boundPort}`, public_url: config.public_url, skills: loaded.skills.map((s) => s.name), concurrency: config.concurrency, home: ctx.paths.home, version: VERSION });
   if (config.public_url) for (const skill of loaded.skills) logger.info("webhook url", { skill: skill.name, url: `${config.public_url}/hooks/${skill.name}` });
@@ -163,6 +165,7 @@ async function runDaemon(ctx: Ctx, sentry: DaemonSentry): Promise<number> {
   // after a restart. A source checkout is left to its developer.
   if (detectInstall().method !== "source") {
     let waitingFor = "";
+    const restartGate = createRestartGate();
     setInterval(() => {
       void (async () => {
         const installed = installedVersion();
@@ -177,12 +180,19 @@ async function runDaemon(ctx: Ctx, sentry: DaemonSentry): Promise<number> {
         // keep running this version and retry every minute (an edit of skillhook.json or a later release clears it).
         const check = await installedAcceptsConfig(ctx.paths, { env: ctx.io.env });
         if (shuttingDown) return;
+        // An inconclusive check (a timeout under load) never overrides an earlier rejection (RA-023).
+        const decision = restartGate(installed, check);
         if (check.ok === false) {
           if (waitingFor !== `${installed}:config:${check.error}`) logger.error("newer version installed but it rejects the current config; keeping this version running", { running: VERSION, installed, error: check.error });
           waitingFor = `${installed}:config:${check.error}`;
           return;
         }
-        if (check.ok === undefined) logger.warn("could not check the installed version against the config; restarting anyway", { running: VERSION, installed, error: check.error });
+        if (decision === "keep" && check.ok === undefined) {
+          if (waitingFor !== `${installed}:inconclusive`) logger.warn("could not check the installed version against the config; keeping this version running for now", { running: VERSION, installed, error: check.error });
+          waitingFor = `${installed}:inconclusive`;
+          return;
+        }
+        if (check.ok === undefined) logger.warn("could not check the installed version against the config after repeated tries; restarting", { running: VERSION, installed, error: check.error });
         logger.info("restarting to run the newly installed version", { running: VERSION, installed });
         control.restart({ force: false, waitSeconds: 600 });
       })();

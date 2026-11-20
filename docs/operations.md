@@ -162,6 +162,7 @@ skillhook jobs logs <id> [--follow] [--stderr]
 
 ```bash
 skillhook jobs answer <id> "<answer>" [--option X] [--by NAME] [--no-resume] [--wait S]   # answer a job that asked, or ended needs_human
+skillhook jobs close <id> [--reason TEXT] [--by NAME]   # stop a finished job waiting without answering it (stale question, finding cleared by itself)
 ```
 
 ```bash

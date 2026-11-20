@@ -7,7 +7,7 @@ import path from "node:path";
 import type { Config } from "./config.js";
 import type { Events } from "./events.js";
 import { newJobId } from "./ids.js";
-import { isTerminal, isWaitingForHuman, type JobRecord, type JobStore } from "./jobs.js";
+import { isTerminal, isWaitingForHuman, type JobClosure, type JobRecord, type JobStore } from "./jobs.js";
 import { createManualJob } from "./manual.js";
 import { answerQuestion, NoQuestionError, readQuestion, type JobAnswer, type JobQuestion } from "./progress.js";
 import type { JobQueue } from "./queue.js";
@@ -15,7 +15,7 @@ import type { SkillRegistry } from "./registry.js";
 import { jobOutcome } from "./response.js";
 import { loadAdhocSkill, type Skill } from "./skills.js";
 
-export type AnswerErrorCode = "unknown_job" | "not_waiting" | "unknown_skill";
+export type AnswerErrorCode = "unknown_job" | "not_waiting" | "unknown_skill" | "running";
 
 export class AnswerError extends Error {
   constructor(
@@ -146,4 +146,38 @@ export function answerJob(ops: AnswerOps, input: AnswerJobInput, options: { queu
   options.queue?.enqueue(resumeJob);
   options.events?.emit("job.answered", { job: updated, answer, delivered: "resumed", resume_job_id: resumeJob.id });
   return { job: updated, answer, delivered: "resumed", resumeJob, skill };
+}
+
+export interface CloseJobInput {
+  jobId: string;
+  /** Who closed it (a name, an email, a dashboard user). */
+  by?: string;
+  /** Why it no longer needs a person (the finding cleared by itself, the question went stale, it was handled elsewhere). */
+  reason?: string;
+}
+
+const clip = (value: string | undefined, max: number) => (value?.trim() ? value.trim().slice(0, max) : undefined);
+
+/**
+ * Closes a finished job that waits for a person without answering it: nothing is delivered and no agent resumes. The
+ * job leaves `waiting` (list_jobs, stats, the cloud's inbox) and records `closed: {at, by?, reason?}`; `job.updated`
+ * carries it to the cloud. A running job's question is answered or the job cancelled instead (`running`, 409), so an
+ * agent never blocks on a question nobody can answer any more. Throws `AnswerError` (`unknown_job`, `not_waiting`, `running`).
+ */
+export function closeJob(ops: { store: JobStore }, input: CloseJobInput, options: { queue?: JobQueue; events?: Events } = {}): { job: JobRecord; closed: JobClosure } {
+  let job = ops.store.get(input.jobId);
+  if (!job) throw new AnswerError("unknown_job", `unknown job ${input.jobId}`, 404);
+  if (!isTerminal(job.status) || options.queue?.isActive(job.id)) {
+    throw new AnswerError("running", `job ${job.id} is ${job.status}: answer its question or cancel it instead of closing it`, 409);
+  }
+  if (!job.question) {
+    // A question written by `skillhook job ask` that no queue recorded: the files decide, as for an answer.
+    const asked = readQuestion(ops.store.pathsFor(job.id).dir);
+    if (asked && !asked.answered_at) job = ops.store.update(job.id, { question: asked });
+  }
+  if (!isWaitingForHuman(job)) throw notWaiting(job);
+  const closed: JobClosure = { at: new Date().toISOString(), ...(clip(input.by, 200) ? { by: clip(input.by, 200) } : {}), ...(clip(input.reason, 2000) ? { reason: clip(input.reason, 2000) } : {}) };
+  const updated = ops.store.update(job.id, { closed });
+  options.events?.emit("job.updated", { job: updated, fields: ["closed"] });
+  return { job: updated, closed };
 }
