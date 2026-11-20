@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { acquireUpdateLock, AUTO_INSTALL_RETRY_MS, checkForUpdate, compareVersions, detectInstall, fetchLatestVersion, formatUpdateNotice, installedAcceptsConfig, installedVersion, isNewerVersion, lastInstall, markInstallAnnounced, parseVersion, planUpdateNotice, readUpdateCache, recordInstall, refreshPlugins, registryUrl as registryUrlOf, releaseUpdateLock, runBackgroundUpdate, spawnBackgroundRefresh, updateCacheFile, updateChecksDisabled, updateStatusFromCache, UPDATE_CHECK_INTERVAL_MS, UPDATE_LOCK_STALE_MS, type InstallInfo } from "./update.js";
+import { acquireUpdateLock, AUTO_INSTALL_RETRY_MS, checkForUpdate, compareVersions, createRestartGate, detectInstall, fetchLatestVersion, formatUpdateNotice, installedAcceptsConfig, installedVersion, isNewerVersion, lastInstall, markInstallAnnounced, parseVersion, planUpdateNotice, readUpdateCache, recordInstall, refreshPlugins, registryUrl as registryUrlOf, releaseUpdateLock, runBackgroundUpdate, spawnBackgroundRefresh, updateCacheFile, updateChecksDisabled, updateStatusFromCache, UPDATE_CHECK_INTERVAL_MS, UPDATE_LOCK_STALE_MS, type InstallInfo } from "./update.js";
 import type { ToolExecResult } from "./tools.js";
 import { tempHome } from "./test-support/helpers.js";
 import { VERSION } from "./version.js";
@@ -327,5 +327,29 @@ describe("plugin updates", () => {
     expect(await refreshPlugins({ claude: "/nonexistent/claude", codex: "/nonexistent/codex", env, exec: async () => result("", 1) })).toEqual([]);
     const exec = async (_command: string, args: string[]) => (args.join(" ") === "plugin list --json" ? result(CLAUDE_LIST) : args.join(" ").startsWith("plugin marketplace update") ? result('{"outcome":"failed","message":"could not fetch MeterApp/skillhook"}\n', 1) : result("", 1));
     expect(await refreshPlugins({ claude: process.execPath, codex: process.execPath, env, exec })).toEqual([{ host: "Claude Code", id: "skillhook@meterapp-skillhook", ok: false, detail: "marketplace meterapp-skillhook: could not fetch MeterApp/skillhook" }]);
+  });
+});
+
+describe("restart gate (RA-023)", () => {
+  const timedOut = { ok: undefined, error: "config check timed out" } as const;
+  it("never restarts onto a version that rejected the config while later checks are inconclusive", () => {
+    const gate = createRestartGate(3);
+    expect(gate("0.17.0", { ok: false, error: "unknown key usage_login" })).toBe("keep");
+    for (let i = 0; i < 10; i++) expect(gate("0.17.0", timedOut)).toBe("keep");
+    expect(gate("0.17.0", { ok: true })).toBe("restart");
+  });
+  it("restarts onto an unchecked version only after repeated inconclusive checks", () => {
+    const gate = createRestartGate(3);
+    expect(gate("0.18.0", timedOut)).toBe("keep");
+    expect(gate("0.18.0", timedOut)).toBe("keep");
+    expect(gate("0.18.0", timedOut)).toBe("restart");
+  });
+  it("restarts at once when the config is accepted, and forgets a rejection only for that version", () => {
+    const gate = createRestartGate(2);
+    expect(gate("0.18.0", { ok: true })).toBe("restart");
+    expect(gate("0.17.0", { ok: false, error: "x" })).toBe("keep");
+    expect(gate("0.18.0", timedOut)).toBe("keep");
+    expect(gate("0.18.0", timedOut)).toBe("restart");
+    expect(gate("0.17.0", timedOut)).toBe("keep");
   });
 });

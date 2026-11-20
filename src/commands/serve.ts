@@ -18,7 +18,7 @@ import { Scheduler } from "../scheduler.js";
 import { clearServerState, createServer, writeServerState, type ServerControl } from "../server.js";
 import { serviceStatus } from "../service.js";
 import { errorMessage } from "../util.js";
-import { attemptedRecently, autoUpdateEnabled, checkForUpdate, detectInstall, installedAcceptsConfig, installedVersion, isNewerVersion, lastInstall, releaseNotesUrl, spawnBackgroundRefresh, UPDATE_CHECK_INTERVAL_MS } from "../update.js";
+import { attemptedRecently, autoUpdateEnabled, checkForUpdate, createRestartGate, detectInstall, installedAcceptsConfig, installedVersion, isNewerVersion, lastInstall, releaseNotesUrl, spawnBackgroundRefresh, UPDATE_CHECK_INTERVAL_MS } from "../update.js";
 import { VERSION } from "../version.js";
 import { DaemonSentry } from "../sentry.js";
 import { installDaemonErrorReporting } from "../daemon-errors.js";
@@ -165,6 +165,7 @@ async function runDaemon(ctx: Ctx, sentry: DaemonSentry): Promise<number> {
   // after a restart. A source checkout is left to its developer.
   if (detectInstall().method !== "source") {
     let waitingFor = "";
+    const restartGate = createRestartGate();
     setInterval(() => {
       void (async () => {
         const installed = installedVersion();
@@ -179,12 +180,19 @@ async function runDaemon(ctx: Ctx, sentry: DaemonSentry): Promise<number> {
         // keep running this version and retry every minute (an edit of skillhook.json or a later release clears it).
         const check = await installedAcceptsConfig(ctx.paths, { env: ctx.io.env });
         if (shuttingDown) return;
+        // An inconclusive check (a timeout under load) never overrides an earlier rejection (RA-023).
+        const decision = restartGate(installed, check);
         if (check.ok === false) {
           if (waitingFor !== `${installed}:config:${check.error}`) logger.error("newer version installed but it rejects the current config; keeping this version running", { running: VERSION, installed, error: check.error });
           waitingFor = `${installed}:config:${check.error}`;
           return;
         }
-        if (check.ok === undefined) logger.warn("could not check the installed version against the config; restarting anyway", { running: VERSION, installed, error: check.error });
+        if (decision === "keep" && check.ok === undefined) {
+          if (waitingFor !== `${installed}:inconclusive`) logger.warn("could not check the installed version against the config; keeping this version running for now", { running: VERSION, installed, error: check.error });
+          waitingFor = `${installed}:inconclusive`;
+          return;
+        }
+        if (check.ok === undefined) logger.warn("could not check the installed version against the config after repeated tries; restarting", { running: VERSION, installed, error: check.error });
         logger.info("restarting to run the newly installed version", { running: VERSION, installed });
         control.restart({ force: false, waitSeconds: 600 });
       })();

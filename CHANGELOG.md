@@ -4,6 +4,7 @@ All notable changes to skillhook, newest first. The format follows [Keep a Chang
 
 ## Unreleased
 
+- An automatic update no longer restarts onto a version that rejected the config when the next check is only inconclusive. Before it restarts, the server asks the installed version whether it accepts `skillhook.json`. A timed-out check used to mean "restart anyway", so on 2026-11-18, under heavy load, 0.17.0 was rejected and the next check timed out. The server then restarted onto 0.17.0, and launchd crash-looped it 195 times over about 23 minutes. Now a rejection holds until a later check accepts the config. A version never checked conclusively is restarted onto only after five inconclusive checks in a row (one a minute).
 - The scheduler starts after the Skillhook Cloud link, so the slots missed while the server was down now reach the cloud. Its first tick after a start reports them as `schedule.fired` with `caught_up` and `schedule.skipped`, and it used to run before the link subscribed to the event bus, so those events were only in the local log. The jobs themselves always reached the cloud. Seen on 2026-11-12 and 2026-11-18: no missed slot appeared in the cloud's events after a restart.
 
 ## 0.18.0 (2026-11-19)
