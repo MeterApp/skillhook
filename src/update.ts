@@ -590,7 +590,7 @@ export type InstalledConfigCheck =
   | { ok: true }
   /** The installed version exited non-zero on this home's skillhook.json: restarting onto it would crash-loop. */
   | { ok: false; error: string }
-  /** The check could not run (spawn error or timeout): nothing is known, so callers keep the previous behaviour. */
+  /** The check could not run (spawn error or timeout): nothing is known (see `createRestartGate`). */
   | { ok: undefined; error: string };
 
 /**
@@ -633,6 +633,41 @@ export function installedAcceptsConfig(
     child.on("error", (error) => done({ ok: undefined, error: error.message }));
     child.on("close", (code) => done(code === 0 ? { ok: true } : { ok: false, error: output.trim().slice(0, 1000) || `exited with code ${code}` }));
   });
+}
+
+/** Consecutive inconclusive checks (one a minute) before a server restarts onto a version it has never seen rejected. */
+export const RESTART_INCONCLUSIVE_LIMIT = 5;
+
+/**
+ * Decides, from successive `installedAcceptsConfig` answers, whether a running server may restart onto the installed
+ * version. Fails closed: a version that rejected the config is never restarted onto until a later check accepts it (a
+ * check that times out under load says nothing new; on 2026-11-18 0.17.0 was rejected, the next check timed out, the
+ * server restarted anyway and launchd crash-looped it 195 times). A version never checked conclusively is restarted
+ * onto only after `limit` inconclusive checks in a row, so a check that can never run does not block updates forever.
+ */
+export function createRestartGate(limit = RESTART_INCONCLUSIVE_LIMIT): (installed: string, check: InstalledConfigCheck) => "restart" | "keep" {
+  const rejected = new Set<string>();
+  let version = "";
+  let inconclusive = 0;
+  return (installed, check) => {
+    if (installed !== version) {
+      version = installed;
+      inconclusive = 0;
+    }
+    if (check.ok === true) {
+      rejected.delete(installed);
+      inconclusive = 0;
+      return "restart";
+    }
+    if (check.ok === false) {
+      rejected.add(installed);
+      inconclusive = 0;
+      return "keep";
+    }
+    if (rejected.has(installed)) return "keep";
+    inconclusive += 1;
+    return inconclusive >= limit ? "restart" : "keep";
+  };
 }
 
 // ---------------------------------------------------------------------------
