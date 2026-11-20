@@ -265,6 +265,7 @@ Once the cause is fixed (a secret pasted, a filter corrected, a skill installed)
 | `projects` | `[]` | Linked repositories (absolute paths, `~` allowed; a directory holding `skillhook.yaml`, or the file itself). Written by `skillhook link` / `unlink`; re-read without a restart. See [projects.md](projects.md). |
 | `project_refresh` | `[]` | Local opt-in list of linked checkout roots that fetch and fast-forward `origin/main` before a job runs. See [projects.md](projects.md#fetch-main-before-a-project-job-runs). |
 | `cloud.public_env` | `[]` | Locally declared public `.env` variable names excluded from upload value scrubbing; credentials are refused and the cloud cannot change this policy. [cloud.md](cloud.md#public-environment-configuration). |
+| `cloud.scrub_env_files` | `[]` | More dotenv files (a shell profile's `~/.env`, an operations file) whose values are scrubbed from every upload like `.env`'s. [cloud.md](cloud.md) |
 | `cloud.*` | `enabled: false`, `mode: observe`, … | The opt-in link to Skillhook Cloud, written by `skillhook cloud connect`: [cloud.md](cloud.md). Nothing leaves the machine while `cloud.enabled` is false. |
 | `log_level` | `"info"` | `debug`, `info`, `warn`, `error`. |
 | `update_check` | `true` | Hourly background check of the npm registry for a newer skillhook (`SKILLHOOK_NO_UPDATE_CHECK=1` and `CI` disable it as well, and with it `auto_update`). |

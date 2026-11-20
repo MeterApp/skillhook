@@ -17,7 +17,7 @@ import { VERSION } from "../version.js";
 import { CLOUD_TOKEN_ENV, cloudDisabledByEnv, InsecureCloudUrlError, isSecureCloudUrl, resolveCloudUrl } from "./config.js";
 import { CloudHttpError, cloudRequest, type CloudResponse } from "./http.js";
 import { IssueDiagnosticsSchema, IssueReportRequestSchema, IssueReportResponseSchema, LIMITS, type IssueDiagnostics, type IssueReportRequest, type IssueReportResponse } from "./protocol.js";
-import { scrubSecrets, secretValues } from "./redact.js";
+import { scrubSecrets, scrubValues } from "./redact.js";
 
 /** What a person gives; `diagnostics: false` sends their words only. */
 export type IssueReportInput = Omit<IssueReportRequest, "diagnostics"> & { diagnostics?: boolean };
@@ -67,7 +67,7 @@ export async function gatherDiagnostics(paths: Paths, env: NodeJS.ProcessEnv, op
     const link = running?.health.cloud ?? undefined;
     const failing = (report?.checks ?? []).filter((c) => c.status === "fail" || c.status === "warn").sort((a, b) => Number(b.status === "fail") - Number(a.status === "fail"));
     // Scrubbed before being cut: a replacement may make a line longer.
-    const facts = scrubSecrets({ last_error: link?.last_error ?? "", failing: failing.slice(0, MAX_FAILING).map((c) => ({ id: c.name, status: c.status, message: c.detail })) }, secretValues(fileSecrets, config.cloud.public_env));
+    const facts = scrubSecrets({ last_error: link?.last_error ?? "", failing: failing.slice(0, MAX_FAILING).map((c) => ({ id: c.name, status: c.status, message: c.detail })) }, scrubValues(fileSecrets, config.cloud));
     const diagnostics: IssueDiagnostics = {
       ...basics,
       ...(link ? { link: { state: link.state, ...(link.reason ? { reason: link.reason } : {}), ...(facts.last_error ? { last_error: facts.last_error.slice(0, MAX_LINE) } : {}) } } : {}),
@@ -94,7 +94,7 @@ export async function buildIssueReport(paths: Paths, env: NodeJS.ProcessEnv, inp
   const config = options.config ?? loadConfig(paths);
   // Every field is scrubbed like the diagnostics: whoever fills them (an agent, too) may have put anything there.
   const given = { title: input.title.trim(), body: input.body?.trim() ?? "", contact_email: input.contact_email?.trim() ?? "", job_id: input.job_id ?? "", delivery_id: input.delivery_id ?? "", skill: input.skill ?? "" };
-  const text = scrubSecrets(given, secretValues(readEnvFile(paths.envFile), config.cloud.public_env));
+  const text = scrubSecrets(given, scrubValues(readEnvFile(paths.envFile), config.cloud));
   if (!text.title) throw new IssueReportError("The report needs a title: one line that says what went wrong");
   if (text.title.length > MAX_TITLE) throw new IssueReportError(`The title is ${text.title.length} characters; at most ${MAX_TITLE} (put the rest in the body)`);
   if (text.body.length > MAX_BODY) throw new IssueReportError(`The body is ${text.body.length} characters; at most ${MAX_BODY} (refer to the job instead of pasting its output)`);

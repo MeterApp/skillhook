@@ -29,6 +29,7 @@ describe("buildPrompt", () => {
     expect(built.prompt).toContain("delivery_id: d1");
     expect(built.guardrails).toContain('"demo" skill');
     expect(built.guardrails).toContain("/jobs/j1/payload.json");
+    expect(built.guardrails).toContain("Never print the environment");
   });
 
   it("does not append when the body places the payload itself", () => {

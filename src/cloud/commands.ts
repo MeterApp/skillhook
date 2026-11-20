@@ -28,7 +28,7 @@ import { errorMessage, nowIso } from "../util.js";
 import { commandAllowed, type CloudPolicy } from "./config.js";
 import type { CommandLedger } from "./outbox.js";
 import { COMMAND_CLASS, LIMITS, parseCommandArgs, type Command, type CommandErrorCode, type CommandResult, type CommandType, type Sealed, type Snapshot } from "./protocol.js";
-import { accountViewForUpload, redactUpload, scrubSecrets, secretValues } from "./redact.js";
+import { accountViewForUpload, redactUpload, scrubSecrets, scrubValues } from "./redact.js";
 
 export class CommandError extends Error {
   constructor(
@@ -189,7 +189,7 @@ const readHandlers: Partial<Record<CommandType, CommandHandler>> = {
     if (!existsSync(file)) throw new CommandError("not_found", `job ${args.id} has no ${args.name}`);
     const size = statSync(file).size;
     const max = args.max_inline_bytes ?? ARTIFACT_INLINE_DEFAULT;
-    const values = secretValues(deps.fileSecrets(), deps.config.cloud.public_env);
+    const values = scrubValues(deps.fileSecrets(), deps.config.cloud);
     if (size <= max || !deps.upload) {
       const text = deps.store.readArtifact(job.id, args.name, max) ?? "";
       return { result: { job_id: job.id, name: args.name, bytes: size, text: scrubSecrets(text, values), truncated: size > max } };
@@ -250,7 +250,7 @@ export interface CommandDispatcher {
 export function createCommandDispatcher(deps: CommandDeps): CommandDispatcher {
   const finish = (command: Command, startedAt: string, outcome: { ok: true; result: unknown; sensitive?: boolean; sealed?: Sealed } | { ok: false; error: { code: CommandErrorCode; message: string; hint?: string } }): CommandResult => {
     const finished = nowIso();
-    const values = secretValues(deps.fileSecrets(), deps.config.cloud.public_env);
+    const values = scrubValues(deps.fileSecrets(), deps.config.cloud);
     const base = { command_id: command.id, started_at: startedAt, finished_at: finished, duration_ms: Math.max(0, Date.parse(finished) - Date.parse(startedAt)) };
     // Even a sensitive result is scrubbed of .env values: what must travel does so sealed, never in `result`.
     const result: CommandResult = outcome.ok
