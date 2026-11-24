@@ -11,7 +11,7 @@ import type { ScheduleStatus } from "../scheduler.js";
 import { skillSummary, type ServerState } from "../server.js";
 import { collectStats, parseSince } from "../stats.js";
 import type { ManagedSkills } from "./managed.js";
-import { scrubSecrets, secretValues } from "./redact.js";
+import { scrubSecrets, scrubValues } from "./redact.js";
 import { RUNNER_NAMES, type Snapshot } from "./protocol.js";
 
 export interface SnapshotDeps {
@@ -54,5 +54,5 @@ export function buildSnapshot(deps: SnapshotDeps): Snapshot {
     ...(stats ? { stats } : {}),
     ...(deps.managed ? { managed: deps.managed.status() } : {}),
   };
-  return scrubSecrets(snapshot, secretValues(deps.fileSecrets(), deps.config.cloud.public_env));
+  return scrubSecrets(snapshot, scrubValues(deps.fileSecrets(), deps.config.cloud));
 }

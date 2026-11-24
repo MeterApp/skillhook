@@ -1,6 +1,8 @@
 // Nothing secret leaves the machine: uploads are scrubbed against private `.env` values; headers are
 // redacted like `event.json`, and command lines / environments never travel at all.
+import { readEnvFile } from "../env.js";
 import { redactHeaders } from "../payload.js";
+import { expandTilde } from "../util.js";
 
 const MIN_SECRET_LENGTH = 8;
 export const REDACTED = "[redacted]";
@@ -25,8 +27,40 @@ export function secretValues(secrets: Record<string, string>, publicEnv: readonl
   return [...values].sort((a, b) => b.length - a.length);
 }
 
+/**
+ * What the machine scrubs from uploads: the private values of `.env`, plus those of every dotenv file
+ * `cloud.scrub_env_files` names (a shell profile's `~/.env`, an operations file), which a run's shell may hold
+ * although skillhook never passed them. A file that is missing or unreadable adds nothing.
+ */
+export function scrubValues(fileSecrets: Record<string, string>, cloud: { public_env?: readonly string[]; scrub_env_files?: readonly string[] }): string[] {
+  const values = new Set(secretValues(fileSecrets, cloud.public_env ?? []));
+  for (const file of cloud.scrub_env_files ?? []) {
+    try {
+      for (const value of secretValues(readEnvFile(expandTilde(file)))) values.add(value);
+    } catch {
+      /* an unreadable file adds nothing */
+    }
+  }
+  return [...values].sort((a, b) => b.length - a.length);
+}
+
+/**
+ * `NAME=value` where NAME is an environment-style name that reads like a credential (`…_TOKEN`, `…_API_KEY`,
+ * `…_SECRET`, …): what `env`, `printenv` or a bare `export` prints. Catches secrets no `.env` on this machine lists.
+ * Group 1 is kept (name, `=`, an opening quote, raw or JSON-escaped); the value is at least 8 characters and stops
+ * at whitespace, a quote or a backslash; a name may follow a JSON-escaped line break (`\\n`), as in a runner's
+ * stream-json transcript. References (`$VAR`, `<placeholder>`) and paths are left alone.
+ */
+const CREDENTIAL_ASSIGNMENT = /(?:(?<![A-Za-z0-9_])|(?<=\\[nrt]))([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|KEY|AUTH|COOKIE|CREDENTIAL|SIGNATURE)[A-Z0-9_]*=(?:\\?["'])?)(?![/~.$<\[])([^\s"'\\]{8,})/g;
+
+/** `text` with the value of every credential-looking `NAME=value` replaced. */
+export function scrubAssignments(text: string): string {
+  if (!text.includes("=")) return text;
+  return text.replace(CREDENTIAL_ASSIGNMENT, (whole, head: string, value: string) => (value === REDACTED ? whole : `${head}${REDACTED}`));
+}
+
 function scrubString(text: string, values: string[]): string {
-  let out = text;
+  let out = scrubAssignments(text);
   for (const value of values) {
     if (out.includes(value)) out = out.replaceAll(value, REDACTED);
     const escaped = JSON.stringify(value).slice(1, -1);
@@ -35,10 +69,9 @@ function scrubString(text: string, values: string[]): string {
   return out;
 }
 
-/** A deep copy of `value` with every secret value replaced, raw or JSON-escaped, in every string. */
+/** A deep copy of `value` with every secret value replaced, raw or JSON-escaped, and every credential-looking `NAME=value` blanked, in every string. */
 export function scrubSecrets<T>(value: T, secrets: Record<string, string> | string[]): T {
   const values = Array.isArray(secrets) ? secrets : secretValues(secrets);
-  if (!values.length) return value;
   const walk = (node: unknown): unknown => {
     if (typeof node === "string") return scrubString(node, values);
     if (Array.isArray(node)) return node.map(walk);

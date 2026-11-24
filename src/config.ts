@@ -203,6 +203,8 @@ export const ConfigSchema = z
         upload_payloads: z.boolean().default(true),
         /** Local declaration of non-sensitive .env configuration; unknown names stay private. */
         public_env: z.array(z.string().refine(isPublicEnvName, "Expected a public environment name, never a credential or SKILLHOOK_* variable")).default([]),
+        /** More dotenv files (a shell profile's `~/.env`, an operations file) whose values are scrubbed from every upload, as `.env`'s are. */
+        scrub_env_files: z.array(z.string().min(1)).default([]),
         /** Let the cloud ask for job artifacts (transcripts, results) and live output. */
         upload_artifacts: z.boolean().default(true),
         /** Accept hosted-ingress deliveries (webhooks the cloud received for this machine while it was asleep). */

@@ -562,6 +562,14 @@
             "type": "string"
           }
         },
+        "scrub_env_files": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
         "upload_artifacts": {
           "default": true,
           "type": "boolean"
