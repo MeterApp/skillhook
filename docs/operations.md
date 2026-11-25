@@ -41,7 +41,7 @@ skillhook serve [--port N] [--host H] [--pretty] [--log-level debug|info|warn|er
 
 On start the server logs invalid skills, warns about skills with `auth: none` or a missing secret (`deliveries will get 503`; schedule-only skills are exempt) and about a missing admin token, marks jobs left `running` by a previous process as `interrupted`, re-queues jobs that were still `queued`, starts the scheduler (one `schedule registered` line per `schedule:` with its next due time; afterwards `schedule fired` and `schedule slots skipped` lines, see [schedules.md](schedules.md)), listens, writes `server.json`, and logs `skillhook listening` plus one `webhook url` line per skill when `public_url` is set. Once a day it also logs `update available` when npm has a newer skillhook (see [Upgrading](#upgrading-and-removing)).
 
-Logs go to stderr as one JSON object per line (`{"ts":…,"level":…,"msg":…}`) unless stdin is a TTY or `--pretty` is given. `SIGINT`/`SIGTERM` stop accepting requests, SIGTERM running jobs (they end as `interrupted`; SIGKILL follows after 10 s) and remove `server.json`.
+Logs go to stderr as one JSON object per line (`{"ts":…,"level":…,"msg":…}`) unless stdin is a TTY or `--pretty` is given. `SIGINT`, `SIGTERM` and `SIGHUP` (closing the terminal a server was started in) stop accepting requests, SIGTERM running jobs (they end as `interrupted`; SIGKILL follows after 10 s), send Skillhook Cloud a last `link.stopped` with the signal as its `reason`, and remove `server.json`.
 
 Other commands find the running server through `server.json` and `GET /health`. `skillhook send`, `skillhook jobs cancel` and the MCP tools `run_skill` (server mode) and `cancel_job` need it; `skillhook run` does not.
 

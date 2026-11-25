@@ -1,9 +1,10 @@
+import { EventEmitter } from "node:events";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "./config.js";
 import { JobStore } from "./jobs.js";
-import { prepareRestart } from "./lifecycle.js";
+import { installStopSignals, prepareRestart, STOP_SIGNALS } from "./lifecycle.js";
 import { silentLogger } from "./logger.js";
 import { createAdhocJob } from "./manual.js";
 import { JobQueue } from "./queue.js";
@@ -114,5 +115,43 @@ describe("bounded restart", () => {
     expect(await prepareRestart(queue, { force: true, waitSeconds: 1 })).toBe(true);
     expect(queue.shutdown).toHaveBeenCalledOnce();
     expect(queue.drain).toHaveBeenCalledOnce();
+  });
+});
+
+describe("installStopSignals", () => {
+  const fakeProcess = () => Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
+  const eio = () => Object.assign(new Error("write EIO"), { code: "EIO" });
+
+  it("stops on SIGINT, SIGTERM and SIGHUP with the signal's name as the reason link.stopped carries", () => {
+    for (const signal of STOP_SIGNALS) {
+      const proc = fakeProcess();
+      const stop = vi.fn();
+      installStopSignals(stop, proc);
+      proc.emit(signal);
+      expect(stop).toHaveBeenCalledOnce();
+      expect(stop).toHaveBeenCalledWith(signal);
+    }
+    expect(STOP_SIGNALS).toContain("SIGHUP");
+  });
+
+  it("after SIGHUP (the terminal closed) a failed write to it is not an uncaught error", () => {
+    const proc = fakeProcess();
+    installStopSignals(() => {}, proc);
+    expect(() => proc.stderr.emit("error", eio())).toThrow("write EIO");
+    proc.emit("SIGHUP");
+    expect(() => proc.stderr.emit("error", eio())).not.toThrow();
+    expect(() => proc.stdout.emit("error", eio())).not.toThrow();
+    proc.emit("SIGHUP");
+    expect(proc.stderr.listenerCount("error")).toBe(1);
+    expect(proc.stdout.listenerCount("error")).toBe(1);
+  });
+
+  it("keeps stream errors visible on SIGINT and SIGTERM, when the terminal is still there", () => {
+    const proc = fakeProcess();
+    installStopSignals(() => {}, proc);
+    proc.emit("SIGINT");
+    proc.emit("SIGTERM");
+    expect(proc.stdout.listenerCount("error")).toBe(0);
+    expect(proc.stderr.listenerCount("error")).toBe(0);
   });
 });
