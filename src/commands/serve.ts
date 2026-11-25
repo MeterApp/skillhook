@@ -12,7 +12,7 @@ import { HealthCache } from "../health.js";
 import { ReadinessCache } from "../readiness.js";
 import { baseRunEnv } from "../runners/env.js";
 import { JobQueue } from "../queue.js";
-import { prepareRestart } from "../lifecycle.js";
+import { installStopSignals, prepareRestart } from "../lifecycle.js";
 import { createLogger } from "../logger.js";
 import { Scheduler } from "../scheduler.js";
 import { clearServerState, createServer, writeServerState, type ServerControl } from "../server.js";
@@ -213,8 +213,7 @@ async function runDaemon(ctx: Ctx, sentry: DaemonSentry): Promise<number> {
     },
   });
 
-  process.on("SIGINT", () => void stop("SIGINT", { force: true, waitSeconds: 0 }));
-  process.on("SIGTERM", () => void stop("SIGTERM", { force: true, waitSeconds: 0 }));
+  installStopSignals((signal) => void stop(signal, { force: true, waitSeconds: 0 }));
   await new Promise(() => {
     /* run until signalled */
   });
