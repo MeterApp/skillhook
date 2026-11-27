@@ -147,3 +147,17 @@ export const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export function isValidSkillName(name: string): boolean {
   return name.length >= 1 && name.length <= 64 && SKILL_NAME_RE.test(name);
 }
+
+/**
+ * Identifies one version of a file for "re-read when it changed" caches: modification and change times in
+ * nanoseconds, size and inode, or "" when the file is missing. The mtime alone is not enough: Linux stamps files
+ * from a coarse clock (a few ms), so two writes in a row can share an mtime and the second would be missed.
+ */
+export function fileStamp(file: string): string {
+  try {
+    const stat = statSync(file, { bigint: true });
+    return `${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}:${stat.ino}`;
+  } catch {
+    return "";
+  }
+}

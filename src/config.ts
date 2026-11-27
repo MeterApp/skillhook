@@ -1,11 +1,10 @@
-import { statSync } from "node:fs";
 import { z } from "zod";
 import type { Events } from "./events.js";
 import { isPublicEnvName } from "./cloud/redact.js";
 import { DEFAULT_CLOUD_URL } from "./cloud/config.js";
 import { FallbackSchema } from "./runners/failure.js";
 import { readFileSync } from "node:fs";
-import { exists, writeJsonFile } from "./util.js";
+import { exists, fileStamp, writeJsonFile } from "./util.js";
 import type { Paths } from "./paths.js";
 
 export const RunnerNameSchema = z.enum(["claude", "codex", "shell"]);
@@ -349,7 +348,7 @@ export class ConfigRef {
   private readonly pending = new Set<keyof Config>();
   /** The restart-only values this process started with; a file that returns to them clears the pending restart. */
   private readonly startedWith: Record<string, string>;
-  private stamp = -1;
+  private stamp = "";
 
   constructor(
     private readonly paths: Paths,
@@ -369,12 +368,8 @@ export class ConfigRef {
     return [...this.pending];
   }
 
-  private mtime(): number {
-    try {
-      return statSync(this.paths.configFile).mtimeMs;
-    } catch {
-      return 0;
-    }
+  private mtime(): string {
+    return fileStamp(this.paths.configFile);
   }
 
   /** Re-reads the file (throws `ConfigError` when it is invalid; the live config is then untouched). */
@@ -403,7 +398,7 @@ export class ConfigRef {
     return result;
   }
 
-  /** Reloads when the file's mtime changed (what `serve` polls every few seconds); errors go to `onError`. */
+  /** Reloads when the file changed (`fileStamp`) (what `serve` polls every few seconds); errors go to `onError`. */
   poll(onError?: (error: unknown) => void): ConfigReload | undefined {
     if (this.mtime() === this.stamp) return undefined;
     try {

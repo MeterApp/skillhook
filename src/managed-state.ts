@@ -2,8 +2,9 @@
 // skill currently serves, and `<home>/cloud-skills/<name>/<sha256>/<name>/SKILL.md` holds the files of every version
 // kept. The registry reads this (so a change is live without a restart) and src/cloud/managed.ts writes it; nothing
 // else does. Kept apart from the cloud code so the registry and the CLI depend on no networking.
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { fileStamp } from "./util.js";
 
 export const MANAGED_STATE_FILE = ".state.json";
 
@@ -74,17 +75,12 @@ export function writeManagedState(dir: string, state: ManagedState): void {
   renameSync(tmp, file);
 }
 
-/** The state, re-read only when the file's mtime changed (what the registry calls on every lookup). */
+/** The state, re-read only when the file changed (`fileStamp`) (what the registry calls on every lookup). */
 export function managedStateReader(dir: string): () => ManagedState {
-  let stamp = -1;
+  let stamp: string | undefined;
   let cached: ManagedState = { version: 1, skills: {} };
   return () => {
-    let mtime = 0;
-    try {
-      mtime = statSync(managedStateFile(dir)).mtimeMs;
-    } catch {
-      mtime = 0;
-    }
+    const mtime = fileStamp(managedStateFile(dir));
     if (mtime !== stamp) {
       stamp = mtime;
       cached = readManagedState(dir);

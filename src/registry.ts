@@ -5,7 +5,7 @@ import { managedSkillDir, managedStateReader, type ManagedState } from "./manage
 import type { Paths } from "./paths.js";
 import { loadProject, projectIsFresh, type LoadedProject } from "./projects.js";
 import { loadSkill, loadSkills, SkillError, skillFile, type Skill, type SkillLoadResult, type SkillSource } from "./skills.js";
-import { isValidSkillName, readJsonFileOr } from "./util.js";
+import { fileStamp, isValidSkillName, readJsonFileOr } from "./util.js";
 
 /** A skill or hook that appeared, changed (another file or mtime) or disappeared since the registry last saw it. */
 export interface SkillChange {
@@ -33,17 +33,12 @@ export interface RegistryListResult extends SkillLoadResult {
   projects: LoadedProject[];
 }
 
-/** The `projects` array of `skillhook.json`, cached until the file's mtime changes; tolerant of a missing or invalid file. */
+/** The `projects` array of `skillhook.json`, cached until the file changes (`fileStamp`); tolerant of a missing or invalid file. */
 export function configProjects(paths: Paths): () => string[] {
-  let stamp = -1;
+  let stamp: string | undefined;
   let cached: string[] = [];
   return () => {
-    let mtime = 0;
-    try {
-      mtime = statSync(paths.configFile).mtimeMs;
-    } catch {
-      mtime = 0;
-    }
+    const mtime = fileStamp(paths.configFile);
     if (mtime !== stamp) {
       stamp = mtime;
       const raw = readJsonFileOr<{ projects?: unknown }>(paths.configFile, {});
